@@ -1,0 +1,98 @@
+[0.050s] DEBUG:colcon:Command line arguments: ['/usr/bin/colcon', 'list', '-p', '--base-paths', '/workspace/DevEnv/jazzy_ws/IGVC_robot_2026']
+[0.050s] DEBUG:colcon:Parsed command line arguments: Namespace(log_base=None, log_level=None, verb_name='list', build_base='build', ignore_user_meta=False, metas=['./colcon.meta'], base_paths=['/workspace/DevEnv/jazzy_ws/IGVC_robot_2026'], packages_ignore=None, packages_ignore_regex=None, paths=None, packages_up_to=None, packages_up_to_regex=None, packages_above=None, packages_above_and_dependencies=None, packages_above_depth=None, packages_select_by_dep=None, packages_skip_by_dep=None, packages_skip_up_to=None, packages_select_build_failed=False, packages_skip_build_finished=False, packages_select_test_failures=False, packages_skip_test_passed=False, packages_select=None, packages_skip=None, packages_select_regex=None, packages_skip_regex=None, packages_start=None, packages_end=None, topological_order=False, names_only=False, paths_only=True, topological_graph=False, topological_graph_dot=False, topological_graph_density=False, topological_graph_legend=False, topological_graph_dot_cluster=False, topological_graph_dot_include_skipped=False, mixin_files=None, mixin=None, verb_parser=<colcon_mixin.mixin.mixin_argument.MixinArgumentDecorator object at 0x75b180ea22d0>, verb_extension=<colcon_package_information.verb.list.ListVerb object at 0x75b180ffd910>, main=<bound method ListVerb.main of <colcon_package_information.verb.list.ListVerb object at 0x75b180ffd910>>, mixin_verb=('list',))
+[0.072s] Level 1:colcon.colcon_core.package_discovery:discover_packages(colcon_meta) check parameters
+[0.072s] Level 1:colcon.colcon_core.package_discovery:discover_packages(recursive) check parameters
+[0.072s] Level 1:colcon.colcon_core.package_discovery:discover_packages(ignore) check parameters
+[0.072s] Level 1:colcon.colcon_core.package_discovery:discover_packages(path) check parameters
+[0.072s] Level 1:colcon.colcon_core.package_discovery:discover_packages(recursive) discover
+[0.072s] INFO:colcon.colcon_core.package_discovery:Crawling recursively for packages in '/workspace/DevEnv/jazzy_ws/IGVC_robot_2026'
+[0.072s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extensions ['ignore', 'ignore_ament_install']
+[0.073s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extension 'ignore'
+[0.073s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extension 'ignore_ament_install'
+[0.073s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extensions ['colcon_pkg']
+[0.073s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extension 'colcon_pkg'
+[0.073s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extensions ['colcon_meta']
+[0.073s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extension 'colcon_meta'
+[0.073s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extensions ['ros']
+[0.073s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extension 'ros'
+[0.086s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extensions ['cmake', 'python']
+[0.086s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extension 'cmake'
+[0.086s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extension 'python'
+[0.086s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extensions ['python_setup_py']
+[0.086s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026) by extension 'python_setup_py'
+[0.086s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extensions ['ignore', 'ignore_ament_install']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extension 'ignore'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extension 'ignore_ament_install'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extensions ['colcon_pkg']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extension 'colcon_pkg'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extensions ['colcon_meta']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extension 'colcon_meta'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extensions ['ros']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extension 'ros'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extensions ['cmake', 'python']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extension 'cmake'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extension 'python'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extensions ['python_setup_py']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac) by extension 'python_setup_py'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extensions ['ignore', 'ignore_ament_install']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extension 'ignore'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extension 'ignore_ament_install'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extensions ['colcon_pkg']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extension 'colcon_pkg'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extensions ['colcon_meta']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extension 'colcon_meta'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extensions ['ros']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extension 'ros'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extensions ['cmake', 'python']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extension 'cmake'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extension 'python'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extensions ['python_setup_py']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/isaac/assets) by extension 'python_setup_py'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/log) by extensions ['ignore', 'ignore_ament_install']
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/log) by extension 'ignore'
+[0.087s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/log) ignored
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extensions ['ignore', 'ignore_ament_install']
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extension 'ignore'
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extension 'ignore_ament_install'
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extensions ['colcon_pkg']
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extension 'colcon_pkg'
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extensions ['colcon_meta']
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extension 'colcon_meta'
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extensions ['ros']
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extension 'ros'
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extensions ['cmake', 'python']
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extension 'cmake'
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extension 'python'
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extensions ['python_setup_py']
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src) by extension 'python_setup_py'
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/grr_hardware) by extensions ['ignore', 'ignore_ament_install']
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/grr_hardware) by extension 'ignore'
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/grr_hardware) by extension 'ignore_ament_install'
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/grr_hardware) by extensions ['colcon_pkg']
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/grr_hardware) by extension 'colcon_pkg'
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/grr_hardware) by extensions ['colcon_meta']
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/grr_hardware) by extension 'colcon_meta'
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/grr_hardware) by extensions ['ros']
+[0.088s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/grr_hardware) by extension 'ros'
+[0.090s] DEBUG:colcon.colcon_core.package_identification:Package '/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/grr_hardware' with type 'ros.ament_cmake' and name 'grr_hardware'
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_bringup) by extensions ['ignore', 'ignore_ament_install']
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_bringup) by extension 'ignore'
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_bringup) by extension 'ignore_ament_install'
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_bringup) by extensions ['colcon_pkg']
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_bringup) by extension 'colcon_pkg'
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_bringup) by extensions ['colcon_meta']
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_bringup) by extension 'colcon_meta'
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_bringup) by extensions ['ros']
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_bringup) by extension 'ros'
+[0.090s] DEBUG:colcon.colcon_core.package_identification:Package '/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_bringup' with type 'ros.ament_cmake' and name 'igvc_test_bringup'
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_description) by extensions ['ignore', 'ignore_ament_install']
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_description) by extension 'ignore'
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_description) by extension 'ignore_ament_install'
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_description) by extensions ['colcon_pkg']
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_description) by extension 'colcon_pkg'
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_description) by extensions ['colcon_meta']
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_description) by extension 'colcon_meta'
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_description) by extensions ['ros']
+[0.090s] Level 1:colcon.colcon_core.package_identification:_identify(/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_description) by extension 'ros'
+[0.090s] DEBUG:colcon.colcon_core.package_identification:Package '/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_description' with type 'ros.ament_cmake' and name 'igvc_test_description'
+[0.091s] Level 1:colcon.colcon_core.package_discovery:discover_packages(recursive) using defaults
