@@ -1,0 +1,3 @@
+[submodule "src/grr_hardware"]
+	path = src/grr_hardware
+	url = https://github.com/Gold-Rush-Robotics/grr_hardware.git

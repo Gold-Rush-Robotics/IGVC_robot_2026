@@ -1,0 +1,23 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${default}",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/opt/ros/jazzy/include/**",
+        "/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/grr_hardware/include/**",
+        "/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_bringup/include/**",
+        "/workspace/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_description/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++14"
+    }
+  ],
+  "version": 4
+}
