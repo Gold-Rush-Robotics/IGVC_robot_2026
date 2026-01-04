@@ -33,13 +33,13 @@
     <visual>
       <origin xyz="0. -0. -0.005" rpy="-3.1415927 0. 1.4812796"/>
       <geometry>
-        <mesh filename="package://igvc_description/meshes/Part_2.obj" scale="1. 1. 1."/>
+        <mesh filename="package://igvc_test_description/meshes/Part_2.obj" scale="1. 1. 1."/>
       </geometry>
     </visual>
     <collision>
       <origin xyz="0. -0. -0.005" rpy="-3.1415927 0. 1.4812796"/>
       <geometry>
-        <mesh filename="package://igvc_description/meshes/Part_2.obj" scale="1. 1. 1."/>
+        <mesh filename="package://igvc_test_description/meshes/Part_2.obj" scale="1. 1. 1."/>
       </geometry>
     </collision>
   </link>
@@ -52,13 +52,13 @@
     <visual>
       <origin xyz="0.0373062 0.1135063 -0.0238125" rpy="-1.5707963 -0. 0.0000001"/>
       <geometry>
-        <mesh filename="package://igvc_description/meshes/_in_Caster.obj" scale="1. 1. 1."/>
+        <mesh filename="package://igvc_test_description/meshes/_in_Caster.obj" scale="1. 1. 1."/>
       </geometry>
     </visual>
     <collision>
       <origin xyz="0.0373062 0.1135063 -0.0238125" rpy="-1.5707963 -0. 0.0000001"/>
       <geometry>
-        <mesh filename="package://igvc_description/meshes/_in_Caster.obj" scale="1. 1. 1."/>
+        <mesh filename="package://igvc_test_description/meshes/_in_Caster.obj" scale="1. 1. 1."/>
       </geometry>
     </collision>
   </link>
@@ -66,13 +66,13 @@
     <visual>
       <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
       <geometry>
-        <mesh filename="package://igvc_description/meshes/_FE2CBA3_2B86_49A6_86C6_46C335366A6A.obj" scale="1. 1. 1."/>
+        <mesh filename="package://igvc_test_description/meshes/_FE2CBA3_2B86_49A6_86C6_46C335366A6A.obj" scale="1. 1. 1."/>
       </geometry>
     </visual>
     <collision>
       <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
       <geometry>
-        <mesh filename="package://igvc_description/meshes/_FE2CBA3_2B86_49A6_86C6_46C335366A6A.obj" scale="1. 1. 1."/>
+        <mesh filename="package://igvc_test_description/meshes/_FE2CBA3_2B86_49A6_86C6_46C335366A6A.obj" scale="1. 1. 1."/>
       </geometry>
     </collision>
   </link>
@@ -86,13 +86,13 @@
     <visual>
       <origin xyz="0. 0. -0.032" rpy="1.5707964 0. 0. "/>
       <geometry>
-        <mesh filename="package://igvc_description/meshes/left_wheel_link__in_Wheel_Stand_In.obj" scale="1. 1. 1."/>
+        <mesh filename="package://igvc_test_description/meshes/left_wheel_link__in_Wheel_Stand_In.obj" scale="1. 1. 1."/>
       </geometry>
     </visual>
     <collision>
       <origin xyz="0. 0. -0.032" rpy="1.5707964 0. 0. "/>
       <geometry>
-        <mesh filename="package://igvc_description/meshes/left_wheel_link__in_Wheel_Stand_In.obj" scale="1. 1. 1."/>
+        <mesh filename="package://igvc_test_description/meshes/left_wheel_link__in_Wheel_Stand_In.obj" scale="1. 1. 1."/>
       </geometry>
     </collision>
   </link>
@@ -105,13 +105,13 @@
     <visual>
       <origin xyz="0. 0. -0.032" rpy="-1.5707961 -0.0000001 0.0000001"/>
       <geometry>
-        <mesh filename="package://igvc_description/meshes/right_wheel_link__in_Wheel_Stand_In.obj" scale="1. 1. 1."/>
+        <mesh filename="package://igvc_test_description/meshes/right_wheel_link__in_Wheel_Stand_In.obj" scale="1. 1. 1."/>
       </geometry>
     </visual>
     <collision>
       <origin xyz="0. 0. -0.032" rpy="-1.5707961 -0.0000001 0.0000001"/>
       <geometry>
-        <mesh filename="package://igvc_description/meshes/right_wheel_link__in_Wheel_Stand_In.obj" scale="1. 1. 1."/>
+        <mesh filename="package://igvc_test_description/meshes/right_wheel_link__in_Wheel_Stand_In.obj" scale="1. 1. 1."/>
       </geometry>
     </collision>
   </link>

@@ -10,21 +10,16 @@ import xacro
 def generate_launch_description():
 
     # Get Local Files
-    description_pkg_path = os.path.join(get_package_share_directory('grr_description'))
-    config_pkg_path = os.path.join(get_package_share_directory('grr_bringup'))
+    description_pkg_path = os.path.join(get_package_share_directory('igvc_test_description'))
+    config_pkg_path = os.path.join(get_package_share_directory('igvc_test_bringup'))
     joystick_file = os.path.join(config_pkg_path, 'config', 'xbox-holonomic.config.yaml')
-    xacro_file = os.path.join(description_pkg_path, 'urdf', 'robots','grreg.urdf.xacro')
+    xacro_file = os.path.join(description_pkg_path, 'urdf', 'robots','test_robot.urdf.xacro')
     controllers_file = os.path.join(config_pkg_path, 'config', 'controllers.yaml')
     rviz_file = os.path.join(config_pkg_path, 'config', 'config.rviz')
     robot_description_config = xacro.process_file(xacro_file)
     robot_description_xml = robot_description_config.toxml()
-    print(robot_description_xml)
-    source_code_path = os.path.abspath(os.path.join(description_pkg_path, "../../../../src/Robot2023/src/grr_description"))
-    # urdf_save_path = os.path.join(source_code_path, "bloodstone.urdf")
 
-    # with open(urdf_save_path, 'w') as f:
-    #     f.write(robot_description_xml)
-    # Create a robot_state_publisher node
+
     description_params = {'robot_description': robot_description_xml, 'use_sim_time': False }
     node_robot_state_publisher = Node(
         package='robot_state_publisher',
@@ -52,24 +47,12 @@ def generate_launch_description():
     
 
 
-    # Starts ROS2 Control Mecanum Drive Controller
-    mecanum_drive_controller_spawner = Node(
+    diff_drive_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["grr_cmake_controller", "-c", "/controller_manager"],
+        arguments=["diff_drive_controller", "--controller-manager", "/controller_manager"],
     )
-    mecanum_drive_controller_delay = RegisterEventHandler(
-        event_handler=OnProcessExit(
-            target_action=joint_state_broadcaster_spawner,
-            on_exit=[mecanum_drive_controller_spawner],
-        )
-    )
-    effort_controllers_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["effort_controller", "--controller-manager", "/controller_manager"],
-        remappings={('/effort_controller/commands', '/dumb_motors')}
-    )
+
 
     # Start Rviz2 with basic view
     run_rviz2_node = Node(
@@ -107,7 +90,7 @@ def generate_launch_description():
         executable='teleop_node',
         name='teleop_twist_joy_node', 
         parameters=[joystick_file],
-        remappings={('/cmd_vel', '/grr_cmake_controller/cmd_vel_unstamped')}
+        remappings={('/cmd_vel', '/diff_drive_controller/cmd_vel')}
         )
 
 
@@ -116,8 +99,7 @@ def generate_launch_description():
         control_node,
         node_robot_state_publisher,
         joint_state_broadcaster_spawner,
-        mecanum_drive_controller_delay,
-        effort_controllers_spawner,
+        diff_drive_spawner,
         # rviz2_delay,
         joy,
         joy_teleop
