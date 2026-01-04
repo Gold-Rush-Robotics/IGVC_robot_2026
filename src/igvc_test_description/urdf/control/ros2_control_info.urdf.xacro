@@ -1,5 +1,6 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="hardware_interface" default="IsaacDriveHardware" />
 
   <ros2_control name="igvc_test_bot" type="system">
     <hardware>

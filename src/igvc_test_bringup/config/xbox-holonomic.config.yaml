@@ -1,6 +1,7 @@
 teleop_twist_joy_node:
   ros__parameters:
     require_enable_button: false
+    publish_stamped_twist: true
     axis_linear:  # Left thumb stick vertical
       x: 1
       y: 0
