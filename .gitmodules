@@ -1,3 +1,6 @@
 [submodule "src/grr_hardware"]
 	path = src/grr_hardware
 	url = https://github.com/Gold-Rush-Robotics/grr_hardware.git
+[submodule "isaac/exts"]
+	path = isaac/exts
+	url = https://github.com/stereolabs/zed-isaac-sim.git
