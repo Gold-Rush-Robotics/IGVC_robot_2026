@@ -1,3 +1,6 @@
 build/*
 install/*
 log/*
+dataset/*
+.venv/*
+runs/*
