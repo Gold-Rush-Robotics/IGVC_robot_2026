@@ -4,3 +4,6 @@
 [submodule "IGVC_track_generator"]
 	path = IGVC_track_generator
 	url = https://github.com/Gold-Rush-Robotics/IGVC_track_generator.git
+[submodule "isaac/exts"]
+	path = isaac/exts
+	url = https://github.com/stereolabs/zed-isaac-sim.git
