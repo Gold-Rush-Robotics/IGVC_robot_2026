@@ -4,3 +4,4 @@ log/*
 dataset/*
 .venv/*
 runs/*
+*.pt
