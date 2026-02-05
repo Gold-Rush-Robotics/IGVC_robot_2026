@@ -7,3 +7,9 @@
 [submodule "isaac/exts"]
 	path = isaac/exts
 	url = https://github.com/stereolabs/zed-isaac-sim.git
+[submodule "src/genesis_ros"]
+	path = src/genesis_ros
+	url = https://github.com/vybhav-ibr/genesis_ros.git
+[submodule "src/zed-description"]
+	path = src/zed-description
+	url = https://github.com/stereolabs/zed-ros2-description.git

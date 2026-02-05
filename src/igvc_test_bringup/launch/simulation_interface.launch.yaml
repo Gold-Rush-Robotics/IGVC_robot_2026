@@ -1,0 +1,10 @@
+launch:
+
+- node:
+    pkg: igvc_simulation_interface
+    exec: simulation_interface
+    name: simulation_interface
+    output: screen
+    param:
+      - name: use_sim_time
+        value:  true
