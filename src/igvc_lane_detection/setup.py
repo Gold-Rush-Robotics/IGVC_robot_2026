@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'lane_detection_node = igvc_lane_detection.lane_detection:main',
         ],
     },
 )

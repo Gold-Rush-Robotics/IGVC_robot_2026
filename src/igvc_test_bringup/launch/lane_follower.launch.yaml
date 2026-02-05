@@ -1,0 +1,17 @@
+launch:
+- node:
+    pkg: igvc_lane_detection
+    exec: lane_detection_node
+    name: lane_detection_node
+    output: screen
+    param:
+      - from: $(find-pkg-share igvc_test_bringup)/config/lane_detection_config.yaml
+
+# Launch nav2 with lane follow config
+- include:
+    file: $(find-pkg-share nav2_bringup)/launch/navigation_launch.py
+    arg:
+      - name: params_file
+        value: $(find-pkg-share igvc_test_bringup)/config/nav2_lane_follow_config.yaml
+      - name: use_sim_time
+        value: 'true'
