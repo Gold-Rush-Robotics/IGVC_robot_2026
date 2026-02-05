@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+<xacro:include filename="$(find zed_description)/urdf/zed_macro.urdf.xacro"/>
+    <xacro:macro name="zed_camera_x" params="parent *origin prefix">
+        <xacro:zed_camera name="${prefix}_zed_camera_x" model="zedx" enable_gnss="true">
+            <gnss_origin xyz="0 0 0" rpy="0 0 0"/>
+        </xacro:zed_camera>
+        <joint name="${prefix}_zed_camera_x_joint" type="fixed">
+            <parent link="${parent}"/>
+            <child link="${prefix}_zed_camera_x_camera_link"/>
+            <xacro:insert_block name="origin"/>
+        </joint>
+    </xacro:macro>
+</robot>
