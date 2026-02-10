@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot name="temp">
+  <joint name="Revolute_2_01" type="continuous">
+    <origin xyz="-0.0452015 0.004609 -0.1223279" rpy="-1.5707965 -0.0862496 2.4779847"/>
+    <parent link="caster_pivot_link"/>
+    <child link="caster_wheel_link"/>
+    <axis xyz="0. 0. 1."/>
+  </joint>
+  <joint name="caster_pivot_joint" type="continuous">
+    <origin xyz="0.0011449 -0.3728886 -0.0307033" rpy="0. 0. -0.0000001"/>
+    <parent link="chassis_link"/>
+    <child link="caster_pivot_link"/>
+    <axis xyz="0. 0. 1."/>
+  </joint>
+  <joint name="left_wheel_joint" type="continuous">
+    <origin xyz="0.2844359 0.1500906 -0.1274171" rpy="0. 0. -0.0000001"/>
+    <parent link="chassis_link"/>
+    <child link="left_wheel_link"/>
+    <axis xyz="1. 0. 0."/>
+  </joint>
+  <joint name="right_wheel_joint" type="continuous">
+    <origin xyz="-0.2918941 0.1492591 -0.1296445" rpy="0. 0. -0.0000001"/>
+    <parent link="chassis_link"/>
+    <child link="right_wheel_link"/>
+    <axis xyz="1. 0. 0."/>
+  </joint>
+  <joint name="rootJoint" type="fixed">
+    <origin xyz="0. 0. 0." rpy="0. 0. 0.0000001"/>
+    <parent link="IGVC_bot"/>
+    <child link="chassis_link"/>
+  </joint>
+  <link name="IGVC_bot"/>
+  <link name="caster_pivot_link">
+    <inertial>
+      <origin xyz="-0.0305339 0.0233679 -0.1223279" rpy="0. 0. 0."/>
+      <mass value="1.0005643"/>
+      <inertia ixx="0.001731" ixy="-0.0000049" ixz="0.0000927" iyy="0.0017285" iyz="-0.0000725" izz="0.0030851"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0.0675162 0.0522845 -0.2321986" rpy="3.1415927 -0.0862496 2.4779847"/>
+      <geometry>
+        <mesh filename="package://igvc_test_description/meshes/caster_pivot_link__in_Caster__in_Caster.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0675162 0.0522845 -0.2321986" rpy="3.1415927 -0.0862496 2.4779847"/>
+      <geometry>
+        <mesh filename="package://igvc_test_description/meshes/caster_pivot_link__in_Caster__in_Caster.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="caster_wheel_link">
+    <inertial>
+      <origin xyz="-0.0181709 -0.0657049 -0.0238125" rpy="0. 0. 0."/>
+      <mass value="0.2597675"/>
+      <inertia ixx="0.0002418" ixy="-0.0000368" ixz="-0." iyy="0.0006646" iyz="0." izz="0.0005779"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0.0273898 -0.116298 -0.0238125" rpy="-1.5707965 0.0000001 -3.055343 "/>
+      <geometry>
+        <mesh filename="package://igvc_test_description/meshes/caster_wheel_link_Part_2_Part_2.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0273898 -0.116298 -0.0238125" rpy="-1.5707965 0.0000001 -3.055343 "/>
+      <geometry>
+        <mesh filename="package://igvc_test_description/meshes/caster_wheel_link_Part_2_Part_2.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="chassis_link">
+    <visual>
+      <origin xyz="0. 0. 0." rpy="0. 0. -0.0000001"/>
+      <geometry>
+        <mesh filename="package://igvc_test_description/meshes/_FE2CBA3_2B86_49A6_86C6_46C335366A6A.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0. 0. 0." rpy="0. 0. -0.0000001"/>
+      <geometry>
+        <mesh filename="package://igvc_test_description/meshes/_FE2CBA3_2B86_49A6_86C6_46C335366A6A.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="left_wheel_link">
+    <inertial>
+      <origin xyz="-0.0010859 -0.0000906 -0.0010079" rpy="0. 0. 0."/>
+      <mass value="2.1118586"/>
+      <inertia ixx="0.0059185" ixy="-0." ixz="-0." iyy="0.0086441" iyz="0.0022525" izz="0.00778"/>
+    </inertial>
+    <visual>
+      <origin xyz="-0.0010859 -0.0000906 -0.0010079" rpy="0. 0.8801533 1.5707964"/>
+      <geometry>
+        <mesh filename="package://igvc_test_description/meshes/left_wheel_link__in_Wheel_Stand_In_01__in_Wheel_Stand_In.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="-0.0010859 -0.0000906 -0.0010079" rpy="0. 0.8801533 1.5707964"/>
+      <geometry>
+        <mesh filename="package://igvc_test_description/meshes/left_wheel_link__in_Wheel_Stand_In_01__in_Wheel_Stand_In.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+  <link name="right_wheel_link">
+    <inertial>
+      <origin xyz="0.0085441 0.0007409 0.0012195" rpy="0. 0. 0."/>
+      <mass value="2.1118586"/>
+      <inertia ixx="0.0059185" ixy="-0." ixz="0." iyy="0.0059185" iyz="-0." izz="0.0105056"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.0085441 0.0007409 0.0012195" rpy="3.1415927 0. -1.5707964"/>
+      <geometry>
+        <mesh filename="package://igvc_test_description/meshes/right_wheel_link__in_Wheel_Stand_In_01__in_Wheel_Stand_In.obj" scale="1. 1. 1."/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0085441 0.0007409 0.0012195" rpy="3.1415927 0. -1.5707964"/>
+      <geometry>
+        <mesh filename="package://igvc_test_description/meshes/right_wheel_link__in_Wheel_Stand_In_01__in_Wheel_Stand_In.obj" scale="1. 1. 1."/>
+      </geometry>
+    </collision>
+  </link>
+</robot>

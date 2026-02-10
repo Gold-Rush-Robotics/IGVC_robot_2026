@@ -5,3 +5,4 @@ dataset/*
 .venv/*
 runs/*
 *.pt
+isaacsim/*
