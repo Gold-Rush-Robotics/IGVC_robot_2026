@@ -13,6 +13,7 @@ def generate_launch_description():
     description_pkg_path = os.path.join(get_package_share_directory('igvc_test_description'))
     config_pkg_path = os.path.join(get_package_share_directory('igvc_test_bringup'))
     joystick_file = os.path.join(config_pkg_path, 'config', 'xbox-holonomic.config.yaml')
+    twist_mux_file = os.path.join(config_pkg_path, 'config', 'twist_mux.yaml')
     xacro_file = os.path.join(description_pkg_path, 'urdf', 'robots','test_robot.urdf.xacro')
     controllers_file = os.path.join(config_pkg_path, 'config', 'controllers.yaml')
     rviz_file = os.path.join(config_pkg_path, 'config', 'config.rviz')
@@ -90,7 +91,28 @@ def generate_launch_description():
         executable='teleop_node',
         name='teleop_twist_joy_node', 
         parameters=[joystick_file],
-        remappings={('/cmd_vel', '/diff_drive_controller/cmd_vel')}
+        remappings=[('/cmd_vel', '/cmd_vel_joy')]
+        )
+
+
+    # Start Keyboard Teleop Node
+    keyboard_teleop = Node(
+        package='teleop_twist_keyboard',
+        executable='teleop_twist_keyboard',
+        name='teleop_twist_keyboard_node',
+        output='screen',
+        prefix='xterm -e',
+        remappings=[('/cmd_vel', '/cmd_vel_keyboard')]
+        )
+
+
+    # Start Twist Mux to multiplex joy and keyboard inputs
+    twist_mux = Node(
+        package='twist_mux',
+        executable='twist_mux',
+        name='twist_mux',
+        parameters=[twist_mux_file],
+        remappings=[('/cmd_vel_out', '/diff_drive_controller/cmd_vel')]
         )
 
 
@@ -102,5 +124,7 @@ def generate_launch_description():
         diff_drive_spawner,
         # rviz2_delay,
         joy,
-        joy_teleop
+        joy_teleop,
+        keyboard_teleop,
+        twist_mux
     ])
