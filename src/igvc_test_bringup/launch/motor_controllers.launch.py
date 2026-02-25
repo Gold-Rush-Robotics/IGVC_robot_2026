@@ -1,13 +1,21 @@
 import os
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, IncludeLaunchDescription, RegisterEventHandler
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
-import xacro
 
 def generate_launch_description():
+
+    # Declare launch arguments
+    hardware_interface_arg = DeclareLaunchArgument(
+        'hardware_interface',
+        default_value='IsaacDriveHardware',
+        description='Hardware interface to use (IsaacDriveHardware or CanInterface)'
+    )
+    hardware_interface = LaunchConfiguration('hardware_interface')
 
     # Get Local Files
     description_pkg_path = os.path.join(get_package_share_directory('igvc_test_description'))
@@ -17,11 +25,13 @@ def generate_launch_description():
     xacro_file = os.path.join(description_pkg_path, 'urdf', 'robots','test_robot.urdf.xacro')
     controllers_file = os.path.join(config_pkg_path, 'config', 'controllers.yaml')
     rviz_file = os.path.join(config_pkg_path, 'config', 'config.rviz')
-    robot_description_config = xacro.process_file(xacro_file)
-    robot_description_xml = robot_description_config.toxml()
+    robot_description = Command([
+        'xacro ', xacro_file,
+        ' hardware_interface:=', hardware_interface
+    ])
 
 
-    description_params = {'robot_description': robot_description_xml, 'use_sim_time': False }
+    description_params = {'robot_description': robot_description, 'use_sim_time': False }
     node_robot_state_publisher = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
@@ -118,6 +128,7 @@ def generate_launch_description():
 
     # Launch!
     return LaunchDescription([
+        hardware_interface_arg,
         control_node,
         node_robot_state_publisher,
         joint_state_broadcaster_spawner,
