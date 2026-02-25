@@ -3,10 +3,12 @@
   <xacro:arg name="hardware_interface" default="IsaacDriveHardware" />
 
 
+  <xacro:property name="hardware_interface_value" value="$(arg hardware_interface)" />
+  
   <ros2_control name="igvc_test_bot" type="system">
     <hardware>
       <plugin>grr_hardware/$(arg hardware_interface)</plugin>
-      <xacro:if value="${'$(arg hardware_interface)' == 'CanInterface'}">
+      <xacro:if value="${hardware_interface_value == 'CanInterface'}">
         <param name="can_interface">can0</param>
         <param name="joint_map">right_wheel_joint:R, left_wheel_joint:L</param>
         <param name="can_id_map">R:0x100:0x101, L:0x100:0x101</param>
