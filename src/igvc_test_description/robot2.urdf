@@ -186,14 +186,14 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.0 0 -0.016"/>
       <geometry>
-        <mesh filename="file:///workspace/DevEnv/jazzy_ws/IGVC_robot_2026/jazzy_ws/install/zed_description/share/zed_description/meshes/zedx.stl"/>
+        <mesh filename="file:///workspace/DevEnv/jazzy_ws/IGVC_robot_2026/install/zed_description/share/zed_description/meshes/zedx.stl"/>
       </geometry>
       <material name="zedx_mat"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.0 0 -0.016"/>
       <geometry>
-        <mesh filename="file:///workspace/DevEnv/jazzy_ws/IGVC_robot_2026/jazzy_ws/install/zed_description/share/zed_description/meshes/zedx.stl"/>
+        <mesh filename="file:///workspace/DevEnv/jazzy_ws/IGVC_robot_2026/install/zed_description/share/zed_description/meshes/zedx.stl"/>
       </geometry>
     </collision>
   </link>
@@ -248,14 +248,14 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.0 0 -0.016"/>
       <geometry>
-        <mesh filename="file:///workspace/DevEnv/jazzy_ws/IGVC_robot_2026/jazzy_ws/install/zed_description/share/zed_description/meshes/zedx.stl"/>
+        <mesh filename="file:///workspace/DevEnv/jazzy_ws/IGVC_robot_2026/install/zed_description/share/zed_description/meshes/zedx.stl"/>
       </geometry>
       <material name="zedx_mat"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.0 0 -0.016"/>
       <geometry>
-        <mesh filename="file:///workspace/DevEnv/jazzy_ws/IGVC_robot_2026/jazzy_ws/install/zed_description/share/zed_description/meshes/zedx.stl"/>
+        <mesh filename="file:///workspace/DevEnv/jazzy_ws/IGVC_robot_2026/install/zed_description/share/zed_description/meshes/zedx.stl"/>
       </geometry>
     </collision>
   </link>
@@ -310,14 +310,14 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.0 0 -0.016"/>
       <geometry>
-        <mesh filename="file:///workspace/DevEnv/jazzy_ws/IGVC_robot_2026/jazzy_ws/install/zed_description/share/zed_description/meshes/zedx.stl"/>
+        <mesh filename="file:///workspace/DevEnv/jazzy_ws/IGVC_robot_2026/install/zed_description/share/zed_description/meshes/zedx.stl"/>
       </geometry>
       <material name="zedx_mat"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.0 0 -0.016"/>
       <geometry>
-        <mesh filename="file:///workspace/DevEnv/jazzy_ws/IGVC_robot_2026/jazzy_ws/install/zed_description/share/zed_description/meshes/zedx.stl"/>
+        <mesh filename="file:///workspace/DevEnv/jazzy_ws/IGVC_robot_2026/install/zed_description/share/zed_description/meshes/zedx.stl"/>
       </geometry>
     </collision>
   </link>
