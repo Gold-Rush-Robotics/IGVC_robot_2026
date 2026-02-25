@@ -3,7 +3,7 @@
     <xacro:macro name="robot_body">
   <joint name="caster_raceway_joint" type="continuous">
     <origin xyz="0.0011449 -0.3728886 -0.0307033" rpy="0. 0. 0."/>
-    <parent link="temp"/>
+    <parent link="chassis_link"/>
     <child link="caster_raceway_link"/>
     <axis xyz="0. 0. 1."/>
   </joint>
@@ -15,19 +15,19 @@
   </joint>
   <joint name="left_wheel_joint" type="continuous">
     <origin xyz="0.2844359 0.1500906 -0.1274171" rpy="0. 0. 0."/>
-    <parent link="temp"/>
+    <parent link="chassis_link"/>
     <child link="left_wheel_link"/>
     <axis xyz="1. 0. 0."/>
   </joint>
   <joint name="right_wheel_joint" type="continuous">
     <origin xyz="-0.2918941 0.1492591 -0.1296445" rpy="0. 0. 0."/>
-    <parent link="temp"/>
+    <parent link="chassis_link"/>
     <child link="right_wheel_link"/>
     <axis xyz="1. 0. 0."/>
   </joint>
   <joint name="rootJoint" type="fixed">
     <origin xyz="0. 0. 0." rpy="0. 0. -0."/>
-    <parent link="temp"/>
+    <parent link="chassis_link"/>
     <child link="base_link"/>
   </joint>
   <link name="base_link"/>
@@ -107,7 +107,7 @@
       </geometry>
     </collision>
   </link>
-  <link name="temp">
+  <link name="chassis_link">
     <inertial>
       <origin xyz="0. 0. 0." rpy="0. 0. 0."/>
       <mass value="20."/>
