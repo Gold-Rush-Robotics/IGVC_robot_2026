@@ -4,6 +4,11 @@
 
   <ros2_control name="igvc_test_bot" type="system">
     <hardware>
+      <param name="can_interface">can0</param>
+      <param name="joint_map">right_wheel_joint:R, left_wheel_joint:L</param>
+      <param name="can_id_map"><R:0x100:0x101,L:0x100:0x101></param>
+      <param name="invert_can_joints">R</param>
+      <param name="controlled_joints">right_wheel_joint, left_wheel_joint</param>
       <plugin>grr_hardware/$(arg hardware_interface)</plugin>
     </hardware>
     <joint name="right_wheel_joint">
