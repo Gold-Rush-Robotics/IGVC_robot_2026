@@ -27,8 +27,8 @@
   </joint>
   <joint name="rootJoint" type="fixed">
     <origin xyz="0. 0. 0." rpy="0. 0. -0."/>
-    <parent link="chassis_link"/>
-    <child link="base_link"/>
+    <parent link="base_link"/>
+    <child link="chassis_link"/>
   </joint>
   <link name="base_link"/>
   <link name="caster_raceway_link">
