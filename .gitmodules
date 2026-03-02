@@ -12,7 +12,7 @@
 	url = https://github.com/vybhav-ibr/genesis_ros.git
 [submodule "src/zed-description"]
 	path = src/zed-description
-	url = https://github.com/stereolabs/zed-ros2-description.git
+	url = https://github.com/Gold-Rush-Robotics/zed-ros2-description.git
 [submodule "src/sllidar_ros2"]
 	path = src/sllidar_ros2
 	url = https://github.com/Slamtec/sllidar_ros2.git
