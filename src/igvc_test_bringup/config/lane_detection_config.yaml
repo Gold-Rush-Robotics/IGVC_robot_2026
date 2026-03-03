@@ -3,11 +3,18 @@ lane_detection_node:
     # Camera configuration
     num_cameras: 1
     camera_topics:
-      - "/zed/zed_node/rgb/image_rect_color"
+      -"front_zed_camera_x_camera_link/zed_node/rgb/color/rect/image"
+      - "/left_zed_camera_x_camera_link/zed_node/rgb/color/rect/image"
+      - "/right_zed_camera_x_camera_link/zed_node/rgb/color/rect/image"
+
     depth_topics:
-      - "/zed/zed_node/depth/depth_registered"
+      - "/front_zed_camera_x_camera_link/zed_node/depth/depth_registered"
+      - "/left_zed_camera_x_camera_link/zed_node/depth/depth_registered"
+      - "/right_zed_camera_x_camera_link/zed_node/depth/depth_registered"
     camera_info_topics:
-      - "/zed/zed_node/rgb/camera_info"
+      - "/front_zed_camera_x_camera_link/zed_node/rgb/color/rect/camera_info"
+      - "/left_zed_camera_x_camera_link/zed_node/rgb/color/rect/camera_info"
+      - "/right_zed_camera_x_camera_link/zed_node/rgb/color/rect/camera_info"
     
     # Feature flags
     use_depth: true
