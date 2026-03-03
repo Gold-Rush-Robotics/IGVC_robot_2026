@@ -1,0 +1,66 @@
+launch:
+- include:
+    file: $(find-pkg-share zed_wrapper)/launch/zed_camera.launch.py
+    arg:
+      - name: camera_name
+        value: left_zed_camera_x_camera_link
+      - name: camera_model
+        value: zedx
+      - name: sim_port
+        value: '30002'
+      - name: sim_mode
+        value: 'true'
+      - name: use_sim_time
+        value: 'false'
+      - name: publish_tf
+        value: 'false'
+      - name: publish_map_tf
+        value: 'false'
+      - name: pos_tracking_enabled
+        value: 'false'
+      - name: depth_stabilization
+        value: '0'
+
+- include:
+    file: $(find-pkg-share zed_wrapper)/launch/zed_camera.launch.py
+    arg:
+      - name: camera_name
+        value: front_zed_camera_x_camera_link
+      - name: camera_model
+        value: zedx
+      - name: sim_mode
+        value: 'true'
+      - name: sim_port
+        value: '30000'
+      - name: use_sim_time
+        value: 'false'
+      - name: publish_tf
+        value: 'false'
+      - name: publish_map_tf
+        value: 'false'
+      - name: pos_tracking_enabled
+        value: 'false'
+      - name: depth_stabilization
+        value: '0'
+
+- include:
+    file: $(find-pkg-share zed_wrapper)/launch/zed_camera.launch.py
+    arg:
+      - name: camera_name
+        value: right_zed_camera_x_camera_link
+      - name: camera_model
+        value: zedx
+      - name: sim_mode
+        value: 'true'
+      - name: sim_port
+        value: '30006'
+      - name: use_sim_time
+        value: 'false'
+      - name: publish_tf
+        value: 'false'
+      - name: publish_map_tf
+        value: 'false'
+      - name: pos_tracking_enabled
+        value: 'false'
+      - name: depth_stabilization
+        value: '0'

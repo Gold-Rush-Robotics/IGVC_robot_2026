@@ -73,13 +73,31 @@ controller_server:
           min_points: 6
           visualize: False
           enabled: True
-        # Observation sources (e.g., laser scanner, point cloud)
-        observation_sources: ["scan"]
-        scan:
-          type: "scan"
-          topic: "/scan"
-          min_height: 0.05
-          max_height: 0.5
+        # Observation sources — ZED camera depth point clouds
+        observation_sources: ["front_pointcloud", "left_pointcloud", "right_pointcloud"]
+        front_pointcloud:
+          type: "point_cloud"
+          topic: "/front_zed_camera_x_camera_link/zed_node/point_cloud/cloud_registered"
+          min_obstacle_height: 0.05
+          max_obstacle_height: 2.0
+          min_obstacle_points: 3
+          visualize: False
+          enabled: True
+        left_pointcloud:
+          type: "point_cloud"
+          topic: "/left_zed_camera_x_camera_link/zed_node/point_cloud/cloud_registered"
+          min_obstacle_height: 0.05
+          max_obstacle_height: 2.0
+          min_obstacle_points: 3
+          visualize: False
+          enabled: True
+        right_pointcloud:
+          type: "point_cloud"
+          topic: "/right_zed_camera_x_camera_link/zed_node/point_cloud/cloud_registered"
+          min_obstacle_height: 0.05
+          max_obstacle_height: 2.0
+          min_obstacle_points: 3
+          visualize: False
           enabled: True
 
     velocity_smoother:
