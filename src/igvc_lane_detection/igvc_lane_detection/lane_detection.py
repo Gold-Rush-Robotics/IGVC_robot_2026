@@ -1,5 +1,6 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 from sensor_msgs.msg import Image, CameraInfo
 from message_filters import Subscriber, ApproximateTimeSynchronizer
@@ -59,8 +60,17 @@ class LaneDetectionNode(Node):
             sync.registerCallback(self.synced_image_callback)
             self.sync_subscribers.append((rgb_sub, depth_sub, sync))
         
+        map_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+
         self.lane_center_pub = self.create_publisher(Path, lane_center_topic, 10)
-        self.occupancy_grid_pub = self.create_publisher(OccupancyGrid, '/lane_occupancy_grid', 10)
+        self.occupancy_grid_pub = self.create_publisher(OccupancyGrid, '/map', map_qos)
+        self.latest_map = self.build_empty_occupancy_grid()
+        self.map_timer = self.create_timer(1.0, self.publish_latest_map)
 
     def camera_info_callback(self, msg):
         """Store camera intrinsics from CameraInfo message."""
@@ -138,16 +148,44 @@ class LaneDetectionNode(Node):
             
             # Build and publish occupancy grid using 3D points
             occupancy_grid = self.build_occupancy_grid_3d(left_3d, right_3d, rgb_msg.header)
+            self.latest_map = occupancy_grid
             self.occupancy_grid_pub.publish(occupancy_grid)
         else:
             # Publish empty messages if no lanes detected
             lane_center_path = Path()
             lane_center_path.header = rgb_msg.header
             self.lane_center_pub.publish(lane_center_path)
-            
-            occupancy_grid = OccupancyGrid()
-            occupancy_grid.header = rgb_msg.header
+
+            occupancy_grid = self.build_empty_occupancy_grid(rgb_msg.header)
+            self.latest_map = occupancy_grid
             self.occupancy_grid_pub.publish(occupancy_grid)
+
+    def publish_latest_map(self):
+        self.latest_map.header.stamp = self.get_clock().now().to_msg()
+        self.occupancy_grid_pub.publish(self.latest_map)
+
+    def build_empty_occupancy_grid(self, header=None):
+        grid = OccupancyGrid()
+        if header is not None:
+            grid.header.stamp = header.stamp
+        else:
+            grid.header.stamp = self.get_clock().now().to_msg()
+        grid.header.frame_id = 'map'
+
+        resolution = self.grid_resolution
+        grid_width_cells = int(self.grid_width_m / resolution)
+        grid_height_cells = int(self.grid_height_m / resolution)
+
+        grid.info.resolution = resolution
+        grid.info.width = grid_width_cells
+        grid.info.height = grid_height_cells
+        grid.info.origin.position.x = 0.0
+        grid.info.origin.position.y = -self.grid_width_m / 2.0
+        grid.info.origin.position.z = 0.0
+        grid.info.origin.orientation.w = 1.0
+
+        grid.data = [-1] * (grid_width_cells * grid_height_cells)
+        return grid
 
     def lane_line_to_3d(self, line, depth_image):
         """
@@ -215,8 +253,8 @@ class LaneDetectionNode(Node):
         Grid is in robot base frame (x forward, y left).
         """
         grid = OccupancyGrid()
-        grid.header = header
-        grid.header.frame_id = 'base_link'
+        grid.header.stamp = header.stamp
+        grid.header.frame_id = 'map'
         
         resolution = self.grid_resolution
         grid_width_cells = int(self.grid_width_m / resolution)
