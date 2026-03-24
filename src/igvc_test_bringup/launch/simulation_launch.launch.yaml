@@ -3,7 +3,7 @@ launch:
     file: $(find-pkg-share zed_wrapper)/launch/zed_camera.launch.py
     arg:
       - name: camera_name
-        value: left_zed_camera_x_camera_link
+        value: left_zed_camera_x
       - name: camera_model
         value: zedx
       - name: sim_port
@@ -25,7 +25,7 @@ launch:
     file: $(find-pkg-share zed_wrapper)/launch/zed_camera.launch.py
     arg:
       - name: camera_name
-        value: front_zed_camera_x_camera_link
+        value: front_zed_camera_x
       - name: camera_model
         value: zedx
       - name: sim_mode
@@ -47,7 +47,7 @@ launch:
     file: $(find-pkg-share zed_wrapper)/launch/zed_camera.launch.py
     arg:
       - name: camera_name
-        value: right_zed_camera_x_camera_link
+        value: right_zed_camera_x
       - name: camera_model
         value: zedx
       - name: sim_mode
