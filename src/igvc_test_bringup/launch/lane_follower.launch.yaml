@@ -8,6 +8,8 @@ launch:
         - name: PYTHONNOUSERSITE
           value: '1'
       param:
+        - name: use_sim_time
+          value: true
         - from: $(find-pkg-share igvc_test_bringup)/config/lane_detection_config.yaml
 
   - node:
@@ -16,13 +18,6 @@ launch:
       name: map_to_odom_tf
       output: screen
       args: "0 0 0 0 0 0 map odom"
-
-  - node:
-      pkg: tf2_ros
-      exec: static_transform_publisher
-      name: odom_to_base_link_tf
-      output: screen
-      args: "0 0 0 0 0 0 odom base_link"
 
   # Launch nav2 with lane follow config
   - include:

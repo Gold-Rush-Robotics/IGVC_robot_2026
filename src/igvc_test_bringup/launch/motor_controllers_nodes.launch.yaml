@@ -7,7 +7,7 @@ launch:
       output: screen
       param:
         - name: use_sim_time
-          value: false
+          value: true
         - from: $(find-pkg-share igvc_test_bringup)/config/controllers.yaml
 
   # Joint State Broadcaster Spawner
