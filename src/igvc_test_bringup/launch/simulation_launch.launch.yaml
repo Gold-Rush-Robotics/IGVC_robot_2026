@@ -11,7 +11,7 @@ launch:
       - name: sim_mode
         value: 'true'
       - name: use_sim_time
-        value: 'false'
+        value: 'true'
       - name: publish_tf
         value: 'false'
       - name: publish_map_tf
@@ -33,7 +33,7 @@ launch:
       - name: sim_port
         value: '30000'
       - name: use_sim_time
-        value: 'false'
+        value: 'true'
       - name: publish_tf
         value: 'false'
       - name: publish_map_tf
@@ -55,7 +55,7 @@ launch:
       - name: sim_port
         value: '30006'
       - name: use_sim_time
-        value: 'false'
+        value: 'true'
       - name: publish_tf
         value: 'false'
       - name: publish_map_tf
