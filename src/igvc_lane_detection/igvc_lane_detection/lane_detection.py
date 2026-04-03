@@ -129,6 +129,8 @@ class LaneDetectionNode(Node):
         # ---------------------------------------------------------------- #
         self._got_frame = False
         self.create_timer(2.0, self._watchdog)
+        self._empty_path_count = 0
+        self._max_empty_before_cancel = 5  # ~5 frames tolerance
 
     # ==================================================================== #
     #  Camera info                                                           #
@@ -388,11 +390,14 @@ class LaneDetectionNode(Node):
         if left_pts is None or right_pts is None:
             return path
 
-        # Project onto (x, y) in fusion frame; sort by forward distance x
         lxy = sorted([(p[0], p[1]) for p in left_pts],  key=lambda p: p[0])
         rxy = sorted([(p[0], p[1]) for p in right_pts], key=lambda p: p[0])
-        x_max = min(lxy[-1][0], rxy[-1][0], self.grid_height_m)
 
+        # Need at least 2 points per side for meaningful interpolation
+        if len(lxy) < 2 or len(rxy) < 2:
+            return path
+
+        x_max = min(lxy[-1][0], rxy[-1][0], self.grid_height_m)
         if x_max <= 0.0:
             return path
 
@@ -472,8 +477,11 @@ class LaneDetectionNode(Node):
         if not self.enable_follow_path:
             return
         if not path.poses:
-            self._cancel_goal()
+            self._empty_path_count += 1
+            if self._empty_path_count >= self._max_empty_before_cancel:
+                self._cancel_goal()
             return
+        self._empty_path_count = 0  # reset on valid path
         if self.require_ctrl_active and not self.ctrl_active:
             self.get_logger().warn(
                 f'FollowPath blocked: controller state={self.ctrl_state_label}',
