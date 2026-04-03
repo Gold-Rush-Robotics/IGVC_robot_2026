@@ -1,4 +1,8 @@
 launch:
+  - arg:
+      name: use_sim_time
+      default: 'true'
+
   # Robot State Publisher
   - node:
       pkg: robot_state_publisher
@@ -7,7 +11,7 @@ launch:
       output: screen
       param:
         - name: use_sim_time
-          value: false
+          value: $(var use_sim_time)
         - name: robot_description 
           value: $(command 'xacro $(find-pkg-share igvc_test_description)/urdf/robots/test_robot.urdf.xacro')
   # ROS2 Control Node
@@ -18,7 +22,7 @@ launch:
       output: screen
       param:
         - name: use_sim_time
-          value: false
+          value: $(var use_sim_time)
         - from: $(find-pkg-share igvc_test_bringup)/config/controllers.yaml
 
   # Joint State Broadcaster Spawner
@@ -42,11 +46,12 @@ launch:
       output: screen
       param:
         - name: use_sim_time
-          value: false
-        - name: input_cmd_vel_topic
-          value: "/diff_drive_controller/cmd_vel_unstamped"
-        - name: output_cmd_vel_topic
-          value: "/diff_drive_controller/cmd_vel"
+          value: $(var use_sim_time)
+      remap:
+        - from: cmd_vel_in
+          to: /diff_drive_controller/cmd_vel_unstamped
+        - from: cmd_vel_out
+          to: /diff_drive_controller/cmd_vel
 
   # Joystick Node
   # - node:

@@ -15,7 +15,13 @@ def generate_launch_description():
         default_value='IsaacDriveHardware',
         description='Hardware interface to use (IsaacDriveHardware or CanInterface)'
     )
+    use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='false',
+        description='Use simulation clock if true'
+    )
     hardware_interface = LaunchConfiguration('hardware_interface')
+    use_sim_time = LaunchConfiguration('use_sim_time')
 
     # Get Local Files
     description_pkg_path = os.path.join(get_package_share_directory('igvc_test_description'))
@@ -31,7 +37,7 @@ def generate_launch_description():
     ])
 
 
-    description_params = {'robot_description': robot_description, 'use_sim_time': False }
+    description_params = {'robot_description': robot_description, 'use_sim_time': use_sim_time }
     node_robot_state_publisher = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
@@ -44,7 +50,7 @@ def generate_launch_description():
     control_node = Node(
         package="controller_manager",
         executable="ros2_control_node",
-        parameters=[{'use_sim_time': False }, controllers_file],
+        parameters=[{'use_sim_time': use_sim_time }, controllers_file],
         output="screen",
     )
 
@@ -69,7 +75,7 @@ def generate_launch_description():
     run_rviz2_node = Node(
         package='rviz2',
         executable='rviz2',
-        parameters=[{ 'use_sim_time': False }],
+        parameters=[{ 'use_sim_time': use_sim_time }],
         name='isaac_rviz2',
         output='screen',
         arguments=[["-d"], [rviz_file]],
@@ -129,6 +135,7 @@ def generate_launch_description():
     # Launch!
     return LaunchDescription([
         hardware_interface_arg,
+        use_sim_time_arg,
         control_node,
         node_robot_state_publisher,
         joint_state_broadcaster_spawner,

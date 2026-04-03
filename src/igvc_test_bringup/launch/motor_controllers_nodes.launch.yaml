@@ -1,4 +1,8 @@
 launch:
+  - arg:
+      name: use_sim_time
+      default: 'false'
+
   # ROS2 Control Node
   - node:
       pkg: controller_manager
@@ -7,7 +11,7 @@ launch:
       output: screen
       param:
         - name: use_sim_time
-          value: true
+          value: $(var use_sim_time)
         - from: $(find-pkg-share igvc_test_bringup)/config/controllers.yaml
 
   # Joint State Broadcaster Spawner
