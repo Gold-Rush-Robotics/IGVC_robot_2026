@@ -26,6 +26,8 @@ setup(
         'console_scripts': [
             'lidar_test = ivgc_lidar_test.lidar_test:main',
             'lidar_save = ivgc_lidar_test.lidar_save:main',
+            'obstical_mapping = ivgc_lidar_test.obstical_mapping:main',
+            'visualizer = ivgc_lidar_test.visualizer:main',
         ],
     },
 )
