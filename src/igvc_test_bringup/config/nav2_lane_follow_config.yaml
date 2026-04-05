@@ -1,12 +1,101 @@
+# ──────────────────────────────────────────────────────────────────────────────
+#  Nav2 params for IGVC AutoNav
+#  Key additions vs previous version:
+#    1. bt_navigator + waypoint_follower  (drives GPS waypoint loop)
+#    2. lane_layer added to local costmap (static layer fed by /lane_costmap)
+#    3. planner_server using SmacPlanner2D (better for tight obstacle avoidance)
+# ──────────────────────────────────────────────────────────────────────────────
+
+bt_navigator:
+  ros__parameters:
+    global_frame: map
+    robot_base_frame: base_link
+    odom_topic: /odom
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    # This BT drives to each waypoint in order, replanning if blocked.
+    # The NavigateThroughPoses tree handles multi-waypoint routes.
+    default_nav_to_pose_bt_xml: ""       # leave blank to use Nav2 default
+    default_nav_through_poses_bt_xml: ""
+    plugin_lib_names:
+      - nav2_compute_path_to_pose_action_bt_node
+      - nav2_follow_path_action_bt_node
+      - nav2_back_up_action_bt_node
+      - nav2_spin_action_bt_node
+      - nav2_wait_action_bt_node
+      - nav2_clear_costmap_service_bt_node
+      - nav2_is_stuck_condition_bt_node
+      - nav2_goal_reached_condition_bt_node
+      - nav2_goal_updated_condition_bt_node
+      - nav2_globally_updated_goal_condition_bt_node
+      - nav2_is_path_valid_condition_bt_node
+      - nav2_are_error_codes_present_condition_bt_node
+      - nav2_compute_path_through_poses_action_bt_node
+      - nav2_assisted_teleop_action_bt_node
+      - nav2_rate_controller_bt_node
+      - nav2_distance_controller_bt_node
+      - nav2_speed_controller_bt_node
+      - nav2_recovery_node_bt_node
+      - nav2_pipeline_sequence_bt_node
+      - nav2_round_robin_node_bt_node
+      - nav2_transform_available_condition_bt_node
+      - nav2_time_expired_condition_bt_node
+      - nav2_path_expiring_timer_condition_bt_node
+      - nav2_initial_pose_received_condition_bt_node
+      - nav2_navigate_through_poses_action_bt_node
+      - nav2_navigate_to_pose_action_bt_node
+      - nav2_remove_passed_goals_action_bt_node
+      - nav2_planner_selector_bt_node
+      - nav2_controller_selector_bt_node
+      - nav2_goal_checker_selector_bt_node
+      - nav2_controller_cancel_bt_node
+      - nav2_path_longer_on_approach_bt_node
+      - nav2_wait_cancel_bt_node
+      - nav2_spin_cancel_bt_node
+      - nav2_back_up_cancel_bt_node
+      - nav2_assisted_teleop_cancel_bt_node
+      - nav2_drive_on_heading_bt_node
+      - nav2_drive_on_heading_cancel_bt_node
+
+waypoint_follower:
+  ros__parameters:
+    loop_rate: 20
+    stop_on_failure: false    # keep going to next waypoint even if one fails
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+    wait_at_waypoint:
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: true
+      waypoint_pause_duration: 0   # no pause needed for IGVC
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 5.0
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "nav2_smac_planner/SmacPlanner2D"
+      tolerance: 0.5                   # goal tolerance (m) — generous for GPS accuracy
+      downsample_costmap: false
+      downsampling_factor: 1
+      allow_unknown: true              # needed: unknown cells exist at course edges
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      max_planning_time: 2.0
+      cost_travel_multiplier: 2.0
+      use_final_approach_orientation: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.3
+        w_data: 0.2
+        tolerance: 1.0e-10
+        do_refinement: true
+
 controller_server:
   ros__parameters:
     controller_frequency: 20.0
-    # Thresholds below which the robot is considered stationary.
-    # Keep these small — 0.5 was incorrectly high and prevented progress detection.
-    min_x_velocity_threshold: 0.001
+    min_x_velocity_threshold: 0.1
     min_y_velocity_threshold: 0.0
-    min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    min_theta_velocity_threshold: 0.3
+    failure_tolerance: 0.5
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["goal_checker"]
     controller_plugins: ["FollowPath"]
@@ -14,47 +103,40 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.3
-      movement_time_allowance: 10.0
+      movement_time_allowance: 15.0   # longer: course has tight spots
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.25
-      stateful: true   # <-- stateful belongs HERE on goal_checker, not on the controller plugin
+      xy_goal_tolerance: 0.5          # GPS is ~1-2m accuracy outdoors
+      yaw_goal_tolerance: 0.5
+      stateful: true
 
-    # Nav2 Jazzy: RegulatedPurePursuitController parameter names changed.
-    # max_linear_vel -> desired_linear_vel
-    # min/max_angular_vel, accel/decel params -> removed (use velocity_smoother)
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.5               # was max_linear_vel — renamed in Jazzy
-      lookahead_dist: 0.6
-      min_lookahead_dist: 0.3
-      max_lookahead_dist: 0.9
+      desired_linear_vel: 0.5
+      lookahead_dist: 1.2
+      min_lookahead_dist: 0.6
+      max_lookahead_dist: 2.0
       lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 1.8
-      transform_tolerance: 0.1
-      use_velocity_scaled_lookahead_dist: false
+      rotate_to_heading_angular_vel: 1.0
+      transform_tolerance: 0.2
+      use_velocity_scaled_lookahead_dist: true   # slows lookahead when decelerating
       min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 0.6
+      approach_velocity_scaling_dist: 1.0
       use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.0
-      use_regulated_linear_velocity_scaling: true
+      max_allowed_time_to_collision_up_to_carrot: 1.5
+      use_regulated_linear_velocity_scaling: true    # slow down on curves
       use_fixed_curvature_lookahead: false
-      curvature_lookahead_dist: 0.25
-      use_cost_regulated_linear_velocity_scaling: false
-      cost_scaling_dist: 0.3
-      cost_scaling_gain: 1.0
-      regulated_linear_scaling_min_radius: 0.9
+      curvature_lookahead_dist: 0.5
+      use_cost_regulated_linear_velocity_scaling: true  # slow down near obstacles
+      cost_scaling_dist: 0.6
+      cost_scaling_gain: 1.2
+      regulated_linear_scaling_min_radius: 0.8
       regulated_linear_scaling_min_speed: 0.25
       use_rotate_to_heading: true
       allow_reversing: false
       rotate_to_heading_min_angle: 0.785
       max_robot_pose_search_dist: 10.0
-      # Removed from Jazzy RPPC (were causing SIGABRT):
-      #   min_linear_vel, max/min_angular_vel
-      #   max_linear_accel/decel, max_angular_accel/decel
-      #   use_dynamic_window, stateful, min_distance_to_obstacle
 
 collision_monitor:
   ros__parameters:
@@ -63,20 +145,35 @@ collision_monitor:
     cmd_vel_in_topic: "cmd_vel_smoothed"
     cmd_vel_out_topic: "/diff_drive_controller/cmd_vel_unstamped"
     state_topic: "collision_monitor_state"
-    transform_tolerance: 0.2
+    transform_tolerance: 0.3
     source_timeout: 1.0
     base_shift_correction: true
     stop_pub_timeout: 2.0
-    polygons: ["FootprintApproach"]
-    FootprintApproach:
+    polygons: ["SlowZone", "StopZone"]
+
+    # Slow to 50% when anything enters 1.0m ahead
+    SlowZone:
       type: "polygon"
-      action_type: "approach"
+      action_type: "slowdown"
       footprint_topic: "/local_costmap/published_footprint"
-      time_before_collision: 1.2
+      time_before_collision: 2.0
       simulation_time_step: 0.1
-      min_points: 6
-      visualize: false
+      min_points: 4
+      slowdown_ratio: 0.5
+      visualize: true
       enabled: true
+
+    # Hard stop if anything enters 0.4m
+    StopZone:
+      type: "polygon"
+      action_type: "stop"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 0.8
+      simulation_time_step: 0.1
+      min_points: 4
+      visualize: true
+      enabled: true
+
     observation_sources: ["front_pointcloud", "left_pointcloud", "right_pointcloud"]
     front_pointcloud:
       type: "pointcloud"
@@ -110,27 +207,36 @@ velocity_smoother:
     cmd_vel_out_topic: "cmd_vel_smoothed"
     scale_velocities: false
     feedback: "OPEN_LOOP"
-    # Velocity/accel limits now live here, not in the controller plugin
-    max_velocity: [ 0.5,  0.0,  2.5]
-    min_velocity: [-0.5,  0.0, -2.5]
-    max_accel:    [ 2.5,  0.0,  3.2]
-    max_decel:    [-2.5,  0.0, -3.2]
+    max_velocity: [ 0.5,  0.0,  2.0]
+    min_velocity: [-0.1,  0.0, -2.0]  # allow very slight reverse for recovery
+    max_accel:    [ 1.5,  0.0,  2.5]
+    max_decel:    [-2.0,  0.0, -2.5]
     odom_topic: "odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
 
+# ──────────────────────────────────────────────────────────────────────────────
+#  Local costmap
+#  Three layers in priority order:
+#    1. obstacle_layer  — ZED pointclouds mark/clear physical obstacles
+#    2. lane_layer      — your /lane_costmap marks lane lines as lethal
+#    3. inflation_layer — inflates all obstacles by robot radius + margin
+# ──────────────────────────────────────────────────────────────────────────────
 local_costmap:
   local_costmap:
     ros__parameters:
       global_frame: odom
       robot_base_frame: base_link
+      update_frequency: 10.0
+      publish_frequency: 5.0
       rolling_window: true
-      width: 12    # integer in Jazzy — meters / resolution = cell count
+      width: 12
       height: 12
       resolution: 0.05
       footprint: "[[0.50, 0.35], [0.50, -0.35], [-0.50, -0.35], [-0.50, 0.35]]"
-      plugins: ["obstacle_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "lane_layer", "inflation_layer"]
+
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -143,7 +249,7 @@ local_costmap:
           min_obstacle_height: 0.05
           max_obstacle_height: 2.0
           obstacle_max_range: 8.0
-          obstacle_min_range: 0.2
+          obstacle_min_range: 0.3
           raytrace_max_range: 10.0
           raytrace_min_range: 0.0
         left_pointcloud:
@@ -154,7 +260,7 @@ local_costmap:
           min_obstacle_height: 0.05
           max_obstacle_height: 2.0
           obstacle_max_range: 8.0
-          obstacle_min_range: 0.2
+          obstacle_min_range: 0.3
           raytrace_max_range: 10.0
           raytrace_min_range: 0.0
         right_pointcloud:
@@ -165,22 +271,38 @@ local_costmap:
           min_obstacle_height: 0.05
           max_obstacle_height: 2.0
           obstacle_max_range: 8.0
-          obstacle_min_range: 0.2
+          obstacle_min_range: 0.3
           raytrace_max_range: 10.0
           raytrace_min_range: 0.0
+
+      # Lane lines published by your lane_detection_node as /lane_costmap.
+      # StaticLayer subscribes to that OccupancyGrid and marks cells ≥ lethal_cost_threshold
+      # as LETHAL_OBSTACLE (254) in the costmap.  The planner will route around them.
+      lane_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: false   # non-transient: accept live updates
+        subscribe_to_updates: true
+        map_topic: "/lane_costmap"
+        lethal_cost_threshold: 90             # cells with cost ≥ 90 become lethal
+        unknown_cost_value: -1
+        track_unknown_space: false
+        use_maximum: true                     # don't let this layer clear obstacle_layer marks
+
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.6
+        cost_scaling_factor: 2.5
+        inflation_radius: 0.7               # 0.35m robot half-width + 0.35m margin
 
 global_costmap:
   global_costmap:
     ros__parameters:
       global_frame: map
       robot_base_frame: base_link
+      update_frequency: 2.0
+      publish_frequency: 1.0
       rolling_window: true
-      width: 20    # integer in Jazzy
-      height: 20
+      width: 30
+      height: 30
       resolution: 0.10
       track_unknown_space: false
       footprint: "[[0.50, 0.35], [0.50, -0.35], [-0.50, -0.35], [-0.50, 0.35]]"
@@ -197,7 +319,7 @@ global_costmap:
           min_obstacle_height: 0.05
           max_obstacle_height: 2.0
           obstacle_max_range: 10.0
-          obstacle_min_range: 0.2
+          obstacle_min_range: 0.3
           raytrace_max_range: 12.0
           raytrace_min_range: 0.0
         left_pointcloud:
@@ -208,7 +330,7 @@ global_costmap:
           min_obstacle_height: 0.05
           max_obstacle_height: 2.0
           obstacle_max_range: 10.0
-          obstacle_min_range: 0.2
+          obstacle_min_range: 0.3
           raytrace_max_range: 12.0
           raytrace_min_range: 0.0
         right_pointcloud:
@@ -219,10 +341,10 @@ global_costmap:
           min_obstacle_height: 0.05
           max_obstacle_height: 2.0
           obstacle_max_range: 10.0
-          obstacle_min_range: 0.2
+          obstacle_min_range: 0.3
           raytrace_max_range: 12.0
           raytrace_min_range: 0.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.8
+        cost_scaling_factor: 2.0
+        inflation_radius: 0.9
