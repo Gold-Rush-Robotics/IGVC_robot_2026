@@ -1,10 +1,13 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
+from rclpy.duration import Duration
 
 from sensor_msgs.msg import Image, CameraInfo
 from nav_msgs.msg import OccupancyGrid
 from message_filters import Subscriber, ApproximateTimeSynchronizer
+from tf2_ros import Buffer, TransformListener
 
 import cv2
 import numpy as np
@@ -31,6 +34,11 @@ class LaneDetectionNode(Node):
         self.grid_width_m       = p('grid_width',            10.0)
         self.grid_height_m      = p('grid_height',           10.0)
         self.publish_overlay    = p('publish_overlay',        True)
+        self.fusion_timeout_sec = p('fusion_timeout_sec',      0.5)
+        self.keep_last_grid_on_miss = p('keep_last_grid_on_miss', True)
+        self.min_lane_points    = p('min_lane_points',         6)
+
+        self.occupancy_grid_frame = p('occupancy_grid_frame', self.base_frame)
 
         num_cameras  = p('num_cameras',        1)
         cam_topics   = p('camera_topics',      ['/camera/image_raw'])
@@ -68,6 +76,10 @@ class LaneDetectionNode(Node):
             depth=1)
         self.grid_pub    = self.create_publisher(OccupancyGrid, '/lane_costmap', map_qos)
         self.latest_grid = self._empty_grid()
+        self._cam_state = {}
+
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # Republish last known grid every second so Nav2 costmap stays populated
         # even if the frame rate dips or the camera briefly drops frames.
@@ -108,14 +120,58 @@ class LaneDetectionNode(Node):
         right_3d = self._line_to_3d(right_px, depth, cam_idx)
         left_3d, right_3d = self._fill_missing(left_3d, right_3d)
 
-        self.latest_grid = self._build_grid(left_3d, right_3d, rgb_msg.header.stamp)
-        self.grid_pub.publish(self.latest_grid)
+        self._cam_state[cam_idx] = {
+            'stamp': rgb_msg.header.stamp,
+            'left_3d': left_3d,
+            'right_3d': right_3d,
+        }
+
+        fused_left, fused_right = self._fuse_lanes(rgb_msg.header.stamp)
+
+        if fused_left is not None and fused_right is not None:
+            new_grid = self._build_grid(fused_left, fused_right, rgb_msg.header.stamp)
+            self.latest_grid = new_grid
+            self.grid_pub.publish(self.latest_grid)
+        elif self.keep_last_grid_on_miss:
+            self.latest_grid.header.stamp = rgb_msg.header.stamp
+            self.grid_pub.publish(self.latest_grid)
+        else:
+            self.latest_grid = self._empty_grid(rgb_msg.header.stamp)
+            self.grid_pub.publish(self.latest_grid)
 
         self.get_logger().info(
             f'cam[{cam_idx}] left={left_px is not None} right={right_px is not None} '
             f'left_3d={0 if left_3d is None else len(left_3d)} '
-            f'right_3d={0 if right_3d is None else len(right_3d)}',
+            f'right_3d={0 if right_3d is None else len(right_3d)} '
+            f'active_cams={len(self._active_cam_states(rgb_msg.header.stamp))}',
             throttle_duration_sec=1.0)
+
+    def _active_cam_states(self, stamp):
+        now_t = Time.from_msg(stamp)
+        active = []
+        for state in self._cam_state.values():
+            dt = (now_t - Time.from_msg(state['stamp'])).nanoseconds / 1e9
+            if dt <= self.fusion_timeout_sec:
+                active.append(state)
+        return active
+
+    def _fuse_lanes(self, stamp):
+        active = self._active_cam_states(stamp)
+        if not active:
+            return None, None
+
+        left_pts = []
+        right_pts = []
+        for state in active:
+            if state['left_3d'] is not None:
+                left_pts.extend(state['left_3d'])
+            if state['right_3d'] is not None:
+                right_pts.extend(state['right_3d'])
+
+        if len(left_pts) < self.min_lane_points or len(right_pts) < self.min_lane_points:
+            return None, None
+
+        return left_pts, right_pts
 
     # ── Lane detection ────────────────────────────────────────────────────
 
@@ -255,17 +311,59 @@ class LaneDetectionNode(Node):
     def _empty_grid(self, stamp=None):
         g = OccupancyGrid()
         g.header.stamp    = self.get_clock().now().to_msg() if stamp is None else stamp
-        g.header.frame_id = self.base_frame
+        g.header.frame_id = self.occupancy_grid_frame
         W = int(self.grid_width_m  / self.grid_res)
         H = int(self.grid_height_m / self.grid_res)
         g.info.resolution = self.grid_res
         g.info.width      = W
         g.info.height     = H
-        g.info.origin.position.x   =  0.0
-        g.info.origin.position.y   = -self.grid_width_m / 2.0
-        g.info.origin.orientation.w = 1.0
+
+        if self.occupancy_grid_frame == self.base_frame:
+            g.info.origin.position.x = 0.0
+            g.info.origin.position.y = -self.grid_width_m / 2.0
+            g.info.origin.orientation.w = 1.0
+        else:
+            tf = self._lookup_tf(self.occupancy_grid_frame, self.base_frame, stamp)
+            if tf is None:
+                g.info.origin.position.x = 0.0
+                g.info.origin.position.y = -self.grid_width_m / 2.0
+                g.info.origin.orientation.w = 1.0
+            else:
+                q = tf.transform.rotation
+                yaw = np.arctan2(
+                    2.0 * (q.w * q.z + q.x * q.y),
+                    1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+                )
+                tx = tf.transform.translation.x
+                ty = tf.transform.translation.y
+
+                g.info.origin.position.x = tx + np.sin(yaw) * (self.grid_width_m / 2.0)
+                g.info.origin.position.y = ty - np.cos(yaw) * (self.grid_width_m / 2.0)
+                g.info.origin.position.z = tf.transform.translation.z
+                g.info.origin.orientation = q
+
         g.data = [-1] * (W * H)
         return g
+
+    def _lookup_tf(self, target_frame, source_frame, stamp):
+        try:
+            t = Time.from_msg(stamp) if stamp is not None else Time()
+            return self.tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                t,
+                timeout=Duration(seconds=0.05),
+            )
+        except Exception:
+            try:
+                return self.tf_buffer.lookup_transform(
+                    target_frame,
+                    source_frame,
+                    Time(),
+                    timeout=Duration(seconds=0.05),
+                )
+            except Exception:
+                return None
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
