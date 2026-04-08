@@ -6,16 +6,18 @@
   <xacro:property name="hardware_interface_value" value="$(arg hardware_interface)" />
   
   <ros2_control name="igvc_test_bot" type="system">
-      <plugin>grr_hardware/$(arg hardware_interface)</plugin>
+    <hardware>
       <xacro:if value="${hardware_interface_value == 'CanInterface'}">
-         <hardware>
-          <plugin>odrive_ros2_control_plugin/ODriveHardwareInterface</plugin>
-          <param name="can">can0</param>
-        </hardware>
+        <plugin>odrive_ros2_control_plugin/ODriveHardwareInterface</plugin>
+        <param name="can">can0</param>
       </xacro:if>
+      <xacro:unless value="${hardware_interface_value == 'CanInterface'}">
+        <plugin>grr_hardware/$(arg hardware_interface)</plugin>
+      </xacro:unless>
+    </hardware>
     <joint name="right_wheel_joint">
       <xacro:if value="${hardware_interface_value == 'CanInterface'}">
-         <param name="node_id">1</param>
+         <param name="node_id">0</param>
       </xacro:if>
       <command_interface name="velocity">
         <param name="min">-22</param>
@@ -26,7 +28,7 @@
     </joint>
     <joint name="left_wheel_joint">
       <xacro:if value="${hardware_interface_value == 'CanInterface'}">
-         <param name="node_id">0</param>
+         <param name="node_id">3</param>
       </xacro:if>
       <command_interface name="velocity">
         <param name="min">-22</param>
