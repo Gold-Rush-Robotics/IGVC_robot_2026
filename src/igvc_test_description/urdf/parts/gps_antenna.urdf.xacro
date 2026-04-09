@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+	<xacro:macro name="gps_antenna" params="parent *origin prefix">
+		<joint name="${prefix}_gps_antenna_joint" type="fixed">
+			<parent link="${parent}"/>
+			<child link="${prefix}_gps_antenna_link"/>
+			<xacro:insert_block name="origin"/>
+		</joint>
+
+		<link name="${prefix}_gps_antenna_link">
+			<inertial>
+				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<mass value="0.22"/>
+				<inertia ixx="0.0003" ixy="0.0" ixz="0.0" iyy="0.0003" iyz="0.0" izz="0.0003"/>
+			</inertial>
+
+			<visual>
+				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<geometry>
+					<mesh filename="package://igvc_test_description/meshes/gps_antenna.obj" scale="1 1 1"/>
+				</geometry>
+			</visual>
+
+			<collision>
+				<origin xyz="0 0 0" rpy="0 0 0"/>
+				<geometry>
+					<mesh filename="package://igvc_test_description/meshes/gps_antenna.obj" scale="1 1 1"/>
+				</geometry>
+			</collision>
+		</link>
+	</xacro:macro>
+</robot>

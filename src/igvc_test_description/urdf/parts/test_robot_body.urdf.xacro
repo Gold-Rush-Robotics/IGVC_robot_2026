@@ -119,6 +119,24 @@
           <mesh filename="file:///home/nitin-5090/Documents/DevEnv/jazzy_ws/IGVC_robot_2026/src/igvc_test_description/meshes/_FE2CBA3_2B86_49A6_86C6_46C335366A6A.obj" scale="1. 1. 1." />
         </geometry>
       </visual>
+      <visual>
+        <origin xyz="0.13 0. 0.005" rpy="0. 0. 0." />
+        <geometry>
+          <box size="0.9 0.45 0.01" />
+        </geometry>
+      </visual>
+      <visual>
+        <origin xyz="0.225 0. 0.085" rpy="0. 0. 0." />
+        <geometry>
+          <box size="0.45 0.45 0.15" />
+        </geometry>
+      </visual>
+      <visual>
+        <origin xyz="0.225 0. 0.31" rpy="0. 0. 0." />
+        <geometry>
+          <box size="0.05 0.05 0.3" />
+        </geometry>
+      </visual>
       <collision>
         <origin xyz="0. 0. 0." rpy="0. 0. 1.570796" />
         <geometry>

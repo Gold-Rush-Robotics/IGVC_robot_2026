@@ -19,3 +19,6 @@
 [submodule "src/ros_odrive"]
 	path = src/ros_odrive
 	url = https://github.com/odriverobotics/ros_odrive.git
+[submodule "src/ros2-ublox-zedf9p"]
+	path = src/ros2-ublox-zedf9p
+	url = https://github.com/AAU-Space-Robotics/ros2-ublox-zedf9p.git
