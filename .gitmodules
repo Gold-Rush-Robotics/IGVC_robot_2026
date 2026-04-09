@@ -16,3 +16,6 @@
 [submodule "src/sllidar_ros2"]
 	path = src/sllidar_ros2
 	url = https://github.com/Slamtec/sllidar_ros2.git
+[submodule "src/ros2-ublox-zedf9p"]
+	path = src/ros2-ublox-zedf9p
+	url = https://github.com/AAU-Space-Robotics/ros2-ublox-zedf9p.git
