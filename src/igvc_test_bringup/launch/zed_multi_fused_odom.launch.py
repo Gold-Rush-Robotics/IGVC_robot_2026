@@ -113,6 +113,6 @@ def generate_launch_description() -> LaunchDescription:
             default_value='/right_zed_camera_x/zed_node/odom',
             description='Right camera odom topic.',
         ),
-        zed_multi_launch,
+        # zed_multi_launch,
         ekf_node,
     ])

@@ -64,8 +64,8 @@ def generate_launch_description() -> LaunchDescription:
         output='screen',
         parameters=[
             {'use_sim_time': use_sim_time},
-            # {'publish_odom': True},
-            {'publish_tf': True},
+            {'publish_odom': True},
+            # {'publish_tf': True},
             gps_config,
         ],
     )
@@ -79,7 +79,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             'gps_enabled',
-            default_value='false',
+            default_value='true',
             choices=['true', 'false'],
             description='Enable GPS-driven localization logic if true.',
         ),
