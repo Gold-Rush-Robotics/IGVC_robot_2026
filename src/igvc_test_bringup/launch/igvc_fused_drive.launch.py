@@ -13,6 +13,7 @@ def generate_launch_description() -> LaunchDescription:
     use_sim_time = LaunchConfiguration('use_sim_time')
     gps_enabled = LaunchConfiguration('gps_enabled')
     hardware_interface = LaunchConfiguration('hardware_interface')
+    gps_config = PathJoinSubstitution([bringup, 'config', 'zed_f9p.yaml'])
     
 
     zed_multi_fused_odom = IncludeLaunchDescription(
@@ -56,6 +57,18 @@ def generate_launch_description() -> LaunchDescription:
             {'base_frame_id': 'base_link'},
         ],
     )
+    gps_node = Node(
+        package='ublox_gps',
+        executable='ublox_gps_node',
+        name='ublox_gps_node',
+        output='screen',
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            # {'publish_odom': True},
+            {'publish_tf': True},
+            gps_config,
+        ],
+    )
 
 
     return LaunchDescription([
@@ -79,4 +92,5 @@ def generate_launch_description() -> LaunchDescription:
         motor_controllers,
         lane_follower,
         # odom_tf_bridge_node,
+        gps_node,
     ])
