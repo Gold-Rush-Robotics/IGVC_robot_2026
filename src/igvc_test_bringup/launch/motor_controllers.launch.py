@@ -119,6 +119,6 @@ def generate_launch_description():
         joint_state_broadcaster_spawner,
         diff_drive_spawner,
         # rviz2_delay,
-        # joy,
-        # joy_teleop
+        joy,
+        joy_teleop
     ])
