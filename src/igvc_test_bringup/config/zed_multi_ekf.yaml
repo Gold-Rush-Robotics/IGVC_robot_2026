@@ -1,0 +1,42 @@
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    publish_tf: true
+    publish_acceleration: false
+    predict_to_current_time: true
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+
+    odom0: /left_zed_camera_x/zed_node/odom
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, true,
+                   false, false, false]
+
+    odom1: /front_zed_camera_x/zed_node/odom
+    odom1_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, true,
+                   false, false, false]
+
+    odom2: /right_zed_camera_x/zed_node/odom
+    odom2_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, true,
+                   false, false, false]
+
+    odom0_queue_size: 10
+    odom1_queue_size: 10
+    odom2_queue_size: 10
+
+    odom0_nodelay: true
+    odom1_nodelay: true
+    odom2_nodelay: true
