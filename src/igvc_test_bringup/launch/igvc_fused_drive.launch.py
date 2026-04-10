@@ -90,7 +90,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         zed_multi_fused_odom,
         motor_controllers,
-        lane_follower,
+        # lane_follower,
         # odom_tf_bridge_node,
         gps_node,
     ])
