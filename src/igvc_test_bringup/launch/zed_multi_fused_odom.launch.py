@@ -36,11 +36,15 @@ def generate_launch_description() -> LaunchDescription:
         }.items(),
     )
 
+    # Add these remappings so all cameras are in the same odom frame
     ekf_node = Node(
         package='robot_localization',
         executable='ekf_node',
         name='zed_multi_ekf',
         output='screen',
+        remappings=[
+            ('/odometry/filtered', '/odom'),  # standardize output topic
+        ],
         parameters=[
             PathJoinSubstitution([bringup, 'config', 'zed_multi_ekf.yaml']),
             {
