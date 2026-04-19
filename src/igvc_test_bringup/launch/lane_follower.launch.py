@@ -128,7 +128,7 @@ def generate_launch_description() -> LaunchDescription:
         use_sim_time_arg,
         lane_detection_node,
         localization_node,
-        odom_tf_bridge_node,
+        # odom_tf_bridge_node,
         navigator_node,
         static_map_odom_tf,
         nav2_launch,
