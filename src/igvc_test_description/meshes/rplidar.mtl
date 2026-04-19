@@ -1,0 +1,91 @@
+# File produced by Open Asset Import Library (http://www.assimp.sf.net)
+# (assimp v5.4.0)
+
+newmtl Diffuse
+Kd 0.400000006 0.400000006 0.400000006
+illum 1
+
+newmtl Diffuse_1
+Kd 0.650980413 0.639215708 0.768627465
+illum 1
+
+newmtl Diffuse_2
+Kd 0.298023969 0.298023969 0.298023969
+illum 1
+
+newmtl Diffuse_3
+Kd 0.800000012 0.800000012 0.800000012
+illum 1
+
+newmtl Diffuse_4
+Kd 1 0 0
+illum 1
+
+newmtl Diffuse_5
+Kd 1 1 0
+illum 1
+
+newmtl Diffuse_6
+Kd 0 0.600000024 0
+illum 1
+
+newmtl Diffuse_7
+Kd 0.200000003 0.200000003 0.200000003
+illum 1
+
+newmtl Diffuse_8
+Kd 0.61174947 0.454901963 0.16076906
+illum 1
+
+newmtl Diffuse_9
+Kd 0.670572996 0.596063197 0.321553379
+illum 1
+
+newmtl Diffuse_10
+Kd 0.490196079 0.490196079 0.490196079
+illum 1
+
+newmtl Diffuse
+Kd 0.400000006 0.400000006 0.400000006
+illum 1
+
+newmtl Diffuse_1
+Kd 0.650980413 0.639215708 0.768627465
+illum 1
+
+newmtl Diffuse_2
+Kd 0.298023969 0.298023969 0.298023969
+illum 1
+
+newmtl Diffuse_3
+Kd 0.800000012 0.800000012 0.800000012
+illum 1
+
+newmtl Diffuse_4
+Kd 1 0 0
+illum 1
+
+newmtl Diffuse_5
+Kd 1 1 0
+illum 1
+
+newmtl Diffuse_6
+Kd 0 0.600000024 0
+illum 1
+
+newmtl Diffuse_7
+Kd 0.200000003 0.200000003 0.200000003
+illum 1
+
+newmtl Diffuse_8
+Kd 0.61174947 0.454901963 0.16076906
+illum 1
+
+newmtl Diffuse_9
+Kd 0.670572996 0.596063197 0.321553379
+illum 1
+
+newmtl Diffuse_10
+Kd 0.490196079 0.490196079 0.490196079
+illum 1
+
