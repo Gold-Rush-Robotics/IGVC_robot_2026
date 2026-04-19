@@ -1,0 +1,173 @@
+import os
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration, TextSubstitution
+
+
+def _parse_array_param(raw_value: str):
+    value = raw_value.replace('[', '').replace(']', '').replace(' ', '')
+    items = value.split(',')
+    if len(items) == 1 and items[0] == '':
+        return []
+    return items
+
+
+def launch_setup(context, *args, **kwargs):
+    actions = []
+
+    cam_names = _parse_array_param(LaunchConfiguration('cam_names').perform(context))
+    cam_models = _parse_array_param(LaunchConfiguration('cam_models').perform(context))
+    cam_serials = _parse_array_param(LaunchConfiguration('cam_serials').perform(context))
+    cam_ids = _parse_array_param(LaunchConfiguration('cam_ids').perform(context))
+    sim_ports = _parse_array_param(LaunchConfiguration('sim_ports').perform(context))
+
+    namespace = LaunchConfiguration('namespace').perform(context)
+    use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
+    sim_mode = LaunchConfiguration('sim_mode').perform(context)
+    disable_tf = LaunchConfiguration('disable_tf').perform(context).lower() == 'true'
+
+    num_cams = len(cam_names)
+
+    if num_cams == 0:
+        return [LogInfo(msg=TextSubstitution(text='No cameras configured in cam_names.'))]
+
+    if num_cams != len(cam_models):
+        return [
+            LogInfo(
+                msg=TextSubstitution(
+                    text='`cam_models` must have the same length as `cam_names`.'
+                )
+            )
+        ]
+
+    if len(cam_serials) not in (0, num_cams):
+        return [
+            LogInfo(
+                msg=TextSubstitution(
+                    text='`cam_serials` must be empty or the same length as `cam_names`.'
+                )
+            )
+        ]
+
+    if len(cam_ids) not in (0, num_cams):
+        return [
+            LogInfo(
+                msg=TextSubstitution(
+                    text='`cam_ids` must be empty or the same length as `cam_names`.'
+                )
+            )
+        ]
+
+    if len(sim_ports) not in (0, num_cams):
+        return [
+            LogInfo(
+                msg=TextSubstitution(
+                    text='`sim_ports` must be empty or the same length as `cam_names`.'
+                )
+            )
+        ]
+
+    zed_camera_launch = os.path.join(
+        get_package_share_directory('zed_wrapper'),
+        'launch',
+        'zed_camera.launch.py',
+    )
+
+    for idx, camera_name in enumerate(cam_names):
+        camera_model = cam_models[idx]
+        serial_number = cam_serials[idx] if len(cam_serials) == num_cams else '0'
+        camera_id = cam_ids[idx] if len(cam_ids) == num_cams else '-1'
+        sim_port = sim_ports[idx] if len(sim_ports) == num_cams else ''
+
+        publish_tf = 'false'
+        publish_map_tf = 'false'
+        if not disable_tf and idx == 0:
+            publish_tf = 'true'
+            publish_map_tf = 'true'
+
+        info = (
+            f'* Starting ZED camera: {camera_name} ({camera_model}), '
+            f'publish_tf={publish_tf}, use_sim_time={use_sim_time}'
+        )
+        actions.append(LogInfo(msg=TextSubstitution(text=info)))
+
+        launch_arguments = {
+            'camera_name': camera_name,
+            'camera_model': camera_model,
+            'serial_number': serial_number,
+            'camera_id': camera_id,
+            'use_sim_time': use_sim_time,
+            'sim_mode': sim_mode,
+            'publish_tf': publish_tf,
+            'publish_map_tf': publish_map_tf,
+        }
+
+        if namespace:
+            launch_arguments['namespace'] = namespace
+        if sim_port:
+            launch_arguments['sim_port'] = sim_port
+
+        actions.append(
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(zed_camera_launch),
+                launch_arguments=launch_arguments.items(),
+            )
+        )
+
+    return actions
+
+
+def generate_launch_description():
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                'cam_names',
+                default_value='[left_zed_camera_x,front_zed_camera_x,right_zed_camera_x]',
+                description='Camera names array.',
+            ),
+            DeclareLaunchArgument(
+                'cam_models',
+                default_value='[zedx,zedx,zedx]',
+                description='Camera models array.',
+            ),
+            DeclareLaunchArgument(
+                'cam_serials',
+                default_value='[43593214,40636496,46941578]',
+                description='Optional camera serials array (or empty).',
+            ),
+            DeclareLaunchArgument(
+                'cam_ids',
+                default_value='[]',
+                description='Optional camera IDs array (or empty).',
+            ),
+            DeclareLaunchArgument(
+                'sim_ports',
+                default_value='[]',
+                description='Optional simulation ports array (or empty).',
+            ),
+            DeclareLaunchArgument(
+                'namespace',
+                default_value='',
+                description='Optional top-level namespace. Keep empty for existing IGVC topics.',
+            ),
+            DeclareLaunchArgument(
+                'use_sim_time',
+                default_value='false',
+                description='Use simulation clock if true.',
+            ),
+            DeclareLaunchArgument(
+                'sim_mode',
+                default_value='false',
+                description='Enable ZED simulation mode if true.',
+            ),
+            DeclareLaunchArgument(
+                'disable_tf',
+                default_value='true',
+                description='Disable ZED odom/map TF publishing for all cameras.',
+            ),
+            OpaqueFunction(function=launch_setup),
+        ]
+    )
