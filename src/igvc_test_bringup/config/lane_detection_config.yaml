@@ -22,8 +22,10 @@ lane_detection_node:
     use_depth: true
 
     # Multi-camera lane fusion
-    lane_fusion_frame: "base_link"
+    lane_fusion_frame: "map"
     fusion_timeout_sec: 0.5
+    keep_last_grid_on_miss: true
+    min_lane_points: 8
 
     # TF requirements for FollowPath goal dispatch
     required_tf_target_frame: "odom"
@@ -36,7 +38,7 @@ lane_detection_node:
     # Output topics
     lane_center_debug_topic: "/lane_center_debug"
     occupancy_grid_topic: "/map"
-    occupancy_grid_frame: "base_link"
+    occupancy_grid_frame: "odom"
 
     # Nav2 FollowPath action bridge
     enable_follow_path_action: true
