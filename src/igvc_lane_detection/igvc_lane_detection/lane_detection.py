@@ -13,8 +13,6 @@ import cv2
 import numpy as np
 from cv_bridge import CvBridge
 
-MIN_ABS_SLOPE = 0.3
-
 
 class LaneDetectionNode(Node):
     def __init__(self):
@@ -38,6 +36,24 @@ class LaneDetectionNode(Node):
         self.keep_last_grid_on_miss = p('keep_last_grid_on_miss',    True)
         self.min_lane_points        = p('min_lane_points',            6)
         self.occupancy_grid_frame   = p('occupancy_grid_frame',      self.base_frame)
+
+        # ── Chassis / ROI exclusion ────────────────────────────────────────
+        # chassis_mask_frac: fraction of image height to black out from the
+        # bottom BEFORE any processing.  Removes the robot's own body from
+        # the field of view entirely.  0.0 = no masking.  Start at ~0.15 and
+        # increase until the chassis disappears from the overlay.
+        self.chassis_mask_frac  = p('chassis_mask_frac',   0.15)
+        # roi_bottom_frac: how far down the trapezoid ROI extends (0–1).
+        # Lowering this lifts the ROI off the chassis.  Must be greater than
+        # roi_top_frac.  Ignored rows still benefit from chassis_mask_frac.
+        self.roi_bottom_frac    = p('roi_bottom_frac',     0.82)
+        # roi_top_frac: vertical position of the top edge of the ROI trapezoid.
+        self.roi_top_frac       = p('roi_top_frac',        0.55)
+        # Minimum depth accepted during 3-D projection.  Points closer than
+        # this are treated as belonging to the robot chassis and discarded.
+        # The original value was 0.1 m; 1.0 m safely excludes all chassis
+        # geometry while keeping road-level lane markings.
+        self.min_detection_depth_m = p('min_detection_depth_m', 1.0)
 
         # ── Persistent map parameters ──────────────────────────────────────
         # The persistent map lives in a fixed frame (default: odom) and
@@ -281,66 +297,66 @@ class LaneDetectionNode(Node):
         return left_pts, right_pts
 
     # ═══════════════════════════════════════════════════════════════════════
-    # Lane detection  ── lighting-robust pipeline
+    # Lane detection  ── lean, lighting-robust pipeline
     # ═══════════════════════════════════════════════════════════════════════
     #
-    # The original pipeline used raw HSV thresholds which fail badly when
-    # lighting is uneven, dim, or very bright.  The new pipeline adds two
-    # layers of robustness before colour classification:
+    # Design rationale
+    # ────────────────
+    # White/yellow paint on black asphalt is extremely high contrast; we do
+    # NOT need adaptive thresholding or morphological closing — those steps
+    # were destroying thin distant lines.  The pipeline is now:
     #
-    #  1. CLAHE (Contrast Limited Adaptive Histogram Equalisation) on the
-    #     L channel of LAB.  This stretches contrast locally so that faint
-    #     lane markings pop out even in deep shadow or glare.
+    #   chassis mask → CLAHE (L channel) → grayscale Canny → ROI → Hough
     #
-    #  2. Adaptive Gaussian thresholding directly on the equalised L channel
-    #     as a colour-agnostic fallback.  It picks up bright-relative
-    #     markings (white, yellow, even retroreflective lines under
-    #     headlights) regardless of absolute brightness.
-    #
-    #  The two masks are OR-ed together before edge detection, which makes
-    #  Hough considerably more stable across lighting conditions.
+    # Line classification is done purely by where each segment's midpoint
+    # sits relative to the image centre column.  The old slope filter
+    # (MIN_ABS_SLOPE = 0.3) was killing distant lines whose image-space
+    # slope approaches zero as they near the vanishing point; it is gone.
+    # Truly horizontal noise (|dy| < 3 px) is the only shape rejected.
 
     def _detect_lanes(self, bgr):
-        # ── Step 1: CLAHE contrast normalisation ─────────────────────────
+        h_img, w_img = bgr.shape[:2]
+
+        # ── Step 0: Chassis mask ─────────────────────────────────────────
+        if self.chassis_mask_frac > 0.0:
+            bgr = bgr.copy()
+            cut = int(h_img * (1.0 - self.chassis_mask_frac))
+            bgr[cut:, :] = 0
+
+        # ── Step 1: CLAHE on L channel for lighting robustness ──────────
+        # Equalises local contrast so faint markings in shadow/glare are
+        # lifted to detectable brightness before Canny.
         lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
         l, a, b_ch = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         l_eq  = clahe.apply(l)
-        bgr_eq = cv2.cvtColor(cv2.merge([l_eq, a, b_ch]), cv2.COLOR_LAB2BGR)
 
-        # ── Step 2: Colour mask on the contrast-equalised image ───────────
-        # Loosen the value range slightly versus the original so markings
-        # that were clipped by the old thresholds are still caught.
-        hsv = cv2.cvtColor(bgr_eq, cv2.COLOR_BGR2HSV)
-        white_mask  = cv2.inRange(hsv,
-                                   np.array([0,   0, 160]),
-                                   np.array([180, 55, 255]))
-        yellow_mask = cv2.inRange(hsv,
-                                   np.array([15, 60,  80]),
-                                   np.array([40, 255, 255]))
-        color_mask = cv2.bitwise_or(white_mask, yellow_mask)
+        # ── Step 2: Colour mask (white + yellow) ────────────────────────
+        # Run on the CLAHE-brightened image so dim markings aren't missed.
+        bgr_eq     = cv2.cvtColor(cv2.merge([l_eq, a, b_ch]), cv2.COLOR_LAB2BGR)
+        hsv        = cv2.cvtColor(bgr_eq, cv2.COLOR_BGR2HSV)
+        white_mask  = cv2.inRange(hsv, np.array([0,  0, 160]), np.array([180, 55, 255]))
+        yellow_mask = cv2.inRange(hsv, np.array([15, 60,  80]), np.array([40, 255, 255]))
+        color_mask  = cv2.bitwise_or(white_mask, yellow_mask)
 
-        # ── Step 3: Adaptive threshold on equalised L channel ─────────────
-        # blockSize=15 and C=-5 highlight regions that are locally brighter
-        # than their neighbourhood — exactly what lane markings look like.
-        adapt = cv2.adaptiveThreshold(
-            l_eq, 255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            blockSize=15, C=-5)
+        # ── Step 3: Canny on CLAHE-equalised greyscale ──────────────────
+        # Use a 3×3 Gaussian (not 5×5) — distant lines are 1-2 px wide;
+        # a larger blur smears them below Canny's hysteresis thresholds.
+        blurred = cv2.GaussianBlur(l_eq, (3, 3), 0)
+        edges_l  = cv2.Canny(blurred, 40, 120)
 
-        # ── Step 4: Combine both cues ─────────────────────────────────────
-        combined = cv2.bitwise_or(color_mask, adapt)
+        # Also run Canny on the colour mask to catch bold nearby markings.
+        edges_c = cv2.Canny(color_mask, 50, 150)
 
-        kernel   = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
-        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN,  kernel)
-
-        edges = cv2.Canny(combined, 50, 150)
+        edges = cv2.bitwise_or(edges_l, edges_c)
         roi   = self._apply_roi(edges)
 
-        hough = cv2.HoughLinesP(roi, 1, np.pi / 180,
-                                threshold=30, minLineLength=40, maxLineGap=200)
+        # ── Step 4: Probabilistic Hough ─────────────────────────────────
+        # minLineLength=15  — catches short distant segments
+        # maxLineGap=100    — bridges dashes without merging sky edges
+        # threshold=20      — lower vote threshold for faint distant lines
+        hough = cv2.HoughLinesP(roi, rho=1, theta=np.pi / 180,
+                                threshold=20, minLineLength=15, maxLineGap=100)
         if hough is None:
             return None, None, None
 
@@ -350,43 +366,63 @@ class LaneDetectionNode(Node):
     def _apply_roi(self, img):
         mask = np.zeros_like(img)
         r, c = img.shape[:2]
+        bot  = self.roi_bottom_frac
+        top  = self.roi_top_frac
         pts  = np.array([[
-            [c * 0.05, r * 0.98],
-            [c * 0.35, r * 0.55],
-            [c * 0.65, r * 0.55],
-            [c * 0.95, r * 0.98],
+            [c * 0.05, r * bot],
+            [c * 0.30, r * top],
+            [c * 0.70, r * top],
+            [c * 0.95, r * bot],
         ]], dtype=np.int32)
         cv2.fillPoly(mask, pts, 255)
         return cv2.bitwise_and(img, mask)
 
     def _fit_lines(self, img, hough):
         h, w = img.shape[:2]
+        y_bot = int(h * self.roi_bottom_frac)
+        y_top = int(h * self.roi_top_frac)
+
         left_segs,  left_wts  = [], []
         right_segs, right_wts = [], []
 
         for seg in hough:
             x1, y1, x2, y2 = seg[0]
-            dx = x2 - x1
-            if dx == 0:
+
+            # Reject perfectly horizontal noise (sky horizon, roof edges).
+            # A lane marking always has SOME vertical component in a forward
+            # camera; 3 px is deliberately tiny to keep distant lines.
+            if abs(y2 - y1) < 3:
                 continue
-            slope = (y2 - y1) / dx
-            if not np.isfinite(slope) or abs(slope) < MIN_ABS_SLOPE:
-                continue
-            intercept = y1 - slope * x1
-            x_bottom  = (h - intercept) / slope
-            length    = np.hypot(dx, y2 - y1)
-            if x_bottom < w * 0.5:
-                left_segs.append((slope, intercept));  left_wts.append(length)
+
+            dx = float(x2 - x1)
+            dy = float(y2 - y1)
+            length = np.hypot(dx, dy)
+
+            # Classify by the midpoint's x position relative to image centre.
+            # This is robust even when slope is near-zero (distant lines).
+            mx = (x1 + x2) * 0.5
+            if mx < w * 0.5:
+                # Extra guard: left candidates must not lean strongly rightward
+                if dx == 0 or (dy / dx) > 0 or abs(dy / dx) > 0.05:
+                    slope     = dy / dx if dx != 0 else 1e6
+                    intercept = y1 - slope * x1
+                    left_segs.append((slope, intercept))
+                    left_wts.append(length)
             else:
-                right_segs.append((slope, intercept)); right_wts.append(length)
+                if dx == 0 or (dy / dx) < 0 or abs(dy / dx) > 0.05:
+                    slope     = dy / dx if dx != 0 else -1e6
+                    intercept = y1 - slope * x1
+                    right_segs.append((slope, intercept))
+                    right_wts.append(length)
 
         def to_px(segs, wts):
             if not segs:
                 return None
             s, b = np.average(segs, axis=0, weights=wts)
-            y_lo = int(h * 0.98)
-            y_hi = int(h * 0.55)
-            return ((int((y_lo - b) / s), y_lo), (int((y_hi - b) / s), y_hi))
+            if abs(s) < 1e-6:   # degenerate horizontal average — discard
+                return None
+            return ((int((y_bot - b) / s), y_bot),
+                    (int((y_top - b) / s), y_top))
 
         return to_px(left_segs, left_wts), to_px(right_segs, right_wts)
 
@@ -410,7 +446,7 @@ class LaneDetectionNode(Node):
             if not (0 <= u < w_d and 0 <= v < h_d):
                 continue
             d = float(depth[v, u])
-            if not (0.1 < d < 20.0):
+            if not (self.min_detection_depth_m < d < 20.0):
                 continue
             pts.append((d, -(u - cx) * d / fx))  # (forward, lateral)
         return pts if pts else None
