@@ -71,7 +71,7 @@ class IGVCLocalizationNode(Node):
         # ── Parameters ────────────────────────────────────────────────────
         self._declare_params()
         gps_en      = self._p('gps_enabled',        True)
-        timeout     = self._p('gps_timeout_sec',     2.0)
+        timeout     = self._p('gps_timeout_sec',     4.0)
         min_status  = self._p('gps_min_status',      0)
         rate_hz     = self._p('publish_rate_hz',    50.0)
         warn_dist   = self._p('drift_warn_dist_m',   5.0)
