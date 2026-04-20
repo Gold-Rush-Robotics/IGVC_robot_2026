@@ -1,7 +1,5 @@
 lane_detection_node:
   ros__parameters:
-    use_sim_time: true
-
     # Camera configuration
     num_cameras: 3
     camera_topics:

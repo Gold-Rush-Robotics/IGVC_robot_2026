@@ -37,7 +37,7 @@ def generate_launch_description() -> LaunchDescription:
 
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
-        default_value='true',
+        default_value='false',
         choices=['true', 'false'],
         description='Use /clock from simulator (true in Gazebo / Isaac Sim).')
 
@@ -108,9 +108,14 @@ def generate_launch_description() -> LaunchDescription:
         name='map_to_odom_tf',
         output='screen',
         arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
-        condition=UnlessCondition(gps_enabled),
     )
-
+    # static_odom_base_link_tf = Node(
+    #     package='tf2_ros',
+    #     executable='static_transform_publisher',
+    #     name='baselink_to_odom',
+    #     output='screen',
+    #     arguments=['0', '0', '0', '0', '0', '0', 'odom', 'base_link'],
+    # )
     # ── Nav2 ──────────────────────────────────────────────────────────────
     nav2_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
