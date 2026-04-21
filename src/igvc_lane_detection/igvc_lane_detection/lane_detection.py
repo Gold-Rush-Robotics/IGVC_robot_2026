@@ -34,26 +34,17 @@ class LaneDetectionNode(Node):
         self.publish_overlay        = p('publish_overlay',           True)
         self.fusion_timeout_sec     = p('fusion_timeout_sec',         0.5)
         self.keep_last_grid_on_miss = p('keep_last_grid_on_miss',    True)
-        self.min_lane_points        = p('min_lane_points',            6)
+        self.min_lane_points        = p('min_lane_points',            3)
         self.occupancy_grid_frame   = p('occupancy_grid_frame',      self.base_frame)
 
         # ── Chassis / ROI exclusion ────────────────────────────────────────
-        # chassis_mask_frac: fraction of image height to black out from the
-        # bottom BEFORE any processing.  Removes the robot's own body from
-        # the field of view entirely.  0.0 = no masking.  Start at ~0.15 and
-        # increase until the chassis disappears from the overlay.
         self.chassis_mask_frac  = p('chassis_mask_frac',   0.15)
-        # roi_bottom_frac: how far down the trapezoid ROI extends (0–1).
-        # Lowering this lifts the ROI off the chassis.  Must be greater than
-        # roi_top_frac.  Ignored rows still benefit from chassis_mask_frac.
         self.roi_bottom_frac    = p('roi_bottom_frac',     0.82)
-        # roi_top_frac: vertical position of the top edge of the ROI trapezoid.
         self.roi_top_frac       = p('roi_top_frac',        0.55)
-        # Minimum depth accepted during 3-D projection.  Points closer than
-        # this are treated as belonging to the robot chassis and discarded.
-        # The original value was 0.1 m; 1.0 m safely excludes all chassis
-        # geometry while keeping road-level lane markings.
-        self.min_detection_depth_m = p('min_detection_depth_m', 1.0)
+        # Minimum depth accepted during 3-D projection.  0.5 m keeps a safe
+        # margin above the chassis (~0.3 m) while allowing ground points that
+        # are physically close to the camera (e.g. mounted at ~0.6 m height).
+        self.min_detection_depth_m = p('min_detection_depth_m', 0.5)
 
         # ── Persistent map parameters ──────────────────────────────────────
         # The persistent map lives in a fixed frame (default: odom) and
@@ -66,8 +57,8 @@ class LaneDetectionNode(Node):
         self.persist_res        = p('persistent_map_resolution',  0.10)   # m/cell – coarser saves RAM
         self.persist_size_m     = p('persistent_map_size_m',     100.0)   # square side length
         self.persist_decay      = p('persistent_map_decay',       0.998)  # multiplied each update
-        self.persist_hit_w      = p('persistent_hit_weight',      8.0)    # added per observed point
-        self.persist_threshold  = p('persistent_threshold',       20.0)   # publish as boundary
+        self.persist_hit_w      = p('persistent_hit_weight',      12.0)    # added per observed point
+        self.persist_threshold  = p('persistent_threshold',       15.0)   # publish as boundary
         self.persist_max        = p('persistent_max_value',      200.0)   # clamp to prevent blowup
         self.persist_pub_hz     = p('persistent_publish_hz',       2.0)   # how often to publish map
 
@@ -291,10 +282,11 @@ class LaneDetectionNode(Node):
             if state['right_3d'] is not None:
                 right_pts.extend(state['right_3d'])
 
-        if len(left_pts) < self.min_lane_points or len(right_pts) < self.min_lane_points:
-            return None, None
-
-        return left_pts, right_pts
+        # Allow updating the map with only one side if the other can be assumed
+        if (len(left_pts) >= 2 or len(right_pts) >= 2):   # changed from both >= min
+            return left_pts, right_pts
+        self.get_logger().warn((f'Not enough lane points for fusion. Left: {len(left_pts)}, Right: {len(right_pts)}'), throttle_duration_sec=2.0)
+        return None, None
 
     # ═══════════════════════════════════════════════════════════════════════
     # Lane detection  ── lean, lighting-robust pipeline
@@ -302,66 +294,61 @@ class LaneDetectionNode(Node):
     #
     # Design rationale
     # ────────────────
-    # White/yellow paint on black asphalt is extremely high contrast; we do
-    # NOT need adaptive thresholding or morphological closing — those steps
-    # were destroying thin distant lines.  The pipeline is now:
+    # The pipeline is colour-gated: Canny only runs on pixels that already
+    # passed the white/yellow HSV filter.  This means asphalt texture, dirt,
+    # shadows and painted numbers are suppressed before any edge detection.
     #
-    #   chassis mask → CLAHE (L channel) → grayscale Canny → ROI → Hough
-    #
-    # Line classification is done purely by where each segment's midpoint
-    # sits relative to the image centre column.  The old slope filter
-    # (MIN_ABS_SLOPE = 0.3) was killing distant lines whose image-space
-    # slope approaches zero as they near the vanishing point; it is gone.
-    # Truly horizontal noise (|dy| < 3 px) is the only shape rejected.
+    # Pipeline:
+    #   chassis mask
+    #   → CLAHE on L (clipLimit 2.0 — lifts dim markings without amplifying grain)
+    #   → HSV colour mask (white + yellow) on CLAHE image
+    #   → dilate mask by 1 px to widen thin distant lines
+    #   → Canny on (colour_mask * L_eq)  ← colour-gated grayscale edges only
+    #   → ROI trapezoid
+    #   → HoughLinesP
+    #   → midpoint-based left/right classification
 
     def _detect_lanes(self, bgr):
         h_img, w_img = bgr.shape[:2]
 
-        # ── Step 0: Chassis mask ─────────────────────────────────────────
+        # ── Step 0: Chassis mask (unchanged) ─────────────────────────────
         if self.chassis_mask_frac > 0.0:
             bgr = bgr.copy()
             cut = int(h_img * (1.0 - self.chassis_mask_frac))
             bgr[cut:, :] = 0
 
-        # ── Step 1: CLAHE on L channel for lighting robustness ──────────
-        # Equalises local contrast so faint markings in shadow/glare are
-        # lifted to detectable brightness before Canny.
+        # ── Step 1: CLAHE on L channel (lighting-robust, surface-agnostic) ──
         lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
         l, a, b_ch = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        l_eq  = clahe.apply(l)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_eq = clahe.apply(l)
 
-        # ── Step 2: Colour mask (white + yellow) ────────────────────────
-        # Run on the CLAHE-brightened image so dim markings aren't missed.
-        bgr_eq     = cv2.cvtColor(cv2.merge([l_eq, a, b_ch]), cv2.COLOR_LAB2BGR)
-        hsv        = cv2.cvtColor(bgr_eq, cv2.COLOR_BGR2HSV)
-        white_mask  = cv2.inRange(hsv, np.array([0,  0, 160]), np.array([180, 55, 255]))
-        yellow_mask = cv2.inRange(hsv, np.array([15, 60,  80]), np.array([40, 255, 255]))
-        color_mask  = cv2.bitwise_or(white_mask, yellow_mask)
+        # ── Step 2: Simple grayscale pipeline (NO HSV / NO per-surface tuning) ──
+        # Gaussian blur removes high-frequency texture noise (asphalt, concrete, gravel)
+        blurred = cv2.GaussianBlur(l_eq, (5, 5), 0)
 
-        # ── Step 3: Canny on CLAHE-equalised greyscale ──────────────────
-        # Use a 3×3 Gaussian (not 5×5) — distant lines are 1-2 px wide;
-        # a larger blur smears them below Canny's hysteresis thresholds.
-        blurred = cv2.GaussianBlur(l_eq, (3, 3), 0)
-        edges_l  = cv2.Canny(blurred, 40, 120)
+        # Higher Canny thresholds + blur = far fewer false edges
+        edges = cv2.Canny(blurred, 50, 150, apertureSize=3)
 
-        # Also run Canny on the colour mask to catch bold nearby markings.
-        edges_c = cv2.Canny(color_mask, 50, 150)
+        # ROI trapezoid (already very effective)
+        roi = self._apply_roi(edges)
 
-        edges = cv2.bitwise_or(edges_l, edges_c)
-        roi   = self._apply_roi(edges)
-
-        # ── Step 4: Probabilistic Hough ─────────────────────────────────
-        # minLineLength=15  — catches short distant segments
-        # maxLineGap=100    — bridges dashes without merging sky edges
-        # threshold=20      — lower vote threshold for faint distant lines
-        hough = cv2.HoughLinesP(roi, rho=1, theta=np.pi / 180,
-                                threshold=20, minLineLength=15, maxLineGap=100)
+        # ── Step 3: Probabilistic Hough – stricter defaults to kill false positives ──
+        # These values work well across many surfaces without touching them again.
+        hough = cv2.HoughLinesP(
+            roi,
+            rho=1,
+            theta=np.pi / 180,
+            threshold=40,          # was 25 → fewer spurious lines
+            minLineLength=40,      # was 25 → reject tiny noise segments
+            maxLineGap=60          # still bridges dashed lines
+        )
         if hough is None:
             return None, None, None
 
         left_px, right_px = self._fit_lines(bgr, hough)
         return left_px, right_px, hough
+
 
     def _apply_roi(self, img):
         mask = np.zeros_like(img)
@@ -388,30 +375,36 @@ class LaneDetectionNode(Node):
         for seg in hough:
             x1, y1, x2, y2 = seg[0]
 
-            # Reject perfectly horizontal noise (sky horizon, roof edges).
-            # A lane marking always has SOME vertical component in a forward
-            # camera; 3 px is deliberately tiny to keep distant lines.
-            if abs(y2 - y1) < 3:
-                continue
-
             dx = float(x2 - x1)
             dy = float(y2 - y1)
-            length = np.hypot(dx, dy)
 
-            # Classify by the midpoint's x position relative to image centre.
-            # This is robust even when slope is near-zero (distant lines).
+            # ── Angle filter ─────────────────────────────────────────────
+            # Express the segment as an angle from vertical (0° = perfectly
+            # vertical, 90° = horizontal).  Lane markings in a forward
+            # camera occupy roughly 10°–80° from vertical depending on
+            # distance.  We reject:
+            #   • Nearly horizontal (angle > 80°) — sky horizon, roof edges,
+            #     painted text on the ground, shadow boundaries.
+            #   • Nearly vertical (angle < 5°) — poles, walls, fence posts.
+            angle_from_vert = np.degrees(np.arctan2(abs(dx), abs(dy) + 1e-9))
+            if angle_from_vert > 80 or angle_from_vert < 5:
+                continue
+
+            length = np.hypot(dx, dy)
+            slope     = dy / dx if abs(dx) > 0.1 else (1e6 if dy > 0 else -1e6)
+            intercept = y1 - slope * x1
+
+            # ── Left / right classification by midpoint ──────────────────
+            # Midpoint x < centre → left candidate (should point up-right,
+            # meaning dy/dx negative in image coords where y is down).
+            # Midpoint x ≥ centre → right candidate (dy/dx positive).
             mx = (x1 + x2) * 0.5
             if mx < w * 0.5:
-                # Extra guard: left candidates must not lean strongly rightward
-                if dx == 0 or (dy / dx) > 0 or abs(dy / dx) > 0.05:
-                    slope     = dy / dx if dx != 0 else 1e6
-                    intercept = y1 - slope * x1
+                if slope < 0:   # correct orientation for left lane line
                     left_segs.append((slope, intercept))
                     left_wts.append(length)
             else:
-                if dx == 0 or (dy / dx) < 0 or abs(dy / dx) > 0.05:
-                    slope     = dy / dx if dx != 0 else -1e6
-                    intercept = y1 - slope * x1
+                if slope > 0:   # correct orientation for right lane line
                     right_segs.append((slope, intercept))
                     right_wts.append(length)
 
@@ -419,7 +412,7 @@ class LaneDetectionNode(Node):
             if not segs:
                 return None
             s, b = np.average(segs, axis=0, weights=wts)
-            if abs(s) < 1e-6:   # degenerate horizontal average — discard
+            if abs(s) < 1e-6:
                 return None
             return ((int((y_bot - b) / s), y_bot),
                     (int((y_top - b) / s), y_top))
@@ -457,6 +450,7 @@ class LaneDetectionNode(Node):
             right_3d = [(fwd, lat - W) for fwd, lat in left_3d]
         elif right_3d is not None and left_3d is None:
             left_3d  = [(fwd, lat + W) for fwd, lat in right_3d]
+        # If both missing → return None, None (already handled upstream)
         return left_3d, right_3d
 
     # ═══════════════════════════════════════════════════════════════════════

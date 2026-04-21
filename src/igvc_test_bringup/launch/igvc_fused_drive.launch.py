@@ -70,6 +70,21 @@ def generate_launch_description() -> LaunchDescription:
             gps_config,
         ],
     )
+     # Bridge Nav2 Twist output to the stamped cmd_vel expected by ros2_control.
+    twist_stamper_node = Node(
+        package='twist_stamper',
+        executable='twist_stamper',
+        name='twist_stamper',
+        output='screen',
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            {'frame_id': 'base_link'},
+        ],
+        remappings=[
+            ('cmd_vel_in', '/diff_drive_controller/cmd_vel_unstamped'),
+            ('cmd_vel_out', '/diff_drive_controller/cmd_vel'),
+        ],
+    )
 
 
     return LaunchDescription([
@@ -94,4 +109,5 @@ def generate_launch_description() -> LaunchDescription:
         lane_follower,
         odom_to_tf_ros2,
         gps_node,
+        twist_stamper_node,
     ])
