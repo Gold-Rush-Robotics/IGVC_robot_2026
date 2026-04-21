@@ -52,7 +52,7 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         parameters=[
             {'use_sim_time': use_sim_time},
-            {'odom_topic': '/front_zed_camera_x/zed_node/odom'},
+            {'odom_topic': '/odom'},
             {'frame_id': 'odom'},
             {'child_frame_id': 'base_link'},
             {'use_original_timestamp': True},
@@ -107,7 +107,7 @@ def generate_launch_description() -> LaunchDescription:
         # zed_multi_fused_odom,
         motor_controllers,
         lane_follower,
-        odom_to_tf_ros2,
-        gps_node,
+        # odom_to_tf_ros2,
+        # gps_node,
         twist_stamper_node,
     ])

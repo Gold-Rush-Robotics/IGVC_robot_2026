@@ -11,7 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'numpy<2', 'ultralytics', 'opencv-python-headless'],
     zip_safe=True,
     maintainer='ubuntu',
     maintainer_email='nchan18@outlook.com',
@@ -28,6 +28,7 @@ setup(
             'navigation_node = igvc_lane_detection.navigator:main',
             'localization_node = igvc_lane_detection.localization:main',
             'odom_tf_bridge_node = igvc_lane_detection.odom_tf_bridge:main',
+            'multi_camera_lane_detection_node = igvc_lane_detection.multi_camera_lane_detection:main',
         ],
     },
 )

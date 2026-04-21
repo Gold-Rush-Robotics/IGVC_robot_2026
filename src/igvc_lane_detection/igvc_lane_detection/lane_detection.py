@@ -32,7 +32,7 @@ class LaneDetectionNode(Node):
         self.grid_width_m           = p('grid_width',               10.0)
         self.grid_height_m          = p('grid_height',              10.0)
         self.publish_overlay        = p('publish_overlay',           True)
-        self.fusion_timeout_sec     = p('fusion_timeout_sec',         0.5)
+        self.fusion_timeout_sec     = p('fusion_timeout_sec',         2.0)
         self.keep_last_grid_on_miss = p('keep_last_grid_on_miss',    True)
         self.min_lane_points        = p('min_lane_points',            3)
         self.occupancy_grid_frame   = p('occupancy_grid_frame',      self.base_frame)
@@ -158,10 +158,8 @@ class LaneDetectionNode(Node):
         cos_y, sin_y = np.cos(yaw), np.sin(yaw)
         N = self._pN
 
-        # Global evidence decay — keeps the map from accumulating
-        # infinite values and allows old detections to be overwritten
-        # if the geometry changes (e.g. different track section).
-        self._phits *= self.persist_decay
+        # No decay, no clearing — hits accumulate forever so every
+        # detection stays on the map regardless of drift.
 
         def mark(pts):
             if pts is None:
@@ -178,6 +176,44 @@ class LaneDetectionNode(Node):
 
         mark(left_pts)
         mark(right_pts)
+
+    def _update_persistent_map_segments(self, segments, stamp):
+        """Rasterize every raw-Hough 3-D polyline into _phits (persistent
+        frame).  No decay, no clearing — hits accumulate forever."""
+        if not segments:
+            return
+        tf = self._lookup_tf(self.persist_frame, self.base_frame, stamp)
+        if tf is None:
+            return
+
+        tx = tf.transform.translation.x
+        ty = tf.transform.translation.y
+        q  = tf.transform.rotation
+        yaw = np.arctan2(2.0 * (q.w * q.z + q.x * q.y),
+                         1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        cos_y, sin_y = np.cos(yaw), np.sin(yaw)
+        N = self._pN
+
+        def to_cell(fwd, lat):
+            wx = tx + cos_y * fwd - sin_y * lat
+            wy = ty + sin_y * fwd + cos_y * lat
+            return self._world_to_pgrid(wx, wy)
+
+        def hit(col, row):
+            if 0 <= col < N and 0 <= row < N:
+                self._phits[row, col] = min(
+                    self._phits[row, col] + self.persist_hit_w,
+                    self.persist_max)
+
+        for poly in segments:
+            if len(poly) < 2:
+                continue
+            prev = to_cell(*poly[0])
+            hit(*prev)
+            for fwd, lat in poly[1:]:
+                cell = to_cell(fwd, lat)
+                self._raster_line(prev, cell, hit)
+                prev = cell
 
     def _publish_persistent_map(self):
         """Threshold the hit-count array and publish as OccupancyGrid."""
@@ -229,24 +265,24 @@ class LaneDetectionNode(Node):
         if self.publish_overlay and cam_idx in self.overlay_pubs:
             self._publish_overlay(cam_idx, bgr, dbg_lines, left_px, right_px, rgb_msg)
 
-        left_3d  = self._line_to_3d(left_px,  depth, cam_idx)
-        right_3d = self._line_to_3d(right_px, depth, cam_idx)
-        left_3d, right_3d = self._fill_missing(left_3d, right_3d)
+        # Project EVERY raw Hough segment to 3-D (base_link) — these are the
+        # yellow debug lines in the overlay.  The costmap reflects exactly
+        # these segments, nothing else: no fitted left/right line, no
+        # fabricated opposite side, no corridor fill.
+        seg_3d = self._hough_segments_to_3d(dbg_lines, depth, cam_idx)
 
         self._cam_state[cam_idx] = {
-            'stamp':    rgb_msg.header.stamp,
-            'left_3d':  left_3d,
-            'right_3d': right_3d,
+            'stamp':  rgb_msg.header.stamp,
+            'seg_3d': seg_3d,
         }
 
-        fused_left, fused_right = self._fuse_lanes(rgb_msg.header.stamp)
+        fused_segs = self._fuse_segments(rgb_msg.header.stamp)
 
-        if fused_left is not None and fused_right is not None:
-            new_grid = self._build_grid(fused_left, fused_right, rgb_msg.header.stamp)
+        if fused_segs:
+            new_grid = self._build_grid_from_segments(fused_segs, rgb_msg.header.stamp)
             self.latest_grid = new_grid
             self.grid_pub.publish(self.latest_grid)
-            # ── Accumulate into the persistent map ─────────────────────
-            self._update_persistent_map(fused_left, fused_right, rgb_msg.header.stamp)
+            self._update_persistent_map_segments(fused_segs, rgb_msg.header.stamp)
         elif self.keep_last_grid_on_miss:
             self.latest_grid.header.stamp = rgb_msg.header.stamp
             self.grid_pub.publish(self.latest_grid)
@@ -255,9 +291,8 @@ class LaneDetectionNode(Node):
             self.grid_pub.publish(self.latest_grid)
 
         self.get_logger().info(
-            f'cam[{cam_idx}] left={left_px is not None} right={right_px is not None} '
-            f'left_3d={0 if left_3d is None else len(left_3d)} '
-            f'right_3d={0 if right_3d is None else len(right_3d)} '
+            f'cam[{cam_idx}] hough={0 if dbg_lines is None else len(dbg_lines)} '
+            f'seg_3d={0 if seg_3d is None else len(seg_3d)} '
             f'active_cams={len(self._active_cam_states(rgb_msg.header.stamp))}',
             throttle_duration_sec=1.0)
 
@@ -270,6 +305,16 @@ class LaneDetectionNode(Node):
                 active.append(state)
         return active
 
+    def _fuse_segments(self, stamp):
+        """Collect raw-Hough 3-D polylines from every active camera."""
+        active = self._active_cam_states(stamp)
+        segs = []
+        for state in active:
+            s = state.get('seg_3d')
+            if s:
+                segs.extend(s)
+        return segs
+
     def _fuse_lanes(self, stamp):
         active = self._active_cam_states(stamp)
         if not active:
@@ -277,9 +322,9 @@ class LaneDetectionNode(Node):
 
         left_pts, right_pts = [], []
         for state in active:
-            if state['left_3d'] is not None:
+            if state.get('left_3d') is not None:
                 left_pts.extend(state['left_3d'])
-            if state['right_3d'] is not None:
+            if state.get('right_3d') is not None:
                 right_pts.extend(state['right_3d'])
 
         # Allow updating the map with only one side if the other can be assumed
@@ -444,6 +489,55 @@ class LaneDetectionNode(Node):
             pts.append((d, -(u - cx) * d / fx))  # (forward, lateral)
         return pts if pts else None
 
+    def _hough_segments_to_3d(self, hough, depth, cam_idx, n=12):
+        """Project every raw Hough segment to base_link.  Returns a list of
+        polylines, each a list of (forward, lateral) tuples."""
+        if hough is None:
+            return None
+        h_d, w_d = depth.shape[:2]
+        K  = self.K.get(cam_idx)
+        fx = K[0, 0] if K is not None else 500.0
+        cx = K[0, 2] if K is not None else w_d / 2.0
+
+        out = []
+        for seg in hough:
+            x1, y1, x2, y2 = seg[0]
+            poly = []
+            for t in np.linspace(0.0, 1.0, n):
+                u = int(x1 + t * (x2 - x1))
+                v = int(y1 + t * (y2 - y1))
+                if not (0 <= u < w_d and 0 <= v < h_d):
+                    continue
+                d = float(depth[v, u])
+                if not (self.min_detection_depth_m < d < 20.0):
+                    continue
+                poly.append((d, -(u - cx) * d / fx))
+            if len(poly) >= 2:
+                out.append(poly)
+        return out if out else None
+
+    @staticmethod
+    def _raster_line(p0, p1, mark_fn):
+        """Integer-grid Bresenham from cell p0 to p1, calling mark_fn(col, row)."""
+        x0, y0 = p0
+        x1, y1 = p1
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        for _ in range(4096):
+            mark_fn(x0, y0)
+            if x0 == x1 and y0 == y1:
+                return
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x0 += sx
+            if e2 <= dx:
+                err += dx
+                y0 += sy
+
     def _fill_missing(self, left_3d, right_3d):
         W = self.assumed_lane_width
         if left_3d is not None and right_3d is None:
@@ -462,28 +556,73 @@ class LaneDetectionNode(Node):
         if left_pts is None or right_pts is None:
             return g
 
-        lpts = sorted(left_pts,  key=lambda p: p[0])
+        lpts = sorted(left_pts, key=lambda p: p[0])
         rpts = sorted(right_pts, key=lambda p: p[0])
-        if len(lpts) < 2 or len(rpts) < 2:
+
+        # === FIXED: only reject if BOTH sides are insufficient ===
+        if len(lpts) < 2 and len(rpts) < 2:
             return g
 
-        W, H, res = g.info.width, g.info.height, self.grid_res
+        # Ensure both sides exist (mirrors _fill_missing logic)
+        W = self.assumed_lane_width
+        if len(lpts) >= 2 and len(rpts) < 2:
+            rpts = [(fwd, lat - W) for fwd, lat in lpts]
+        elif len(rpts) >= 2 and len(lpts) < 2:
+            lpts = [(fwd, lat + W) for fwd, lat in rpts]
+
+        W_grid, H, res = g.info.width, g.info.height, self.grid_res
         data = list(g.data)
 
         for row in range(H):
             fwd = row * res
-            ll  = self._interp(lpts, fwd)
-            rl  = self._interp(rpts, fwd)
+            ll = self._interp(lpts, fwd)
+            rl = self._interp(rpts, fwd)
             if ll is None or rl is None:
                 continue
-            left_col  = max(0, min(W - 1, int((ll + self.grid_width_m / 2) / res)))
-            right_col = max(0, min(W - 1, int((rl + self.grid_width_m / 2) / res)))
+
+            left_col = max(0, min(W_grid - 1, int((ll + self.grid_width_m / 2) / res)))
+            right_col = max(0, min(W_grid - 1, int((rl + self.grid_width_m / 2) / res)))
             lo, hi = min(left_col, right_col), max(left_col, right_col)
-            for col in range(W):
+
+            for col in range(W_grid):
                 if lo < col < hi:
-                    data[row * W + col] = 0    # free — driveable interior
+                    data[row * W_grid + col] = 0      # free
                 elif col == lo or col == hi:
-                    data[row * W + col] = 100  # lethal — lane boundary
+                    data[row * W_grid + col] = 100    # lethal boundary
+
+        g.data = data
+        return g
+
+    def _build_grid_from_segments(self, segments, stamp):
+        """Rasterize every raw-Hough 3-D polyline directly into the local
+        rolling costmap.  Only the Hough detections become lethals; every
+        other cell is free."""
+        g = self._empty_grid(stamp)
+        if not segments:
+            return g
+
+        W_grid, H, res = g.info.width, g.info.height, self.grid_res
+        half_w = self.grid_width_m / 2.0
+        data = [0] * (W_grid * H)
+
+        def to_cell(fwd, lat):
+            col = int((lat + half_w) / res)
+            row = int(fwd / res)
+            return col, row
+
+        def mark(col, row):
+            if 0 <= col < W_grid and 0 <= row < H:
+                data[row * W_grid + col] = 100
+
+        for poly in segments:
+            if len(poly) < 2:
+                continue
+            prev = to_cell(*poly[0])
+            mark(*prev)
+            for fwd, lat in poly[1:]:
+                cell = to_cell(fwd, lat)
+                self._raster_line(prev, cell, mark)
+                prev = cell
 
         g.data = data
         return g

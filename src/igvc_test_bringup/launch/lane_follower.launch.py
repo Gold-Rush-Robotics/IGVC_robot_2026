@@ -17,7 +17,6 @@ Arguments
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -35,6 +34,14 @@ def generate_launch_description() -> LaunchDescription:
             'true  = hardware; monitors GPS health, hands TF to robot_localization.\n'
             'false = sim/GPS-denied; seeds identity map→odom, no GPS checks.'))
 
+    force_identity_map_to_odom_arg = DeclareLaunchArgument(
+        'force_identity_map_to_odom',
+        default_value='true',
+        choices=['true', 'false'],
+        description=(
+            'If true, pin map→odom to identity (0,0,0,0,0,0) for the full run. '
+            'This overrides GPS/localization ownership of the transform.'))
+
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
         default_value='false',
@@ -42,6 +49,7 @@ def generate_launch_description() -> LaunchDescription:
         description='Use /clock from simulator (true in Gazebo / Isaac Sim).')
 
     gps_enabled  = LaunchConfiguration('gps_enabled')
+    force_identity_map_to_odom = LaunchConfiguration('force_identity_map_to_odom')
     use_sim_time = LaunchConfiguration('use_sim_time')
 
     bringup = FindPackageShare('igvc_test_bringup')
@@ -52,6 +60,7 @@ def generate_launch_description() -> LaunchDescription:
     shared_params = {
         'use_sim_time': use_sim_time,
         'gps_enabled':  gps_enabled,
+        'force_identity_map_to_odom': force_identity_map_to_odom,
     }
 
     # ── Lane detection ────────────────────────────────────────────────────
@@ -98,24 +107,6 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[shared_params],
     )
 
-    # ── Static map→odom TF — sim only ─────────────────────────────────────
-    # Provides the TF immediately at startup before igvc_localization's
-    # first broadcast tick.  Suppressed on hardware where robot_localization
-    # owns the transform.
-    static_map_odom_tf = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='map_to_odom_tf',
-        output='screen',
-        arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
-    )
-    # static_odom_base_link_tf = Node(
-    #     package='tf2_ros',
-    #     executable='static_transform_publisher',
-    #     name='baselink_to_odom',
-    #     output='screen',
-    #     arguments=['0', '0', '0', '0', '0', '0', 'odom', 'base_link'],
-    # )
     # ── Nav2 ──────────────────────────────────────────────────────────────
     nav2_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -130,12 +121,12 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription([
         gps_enabled_arg,
+        force_identity_map_to_odom_arg,
         use_sim_time_arg,
         lane_detection_node,
         localization_node,
         # odom_tf_bridge_node,
         navigator_node,
-        static_map_odom_tf,
         nav2_launch,
     ])
 

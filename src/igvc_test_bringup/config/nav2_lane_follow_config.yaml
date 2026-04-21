@@ -31,7 +31,7 @@ planner_server:
     GridBased:
       plugin: "nav2_smac_planner::SmacPlanner2D"
       tolerance: 0.5                   # goal tolerance (m) — generous for GPS accuracy
-      downsample_costmap: false
+      downsample_costmap: true
       downsampling_factor: 1
       allow_unknown: true              # needed: unknown cells exist at course edges
       max_iterations: 1000000
@@ -49,9 +49,10 @@ planner_server:
 controller_server:
   ros__parameters:
     controller_frequency: 20.0
-    min_x_velocity_threshold: 0.1
+    # Do NOT zero small commands — that causes bang-bang around zero and snaking.
+    min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.0
-    min_theta_velocity_threshold: 0.3
+    min_theta_velocity_threshold: 0.001
     failure_tolerance: 0.5
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["goal_checker"]
@@ -70,29 +71,38 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.5
-      lookahead_dist: 1.2
-      min_lookahead_dist: 0.6
-      max_lookahead_dist: 2.0
-      lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 1.0
+      desired_linear_vel: 2.24        # 5 mph target
+      # Cap angular output — stops the large swings the smoother was tracking.
+      desired_angular_vel: 1.2
+      # Longer lookahead (and velocity-scaled) gives a smoother carrot and
+      # stops high-frequency angular oscillation.  Scaled up for higher speed.
+      lookahead_dist: 2.2
+      min_lookahead_dist: 1.2
+      max_lookahead_dist: 3.5
+      lookahead_time: 1.8
+      rotate_to_heading_angular_vel: 0.8
       transform_tolerance: 0.5
-      use_velocity_scaled_lookahead_dist: true   # slows lookahead when decelerating
-      min_approach_linear_velocity: 0.05
+      use_velocity_scaled_lookahead_dist: true
+      min_approach_linear_velocity: 0.1
       approach_velocity_scaling_dist: 1.0
       use_collision_detection: true
       max_allowed_time_to_collision_up_to_carrot: 1.5
-      use_regulated_linear_velocity_scaling: true    # slow down on curves
-      use_fixed_curvature_lookahead: false
-      curvature_lookahead_dist: 0.5
-      use_cost_regulated_linear_velocity_scaling: true  # slow down near obstacles
+      # Smooth curvature regulation — prefer lower gain so we don't chatter.
+      use_regulated_linear_velocity_scaling: true
+      use_fixed_curvature_lookahead: true
+      curvature_lookahead_dist: 1.2
+      # Cost regulation off: jittery lane-costmap near the footprint was
+      # causing linear.x to collapse to 0 and angular to spike (snake).
+      use_cost_regulated_linear_velocity_scaling: false
       cost_scaling_dist: 0.6
-      cost_scaling_gain: 1.2
-      regulated_linear_scaling_min_radius: 0.8
-      regulated_linear_scaling_min_speed: 0.25
-      use_rotate_to_heading: true
+      cost_scaling_gain: 1.0
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.35
+      # Disable in-place heading rotations during path following — the big
+      # angular pulses in the cmd_vel log were triggered by this.
+      use_rotate_to_heading: false
       allow_reversing: false
-      rotate_to_heading_min_angle: 0.785
+      rotate_to_heading_min_angle: 1.57
       max_robot_pose_search_dist: 10.0
 
 collision_monitor:
@@ -119,7 +129,7 @@ collision_monitor:
       min_points: 4
       slowdown_ratio: 0.5
       visualize: true
-      enabled: true
+      enabled: false
 
     # Hard stop if anything enters 0.4m
     StopZone:
@@ -131,7 +141,7 @@ collision_monitor:
       simulation_time_step: 0.1
       min_points: 4
       visualize: true
-      enabled: true
+      enabled: false
 
     observation_sources: ["front_pointcloud", "left_pointcloud", "right_pointcloud"]
     front_pointcloud:
@@ -164,12 +174,15 @@ velocity_smoother:
     smoothing_frequency: 20.0
     cmd_vel_in_topic: "cmd_vel_nav"
     cmd_vel_out_topic: "cmd_vel_smoothed"
-    scale_velocities: false
+    # Scale linear/angular together so we never get the "high angular + low
+    # linear" pattern that produces tight in-place snakes.
+    scale_velocities: true
     feedback: "OPEN_LOOP"
-    max_velocity: [ 0.5,  0.0,  2.0]
-    min_velocity: [-0.1,  0.0, -2.0]  # allow very slight reverse for recovery
-    max_accel:    [ 1.5,  0.0,  2.5]
-    max_decel:    [-2.0,  0.0, -2.5]
+    max_velocity: [ 2.24, 0.0,  1.5]   # 5 mph forward cap
+    min_velocity: [-0.2,  0.0, -1.5]
+    # Accel limits sized so the robot can reach 2.24 m/s in ~1.5 s.
+    max_accel:    [ 1.5,  0.0,  1.5]
+    max_decel:    [-2.0,  0.0, -1.5]
     odom_topic: "odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
@@ -235,23 +248,25 @@ local_costmap:
           raytrace_max_range: 10.0
           raytrace_min_range: 0.0
 
-      # Lane lines published by your lane_detection_node as /lane_costmap.
-      # StaticLayer subscribes to that OccupancyGrid and marks cells ≥ lethal_cost_threshold
-      # as LETHAL_OBSTACLE (254) in the costmap.  The planner will route around them.
+      # Lane lines from the persistent fixed-frame map (/lane_map).
+      # Using the persistent map (not the rolling /lane_costmap) avoids the
+      # StaticLayer "Resizing static layer" storm that happens when a rolling
+      # grid's origin shifts every tick — which was starving the planner
+      # and causing NavigateToPose goals to abort immediately.
       lane_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
-        map_subscribe_transient_local: false   # non-transient: accept live updates
+        map_subscribe_transient_local: true
         subscribe_to_updates: true
-        map_topic: "/lane_costmap"
-        lethal_cost_threshold: 90             # cells with cost ≥ 90 become lethal
-        unknown_cost_value: -1
+        map_topic: "/lane_map"
+        lethal_cost_threshold: 90
+        unknown_cost_value: 1
         track_unknown_space: false
-        use_maximum: true                     # don't let this layer clear obstacle_layer marks
+        use_maximum: true
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 2.5
-        inflation_radius: 0.7               # 0.35m robot half-width + 0.35m margin
+        inflation_radius: 0.0               # 0.35m robot half-width + 0.35m margin
 
 global_costmap:
   global_costmap:
