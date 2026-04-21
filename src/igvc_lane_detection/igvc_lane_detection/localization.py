@@ -249,7 +249,15 @@ class IGVCLocalizationNode(Node):
         if self._snapshot is None:
             return
         tf = TransformStamped()
-        tf.header.stamp    = now.to_msg()
+        # Stamp the broadcast well into the future.  map→odom is nearly
+        # static, so future-dating is safe, and it prevents Nav2 lookups
+        # (which use the current sim clock plus scheduler jitter) from
+        # being rejected as "Lookup would require extrapolation into the
+        # future".  500 ms covers any realistic executor delay while
+        # still being recent enough that a real localization jump won't
+        # lag visibly.
+        future = now + Duration(seconds=0.5)
+        tf.header.stamp    = future.to_msg()
         tf.header.frame_id = self._map_frame
         tf.child_frame_id  = self._odom_frame
         tf.transform       = self._snapshot.transform

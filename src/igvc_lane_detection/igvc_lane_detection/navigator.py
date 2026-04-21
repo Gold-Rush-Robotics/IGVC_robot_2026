@@ -34,8 +34,9 @@ Parameters
     odom_frame            str     odom
     base_frame            str     base_link
     goal_tolerance_m      float   1.2     Nav2 arrival radius
-    waypoint_horizon_m    float   3.0     sim: how far ahead to place carrot
-    replan_dist_m         float   0.8     sim: re-send goal when carrot moves this far
+    waypoint_horizon_m    float   1.8     sim: how far ahead to place carrot
+    replan_dist_m         float   0.6     sim: re-send goal when carrot moves this far
+    lane_hold_sec         float   1.0     sim: reuse the last valid lane carrot briefly
     path_lookahead_m      float   4.0     centreline extraction depth
     grid_resolution       float   0.05
     grid_width_m          float   10.0
@@ -149,8 +150,9 @@ class IGVCNavigatorNode(Node):
         self._map_frame       = self._p('map_frame',           'map')
         self._base_frame      = self._p('base_frame',          'base_link')
         self._goal_tol        = self._p('goal_tolerance_m',    1.2)
-        self._horizon         = self._p('waypoint_horizon_m',  3.0)
-        self._replan_dist     = self._p('replan_dist_m',       1.5)
+        self._horizon         = self._p('waypoint_horizon_m',  1.8)
+        self._replan_dist     = self._p('replan_dist_m',       0.6)
+        self._lane_hold_sec   = self._p('lane_hold_sec',       1.0)
         self._replan_min_dt   = self._p('replan_min_dt_sec',   0.7)
         self._lookahead       = self._p('path_lookahead_m',    4.0)
         self._grid_res        = self._p('grid_resolution',     0.05)
@@ -165,6 +167,10 @@ class IGVCNavigatorNode(Node):
         self._active_wp: Optional[_Waypoint] = None
         self._goal_handle   = None
         self._goal_pending  = False
+        self._next_goal_seq = 0
+        self._current_goal_seq = 0
+        self._last_lane_wp: Optional[_Waypoint] = None
+        self._last_lane_wp_time = None
         self._loc_status    = 'sim' if not self._gps_enabled else 'initializing'
         self._last_goal_send_time = None
         # Backoff: don't re-send a new goal immediately after an ABORT.
@@ -227,8 +233,9 @@ class IGVCNavigatorNode(Node):
             ('odom_frame',        'odom'),
             ('base_frame',        'base_link'),
             ('goal_tolerance_m',   1.2),
-            ('waypoint_horizon_m', 3.0),
-            ('replan_dist_m',      1.5),
+            ('waypoint_horizon_m', 1.8),
+            ('replan_dist_m',      0.6),
+            ('lane_hold_sec',      1.0),
             ('replan_min_dt_sec',  0.7),
             ('path_lookahead_m',   4.0),
             ('grid_resolution',    0.05),
@@ -315,10 +322,7 @@ class IGVCNavigatorNode(Node):
             wp = self._next_waypoint()
             if wp is None:
                 return
-            if self._send_goal(wp):
-                self._active_wp = wp
-            # If send failed (e.g. action server not ready), leave
-            # _active_wp = None so the next tick retries.
+            self._send_goal(wp)
             return
 
         # Sim mode: re-issue goal when the lane carrot has moved enough
@@ -328,8 +332,7 @@ class IGVCNavigatorNode(Node):
                 if self._last_goal_send_time is None or (
                     (now - self._last_goal_send_time).nanoseconds / 1e9 >= self._replan_min_dt
                 ):
-                    if self._send_goal(new_wp):
-                        self._active_wp = new_wp
+                    self._send_goal(new_wp)
 
         # Always publish the lane path for visualisation / RPP
         pts = self._extract_centreline()
@@ -353,10 +356,11 @@ class IGVCNavigatorNode(Node):
         else:
             carrot = self._lane_carrot()
             if carrot is None:
-                self.get_logger().warn(
-                    'No lane visible — driving straight.',
-                    throttle_duration_sec=2.0)
-                carrot = self._straight_ahead_carrot()
+                carrot = self._held_lane_carrot()
+                if carrot is None:
+                    self.get_logger().warn(
+                        'No lane visible — holding current course.',
+                        throttle_duration_sec=2.0)
             return carrot
 
     def _lane_carrot(self) -> Optional[_Waypoint]:
@@ -376,7 +380,19 @@ class IGVCNavigatorNode(Node):
                 target_fwd, target_lat = fwd, lat
                 break
 
-        return self._base_link_to_map(target_fwd, target_lat)
+        carrot = self._base_link_to_map(target_fwd, target_lat)
+        if carrot is not None:
+            self._last_lane_wp = carrot
+            self._last_lane_wp_time = self.get_clock().now()
+        return carrot
+
+    def _held_lane_carrot(self) -> Optional[_Waypoint]:
+        if self._last_lane_wp is None or self._last_lane_wp_time is None:
+            return None
+        age = (self.get_clock().now() - self._last_lane_wp_time).nanoseconds / 1e9
+        if age > self._lane_hold_sec:
+            return None
+        return self._last_lane_wp
 
     def _straight_ahead_carrot(self) -> Optional[_Waypoint]:
         """Project a point directly ahead in base_link → map."""
@@ -513,18 +529,21 @@ class IGVCNavigatorNode(Node):
                 'NavigateToPose server not ready.', throttle_duration_sec=2.0)
             return False
 
+        send_time = self.get_clock().now()
         goal = NavigateToPose.Goal()
-        goal.pose = wp.to_pose_stamped(self._map_frame,
-                                       self.get_clock().now().to_msg())
+        goal.pose = wp.to_pose_stamped(self._map_frame, send_time.to_msg())
         self._goal_pending = True
-        self._last_goal_send_time = self.get_clock().now()
+        self._last_goal_send_time = send_time
+        self._next_goal_seq += 1
+        goal_seq = self._next_goal_seq
         future = self._nav.send_goal_async(goal)
-        future.add_done_callback(self._on_goal_response)
+        future.add_done_callback(
+            lambda done, seq=goal_seq, waypoint=wp: self._on_goal_response(done, seq, waypoint))
         self.get_logger().info(
             f'Sending goal: map ({wp.x:.2f}, {wp.y:.2f})')
         return True
 
-    def _on_goal_response(self, future) -> None:
+    def _on_goal_response(self, future, goal_seq: int, wp: _Waypoint) -> None:
         self._goal_pending = False
         try:
             handle = future.result()
@@ -534,20 +553,27 @@ class IGVCNavigatorNode(Node):
 
         if not handle.accepted:
             self.get_logger().warn('Nav2 rejected goal.')
-            self._active_wp = None
             return
 
+        self._current_goal_seq = goal_seq
         self._goal_handle = handle
-        handle.get_result_async().add_done_callback(self._on_goal_result)
+        self._active_wp = wp
+        handle.get_result_async().add_done_callback(
+            lambda done, seq=goal_seq: self._on_goal_result(done, seq))
 
-    def _on_goal_result(self, future) -> None:
-        self._goal_handle = None
+    def _on_goal_result(self, future, goal_seq: int) -> None:
         try:
             result = future.result()
             status = result.status
         except Exception as exc:
             self.get_logger().warn(f'Goal result error: {exc}')
             status = GoalStatus.STATUS_ABORTED
+
+        if goal_seq != self._current_goal_seq:
+            return
+
+        self._goal_handle = None
+        self._current_goal_seq = 0
 
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info('Nav2 goal succeeded.')
@@ -557,15 +583,14 @@ class IGVCNavigatorNode(Node):
             pass  # expected when we replan
         else:
             # ABORTED or similar — apply exponential backoff before retrying.
-            # self._consecutive_aborts = min(self._consecutive_aborts + 1, 6)
-            # backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 4.0)
-            # self._abort_backoff_until = (
-            #     self.get_clock().now() + Duration(seconds=backoff_s))
-            # self.get_logger().warn(
-            #     f'Nav2 goal ended with status {status}. '
-            #     f'Backing off {backoff_s:.2f}s before next goal.',
-            #     throttle_duration_sec=2.0)
-            self.get_logger().warn("received non-success goal result: status={status}", throttle_duration_sec=2.0)
+            self._consecutive_aborts = min(self._consecutive_aborts + 1, 6)
+            backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 4.0)
+            self._abort_backoff_until = (
+                self.get_clock().now() + Duration(seconds=backoff_s))
+            self.get_logger().warn(
+                f'received non-success goal result: status={status}; '
+                f'backing off {backoff_s:.2f}s before retry',
+                throttle_duration_sec=1.0)
 
         # Clear so _update picks the next waypoint on the next tick
         if self._active_wp is not None and status != GoalStatus.STATUS_CANCELED:
@@ -574,7 +599,6 @@ class IGVCNavigatorNode(Node):
     def _cancel_goal(self) -> None:
         if self._goal_handle is not None:
             self._goal_handle.cancel_goal_async()
-            self._goal_handle = None
 
     # ── TF helpers ────────────────────────────────────────────────────────
 

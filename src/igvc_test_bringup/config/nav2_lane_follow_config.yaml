@@ -13,6 +13,8 @@ bt_navigator:
     odom_topic: /odom
     bt_loop_duration: 10
     default_server_timeout: 20
+    transform_tolerance: 1.0
+    default_nav_to_pose_bt_xml: ""
 
 waypoint_follower:
   ros__parameters:
@@ -36,8 +38,8 @@ planner_server:
       allow_unknown: true              # needed: unknown cells exist at course edges
       max_iterations: 1000000
       max_on_approach_iterations: 1000
-      max_planning_time: 2.0
-      cost_travel_multiplier: 2.0
+      max_planning_time: 0.2           # cap so 5 Hz replan never stalls
+      cost_travel_multiplier: 6.0
       use_final_approach_orientation: false
       smoother:
         max_iterations: 1000
@@ -49,19 +51,27 @@ planner_server:
 controller_server:
   ros__parameters:
     controller_frequency: 20.0
+    # Nav2 Jazzy defaults this to 0.30 s; with 3 pointcloud observation
+    # sources plus the large /lane_map StaticLayer the local costmap
+    # occasionally takes much longer than that to republish, so we give
+    # it several seconds of headroom before aborting the goal.
+    costmap_update_timeout: 5.0
     # Do NOT zero small commands — that causes bang-bang around zero and snaking.
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.0
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.5
+    failure_tolerance: 2.0
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["goal_checker"]
     controller_plugins: ["FollowPath"]
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      required_movement_radius: 0.3
-      movement_time_allowance: 15.0   # longer: course has tight spots
+      # Very lenient so MPPI warm-up / brief stalls near lane paint
+      # don't abort the goal.  Lane-following courses may legitimately
+      # need >15 s to squeeze past tight features.
+      required_movement_radius: 0.1
+      movement_time_allowance: 45.0
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
@@ -70,40 +80,41 @@ controller_server:
       stateful: true
 
     FollowPath:
+      # MPPI proved too brittle with the current fused costmap: the
+      # planner kept producing valid paths, but MPPI rejected every local
+      # rollout and churned in an optimizer-reset loop.  RPP is far more
+      # tolerant of sparse / noisy lane updates while still benefiting
+      # from the 5 Hz global replanning above.
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 2.24        # 5 mph target
-      # Cap angular output — stops the large swings the smoother was tracking.
-      desired_angular_vel: 1.2
-      # Longer lookahead (and velocity-scaled) gives a smoother carrot and
-      # stops high-frequency angular oscillation.  Scaled up for higher speed.
-      lookahead_dist: 2.2
-      min_lookahead_dist: 1.2
-      max_lookahead_dist: 3.5
-      lookahead_time: 1.8
+      desired_linear_vel: 0.9
+      desired_angular_vel: 0.9
+      lookahead_dist: 1.1
+      min_lookahead_dist: 0.5
+      max_lookahead_dist: 1.8
+      lookahead_time: 0.9
       rotate_to_heading_angular_vel: 0.8
-      transform_tolerance: 0.5
-      use_velocity_scaled_lookahead_dist: true
+      transform_tolerance: 1.0
+      use_velocity_scaled_lookahead_dist: false
       min_approach_linear_velocity: 0.1
       approach_velocity_scaling_dist: 1.0
-      use_collision_detection: true
-      max_allowed_time_to_collision_up_to_carrot: 1.5
-      # Smooth curvature regulation — prefer lower gain so we don't chatter.
+      # The local obstacle layer is currently too noisy for RPP's internal
+      # forward collision projection, which was repeatedly declaring open
+      # space blocked.  Keep collision_monitor active for the hard stop and
+      # let global planning + lane costs steer around obstacles.
+      use_collision_detection: false
+      max_allowed_time_to_collision_up_to_carrot: 0.5
       use_regulated_linear_velocity_scaling: true
       use_fixed_curvature_lookahead: true
-      curvature_lookahead_dist: 1.2
-      # Cost regulation off: jittery lane-costmap near the footprint was
-      # causing linear.x to collapse to 0 and angular to spike (snake).
+      curvature_lookahead_dist: 1.0
       use_cost_regulated_linear_velocity_scaling: false
       cost_scaling_dist: 0.6
       cost_scaling_gain: 1.0
       regulated_linear_scaling_min_radius: 0.9
-      regulated_linear_scaling_min_speed: 0.35
-      # Disable in-place heading rotations during path following — the big
-      # angular pulses in the cmd_vel log were triggered by this.
+      regulated_linear_scaling_min_speed: 0.22
       use_rotate_to_heading: false
       allow_reversing: false
       rotate_to_heading_min_angle: 1.57
-      max_robot_pose_search_dist: 10.0
+      max_robot_pose_search_dist: 2.0
 
 collision_monitor:
   ros__parameters:
@@ -147,7 +158,7 @@ collision_monitor:
     front_pointcloud:
       type: "pointcloud"
       topic: "/front_zed_camera_x/zed_node/point_cloud/cloud_registered"
-      min_obstacle_height: 0.05
+      min_obstacle_height: 0.15
       max_obstacle_height: 2.0
       min_obstacle_points: 3
       visualize: false
@@ -155,7 +166,7 @@ collision_monitor:
     left_pointcloud:
       type: "pointcloud"
       topic: "/left_zed_camera_x/zed_node/point_cloud/cloud_registered"
-      min_obstacle_height: 0.05
+      min_obstacle_height: 0.15
       max_obstacle_height: 2.0
       min_obstacle_points: 3
       visualize: false
@@ -163,7 +174,7 @@ collision_monitor:
     right_pointcloud:
       type: "pointcloud"
       topic: "/right_zed_camera_x/zed_node/point_cloud/cloud_registered"
-      min_obstacle_height: 0.05
+      min_obstacle_height: 0.15
       max_obstacle_height: 2.0
       min_obstacle_points: 3
       visualize: false
@@ -202,6 +213,7 @@ local_costmap:
       robot_base_frame: base_link
       update_frequency: 10.0
       publish_frequency: 5.0
+      transform_tolerance: 1.0
       rolling_window: true
       width: 12
       height: 12
@@ -213,46 +225,53 @@ local_costmap:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
         tf_filter_tolerance: 1.0
+        footprint_clearing_enabled: true
         observation_sources: "front_pointcloud left_pointcloud right_pointcloud"
         front_pointcloud:
           topic: /front_zed_camera_x/zed_node/point_cloud/cloud_registered
           data_type: "PointCloud2"
           marking: true
           clearing: true
-          min_obstacle_height: 0.05
+          min_obstacle_height: 0.25
           max_obstacle_height: 2.0
           obstacle_max_range: 8.0
-          obstacle_min_range: 0.3
+          obstacle_min_range: 0.75
           raytrace_max_range: 10.0
-          raytrace_min_range: 0.0
+          raytrace_min_range: 0.75
         left_pointcloud:
           topic: /left_zed_camera_x/zed_node/point_cloud/cloud_registered
           data_type: "PointCloud2"
           marking: true
           clearing: true
-          min_obstacle_height: 0.05
+          min_obstacle_height: 0.25
           max_obstacle_height: 2.0
           obstacle_max_range: 8.0
-          obstacle_min_range: 0.3
+          obstacle_min_range: 0.75
           raytrace_max_range: 10.0
-          raytrace_min_range: 0.0
+          raytrace_min_range: 0.75
         right_pointcloud:
           topic: /right_zed_camera_x/zed_node/point_cloud/cloud_registered
           data_type: "PointCloud2"
           marking: true
           clearing: true
-          min_obstacle_height: 0.05
+          min_obstacle_height: 0.25
           max_obstacle_height: 2.0
           obstacle_max_range: 8.0
-          obstacle_min_range: 0.3
+          obstacle_min_range: 0.75
           raytrace_max_range: 10.0
-          raytrace_min_range: 0.0
+          raytrace_min_range: 0.75
 
       # Lane lines from the persistent fixed-frame map (/lane_map).
       # Using the persistent map (not the rolling /lane_costmap) avoids the
       # StaticLayer "Resizing static layer" storm that happens when a rolling
       # grid's origin shifts every tick — which was starving the planner
       # and causing NavigateToPose goals to abort immediately.
+      #
+      # NOTE: lethal_cost_threshold is set ABOVE 100 so lane cells come in
+      # as high-cost (253) rather than lethal (254).  With MPPI, lethal
+      # cells cause every rollout that touches paint to be rejected, which
+      # deadlocks the optimiser on narrow lanes.  High-cost still steers
+      # the robot away strongly via CostCritic + PathAlignCritic.
       lane_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
@@ -262,11 +281,12 @@ local_costmap:
         unknown_cost_value: 1
         track_unknown_space: false
         use_maximum: true
+        trinary_costmap: false
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 2.5
-        inflation_radius: 0.0               # 0.35m robot half-width + 0.35m margin
+        inflation_radius: 0.35
 
 global_costmap:
   global_costmap:
@@ -275,52 +295,64 @@ global_costmap:
       robot_base_frame: base_link
       update_frequency: 2.0
       publish_frequency: 1.0
+      transform_tolerance: 1.0
       rolling_window: true
       width: 30
       height: 30
       resolution: 0.10
       track_unknown_space: false
       footprint: "[[0.50, 0.35], [0.50, -0.35], [-0.50, -0.35], [-0.50, 0.35]]"
-      plugins: ["obstacle_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "lane_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
         tf_filter_tolerance: 1.0
+        footprint_clearing_enabled: true
         observation_sources: "front_pointcloud left_pointcloud right_pointcloud"
         front_pointcloud:
           topic: /front_zed_camera_x/zed_node/point_cloud/cloud_registered
           data_type: "PointCloud2"
           marking: true
           clearing: true
-          min_obstacle_height: 0.05
+          min_obstacle_height: 0.25
           max_obstacle_height: 2.0
           obstacle_max_range: 10.0
-          obstacle_min_range: 0.3
+          obstacle_min_range: 0.75
           raytrace_max_range: 12.0
-          raytrace_min_range: 0.0
+          raytrace_min_range: 0.75
         left_pointcloud:
           topic: /left_zed_camera_x/zed_node/point_cloud/cloud_registered
           data_type: "PointCloud2"
           marking: true
           clearing: true
-          min_obstacle_height: 0.05
+          min_obstacle_height: 0.25
           max_obstacle_height: 2.0
           obstacle_max_range: 10.0
-          obstacle_min_range: 0.3
+          obstacle_min_range: 0.75
           raytrace_max_range: 12.0
-          raytrace_min_range: 0.0
+          raytrace_min_range: 0.75
         right_pointcloud:
           topic: /right_zed_camera_x/zed_node/point_cloud/cloud_registered
           data_type: "PointCloud2"
           marking: true
           clearing: true
-          min_obstacle_height: 0.05
+          min_obstacle_height: 0.25
           max_obstacle_height: 2.0
           obstacle_max_range: 10.0
-          obstacle_min_range: 0.3
+          obstacle_min_range: 0.75
           raytrace_max_range: 12.0
-          raytrace_min_range: 0.0
+          raytrace_min_range: 0.75
+      lane_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_subscribe_transient_local: true
+        subscribe_to_updates: true
+        map_topic: "/lane_map"
+        lethal_cost_threshold: 90
+        unknown_cost_value: 1
+        track_unknown_space: false
+        use_maximum: true
+        trinary_costmap: false
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 2.0
-        inflation_radius: 0.9
+        inflation_radius: 0.25
