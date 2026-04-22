@@ -5,4 +5,7 @@ dataset/*
 .venv/*
 runs/*
 *.pt
+models/
+rosbags/
 isaacsim/*
+*.pyc
