@@ -29,6 +29,7 @@ Arguments
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     EnvironmentVariable,
@@ -142,6 +143,7 @@ def generate_launch_description() -> LaunchDescription:
         publish_overlay_arg,
         lane_segmentation_node,
         localization_node,
+        # static_map_to_odom,
         navigator_node,
         nav2_launch,
     ])

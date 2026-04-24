@@ -446,14 +446,24 @@ class IGVCNavigatorNode(Node):
         # Column that corresponds to lateral = 0 (robot centreline).
         centre_col0 = int(round(-orig_y / res))
 
+        # Close-range rows (roughly within ``min_detection_depth_m``) are
+        # always unknown because the depth camera can't see under its own
+        # nose.  Don't terminate on those — skip forward until we find the
+        # first row with any free cells, then start tracking the corridor.
+        entered_band = False
+
         for row in range(H):
             fwd = row * res
             if fwd > self._lookahead:
                 break
             row_free = free_mask[row]
             if not row_free.any():
-                # Row is entirely unknown/blocked — stop extending the
-                # centreline rather than guessing past the sensed region.
+                if not entered_band:
+                    # Still in the blind close-range zone — keep searching.
+                    continue
+                # Row is entirely unknown/blocked after we've already seen
+                # the drivable band — stop extending the centreline rather
+                # than guessing past the sensed region.
                 break
 
             # Window around the target column — this is the key fix.
@@ -465,6 +475,8 @@ class IGVCNavigatorNode(Node):
 
             window_free = row_free[lo:hi]
             if not window_free.any():
+                if not entered_band:
+                    continue
                 break  # corridor closed off around the robot's heading
 
             diff   = np.diff(window_free.astype(np.int8))
@@ -482,7 +494,10 @@ class IGVCNavigatorNode(Node):
                     picked = (s, e)
                     break
             if picked is None:
+                if not entered_band:
+                    continue
                 break
+            entered_band = True
             s, e = picked
             centre_col = lo + 0.5 * (s + e - 1)
             lateral = orig_y + centre_col * res
