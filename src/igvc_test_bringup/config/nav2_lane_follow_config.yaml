@@ -31,7 +31,7 @@ planner_server:
     expected_planner_frequency: 5.0
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: "nav2_smac_planner::SmacPlanner2D"
+      plugin: "nav2_smac_planner/SmacPlanner2D"
       tolerance: 0.5                   # goal tolerance (m) — generous for GPS accuracy
       downsample_costmap: true
       downsampling_factor: 1
@@ -130,28 +130,40 @@ collision_monitor:
     polygons: ["SlowZone", "StopZone"]
 
     # Slow to 50% when anything enters 1.0m ahead
+    # SlowZone:
+    #   type: "polygon"
+    #   action_type: "slowdown"
+    #   polygon_sub_topic: "/collision_monitor/slow_zone"
+    #   footprint_topic: "/local_costmap/published_footprint"
+    #   time_before_collision: 2.0
+    #   simulation_time_step: 0.1
+    #   min_points: 4
+    #   slowdown_ratio: 0.5
+    #   visualize: true
+    #   enabled: false
+
+    # # Hard stop if anything enters 0.4m
+    # StopZone:
+    #   type: "polygon"
+    #   action_type: "stop"
+    #   polygon_sub_topic: "/collision_monitor/stop_zone"
+    #   footprint_topic: "/local_costmap/published_footprint"
+    #   time_before_collision: 0.8
+    #   simulation_time_step: 0.1
+    #   min_points: 4
+    #   visualize: true
+    #   enabled: false
+
+
     SlowZone:
       type: "polygon"
+      points: [[1.0, 0.5], [1.0, -0.5], [0.0, -0.5], [0.0, 0.5]]
       action_type: "slowdown"
-      polygon_sub_topic: "/collision_monitor/slow_zone"
-      footprint_topic: "/local_costmap/published_footprint"
-      time_before_collision: 2.0
-      simulation_time_step: 0.1
-      min_points: 4
-      slowdown_ratio: 0.5
-      visualize: true
       enabled: false
-
-    # Hard stop if anything enters 0.4m
     StopZone:
       type: "polygon"
-      action_type: "stop"
-      polygon_sub_topic: "/collision_monitor/stop_zone"
-      footprint_topic: "/local_costmap/published_footprint"
-      time_before_collision: 0.8
-      simulation_time_step: 0.1
-      min_points: 4
-      visualize: true
+      points: [[1.0, 0.5], [1.0, -0.5], [0.0, -0.5], [0.0, 0.5]]
+      action_type: "slowdown"
       enabled: false
 
     observation_sources: ["front_pointcloud", "left_pointcloud", "right_pointcloud"]

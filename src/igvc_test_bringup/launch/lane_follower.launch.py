@@ -63,7 +63,7 @@ def generate_launch_description() -> LaunchDescription:
         'force_identity_map_to_odom': force_identity_map_to_odom,
     }
 
-    # ── Lane detection ────────────────────────────────────────────────────
+    ── Lane detection ────────────────────────────────────────────────────
     lane_detection_node = Node(
         package='igvc_lane_detection',
         executable='lane_detection_node',
@@ -75,6 +75,15 @@ def generate_launch_description() -> LaunchDescription:
             PathJoinSubstitution([bringup, 'config', 'lane_detection_config.yaml']),
         ],
     )
+
+    # lane_segmentation_node = IncludeLaunchDescription(
+    #     PythonLaunchDescriptionSource(
+    #         PathJoinSubstitution([bringup, 'launch', 'lane_segmentation.launch.py'])
+    #     ),
+    #     launch_arguments={
+    #         'use_sim_time': use_sim_time,
+    #     }.items(),
+    # )
 
     # ── Localization (replaces gps_fallback_node) ─────────────────────────
     localization_node = Node(
@@ -124,6 +133,7 @@ def generate_launch_description() -> LaunchDescription:
         force_identity_map_to_odom_arg,
         use_sim_time_arg,
         lane_detection_node,
+        # lane_segmentation_node,
         localization_node,
         # odom_tf_bridge_node,
         navigator_node,

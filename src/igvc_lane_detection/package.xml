@@ -9,12 +9,16 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>message_filters</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>tf2_geometry_msgs</exec_depend>
   <exec_depend>lifecycle_msgs</exec_depend>
   <exec_depend>navigation2</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
@@ -27,8 +31,11 @@
   <depend>image_geometry</depend>
   <depend>visualization_msgs</depend>
 
-  <!-- Python dependencies via rosdep where possible -->
+  <!-- Python dependencies via rosdep where possible.  torch/ultralytics
+       are installed out-of-band (Jetson JetPack wheel) and listed in
+       setup.py's install_requires; rosdep keys for them do not exist. -->
   <depend>python3-numpy</depend>
+  <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-pip</exec_depend>
 
   <export>
