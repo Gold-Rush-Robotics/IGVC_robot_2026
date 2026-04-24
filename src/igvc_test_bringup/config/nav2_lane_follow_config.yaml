@@ -157,12 +157,14 @@ collision_monitor:
 
     SlowZone:
       type: "polygon"
-      points: [[1.0, 0.5], [1.0, -0.5], [0.0, -0.5], [0.0, 0.5]]
+      # Humble's rcl_yaml_param_parser cannot handle list-of-lists, so the
+      # polygon is given as a flat [x1,y1,x2,y2,...] sequence.
+      points: [1.0, 0.5, 1.0, -0.5, 0.0, -0.5, 0.0, 0.5]
       action_type: "slowdown"
       enabled: false
     StopZone:
       type: "polygon"
-      points: [[1.0, 0.5], [1.0, -0.5], [0.0, -0.5], [0.0, 0.5]]
+      points: [1.0, 0.5, 1.0, -0.5, 0.0, -0.5, 0.0, 0.5]
       action_type: "slowdown"
       enabled: false
 

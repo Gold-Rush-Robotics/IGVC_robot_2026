@@ -319,6 +319,13 @@ class IGVCNavigatorNode(Node):
 
         # Pick next waypoint
         if self._active_wp is None:
+            # Rate-limit the initial-send path too, otherwise a rejected
+            # goal causes 10 Hz spam (update timer fires every 100 ms).
+            if self._last_goal_send_time is not None and (
+                (now - self._last_goal_send_time).nanoseconds / 1e9
+                < self._replan_min_dt
+            ):
+                return
             wp = self._next_waypoint()
             if wp is None:
                 return
@@ -567,7 +574,16 @@ class IGVCNavigatorNode(Node):
             return
 
         if not handle.accepted:
-            self.get_logger().warn('Nav2 rejected goal.')
+            # Back off on rejection the same way we do on abort, otherwise
+            # the _update timer immediately retries and spams the action
+            # server at 10 Hz.
+            self._consecutive_aborts = min(self._consecutive_aborts + 1, 6)
+            backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 4.0)
+            self._abort_backoff_until = (
+                self.get_clock().now() + Duration(seconds=backoff_s))
+            self.get_logger().warn(
+                f'Nav2 rejected goal; backing off {backoff_s:.2f}s before retry.',
+                throttle_duration_sec=1.0)
             return
 
         self._current_goal_seq = goal_seq
