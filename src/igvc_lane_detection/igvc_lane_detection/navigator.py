@@ -442,6 +442,7 @@ class IGVCNavigatorNode(Node):
 
         pts: list[tuple[float, float]] = []
         prev_lat: Optional[float] = None
+        started = False  # True once we've found the first row with free cells
 
         # Column that corresponds to lateral = 0 (robot centreline).
         centre_col0 = int(round(-orig_y / res))
@@ -452,6 +453,12 @@ class IGVCNavigatorNode(Node):
                 break
             row_free = free_mask[row]
             if not row_free.any():
+                # Before the first hit, these are just the near-field
+                # rows that no camera sees (chassis mask + min depth
+                # cutoff).  Keep scanning forward instead of declaring
+                # the lane invisible.
+                if not started:
+                    continue
                 # Row is entirely unknown/blocked — stop extending the
                 # centreline rather than guessing past the sensed region.
                 break
@@ -465,6 +472,8 @@ class IGVCNavigatorNode(Node):
 
             window_free = row_free[lo:hi]
             if not window_free.any():
+                if not started:
+                    continue
                 break  # corridor closed off around the robot's heading
 
             diff   = np.diff(window_free.astype(np.int8))
@@ -482,6 +491,8 @@ class IGVCNavigatorNode(Node):
                     picked = (s, e)
                     break
             if picked is None:
+                if not started:
+                    continue
                 break
             s, e = picked
             centre_col = lo + 0.5 * (s + e - 1)
@@ -491,6 +502,7 @@ class IGVCNavigatorNode(Node):
                 break  # centroid jumped — likely stepped across a line
             pts.append((fwd, lateral))
             prev_lat = lateral
+            started = True
 
         return pts
 
