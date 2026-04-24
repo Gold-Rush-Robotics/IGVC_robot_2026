@@ -6,3 +6,4 @@ dataset/*
 runs/*
 *.pt
 isaacsim/*
+.venv/
