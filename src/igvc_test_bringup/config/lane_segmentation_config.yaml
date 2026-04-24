@@ -39,7 +39,7 @@ lane_segmentation_node:
     # ── Depth sampling ──────────────────────────────────────────────
     depth_scale: 1.0
     min_detection_depth_m: 0.5
-    max_detection_depth_m: .0
+    max_detection_depth_m: 5.0
     depth_search_radius_px: 2
 
     # ── Multi-camera fusion (single-camera for now, left in for future)
@@ -69,7 +69,12 @@ lane_segmentation_node:
     # Mask → point-cloud rasterisation
     da_subsample_px: 6             # drivable-area stride (cheap, dense)
     ll_subsample_px: 2             # lane-line stride (sparse, precise)
-    min_lane_component_px: 150     # reject tiny speckles
+    # Lowered from 150 → 20 px: with the side cameras now contributing
+    # paint, a lot of lane evidence arrives as thin 30-80 px slivers
+    # (dashed markings, far-field lines, oblique angles on the 90°
+    # rotated L/R feeds).  150 px was silently dropping every one of
+    # them, producing overlays full of red paint but lane=0 downstream.
+    min_lane_component_px: 150
     max_points_per_frame:  4000    # per-mask hard cap
 
     # ── Debug ───────────────────────────────────────────────────────
