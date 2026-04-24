@@ -34,6 +34,14 @@ def generate_launch_description() -> LaunchDescription:
             'use_sim_time': use_sim_time,
         }.items(),
     )
+    lane_segmentation = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([bringup, 'launch', 'lane_segmentation.launch.py'])
+        ),
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+        }.items(),
+    )
 
     lane_follower = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -106,7 +114,8 @@ def generate_launch_description() -> LaunchDescription:
         ),
         # zed_multi_fused_odom,
         motor_controllers,
-        lane_follower,
+        # lane_follower,
+        lane_segmentation,
         # odom_to_tf_ros2,
         # gps_node,
         twist_stamper_node,
