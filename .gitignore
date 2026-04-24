@@ -8,4 +8,7 @@ runs/*
 models/
 rosbags/
 isaacsim/*
-*.pyc
+**.pyc
+
+rosbag_export_test/
+yolopv2_bag/

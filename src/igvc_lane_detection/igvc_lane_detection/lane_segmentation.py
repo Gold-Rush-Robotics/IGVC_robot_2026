@@ -116,12 +116,6 @@ class LaneSegmentationNode(Node):
         self.publish_mask_overlay   = p('publish_mask_overlay',     True)
         self.lane_marker_topic      = p('lane_marker_topic',        '/lane_segmentation/lanes')
 
-        # If the YOLOPv2 head ordering ends up inverted (drivable ↔ lane
-        # line masks swapped — common symptom: green fills the whole road
-        # while lane paint is drawn red *inside* the green patch) set
-        # this parameter true to swap them before everything downstream.
-        self.swap_da_ll             = bool(p('swap_da_ll', False))
-
         if not self.model_weights:
             raise RuntimeError(
                 "Parameter 'model_weights' must be set to the path of "
@@ -153,30 +147,9 @@ class LaneSegmentationNode(Node):
         cam_topics   = p('camera_topics',      ['/camera/image_raw'])
         depth_topics = p('depth_topics',       ['/camera/depth/image_raw'])
         info_topics  = p('camera_info_topics', ['/camera/camera_info'])
-        cam_rots_raw = p('camera_rotations',   [0])
 
         num_cameras = min(
             num_cameras, len(cam_topics), len(depth_topics), len(info_topics))
-
-        # Per-camera CCW rotation applied to the RGB frame before YOLOPv2
-        # inference (and inverted on the resulting masks so everything
-        # lines up with depth / intrinsics afterwards).  The side ZEDs
-        # are physically mounted 90 deg off-axis on the mast; without
-        # this the model sees vertical pavement and refuses to produce
-        # a meaningful drivable area or lane mask.
-        self.cam_rotations: list = []
-        for i in range(num_cameras):
-            raw = cam_rots_raw[i] if i < len(cam_rots_raw) else 0
-            try:
-                deg = int(raw) % 360
-            except (TypeError, ValueError):
-                deg = 0
-            if deg not in (0, 90, 180, 270):
-                snapped = min((0, 90, 180, 270), key=lambda d: abs(d - deg))
-                self.get_logger().warn(
-                    f'camera_rotations[{i}]={raw} snapped to {snapped} deg.')
-                deg = snapped
-            self.cam_rotations.append(deg)
 
         self._sync_handles: list = []
         self.overlay_pubs: dict = {}
@@ -346,33 +319,28 @@ class LaneSegmentationNode(Node):
             self.get_logger().error(f'Decode error: {e}')
             return
 
-        # ── Run segmentation model (with optional per-camera rotation
-        #    so side-mounted ZEDs look right-side up to the network).
-        #    We rotate the RGB into canonical road orientation, run
-        #    inference, then rotate the two masks back to the native
-        #    camera frame so depth sampling / intrinsics still line up.
-        rot_deg = (self.cam_rotations[cam_idx]
-                   if cam_idx < len(self.cam_rotations) else 0)
+        # ── Run segmentation model ──
         try:
-            if rot_deg:
-                bgr_rot = self._rotate_image(bgr, rot_deg)
-                da_mask, ll_mask = self.model.infer(bgr_rot)
-                da_mask = self._rotate_image(da_mask, -rot_deg)
-                ll_mask = self._rotate_image(ll_mask, -rot_deg)
-            else:
-                da_mask, ll_mask = self.model.infer(bgr)
+            da_mask, ll_mask = self.model.infer(bgr)
         except Exception as e:
             self.get_logger().error(
                 f'YOLOPv2 inference error: {e}',
                 throttle_duration_sec=2.0)
             return
 
-        # Some YOLOPv2 checkpoints have the two heads in reversed order
-        # (observed empirically: the "drivable" mask traces lane paint
-        # and the "lane line" mask fills the road).  A boolean param
-        # lets the operator correct this without re-tracing the model.
-        if self.swap_da_ll:
-            da_mask, ll_mask = ll_mask, da_mask
+        # Auto-detect when the lane-line head has flooded into free
+        # space (covering more pixels than the drivable-area mask).
+        # Real lane paint is thin; anything sprawling wider than the
+        # drivable area is almost certainly free space mis-labelled as
+        # a line, so drop it to avoid poisoning the lane costmap.
+        da_area = int(np.count_nonzero(da_mask)) if da_mask is not None else 0
+        ll_area = int(np.count_nonzero(ll_mask)) if ll_mask is not None else 0
+        if ll_area > da_area and ll_area > 0:
+            self.get_logger().warn(
+                f'Lane-line mask ({ll_area}px) exceeds drivable-area '
+                f'mask ({da_area}px); discarding as free-space bleed.',
+                throttle_duration_sec=5.0)
+            ll_mask = np.zeros_like(ll_mask)
 
         # ── Apply ROI + chassis mask to both seg outputs ──
         da_mask = self._apply_mask_roi(da_mask)
@@ -493,27 +461,6 @@ class LaneSegmentationNode(Node):
         cx = K[0, 2] if K is not None else w_d / 2.0
         cy = K[1, 2] if K is not None else h_d / 2.0
         return fx, fy, cx, cy
-
-    @staticmethod
-    def _rotate_image(img: np.ndarray, deg: int) -> np.ndarray:
-        """Rotate an image/mask by a multiple of 90 deg (no interpolation).
-
-        ``deg`` is interpreted counter-clockwise; negative values rotate
-        clockwise.  Non-multiples of 90 are not supported — :func:`__init__`
-        snaps config values to the nearest valid option.
-        """
-        if img is None or img.size == 0:
-            return img
-        deg = int(deg) % 360
-        if deg == 0:
-            return img
-        if deg == 90:
-            return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        if deg == 180:
-            return cv2.rotate(img, cv2.ROTATE_180)
-        if deg == 270:
-            return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
-        return img
 
     def _cam_tf_components(self, cam_tf):
         if cam_tf is None:

@@ -1,11 +1,8 @@
 lane_segmentation_node:
   ros__parameters:
     # ── Camera configuration ────────────────────────────────────────
-    # All three ZEDs feed the segmentation pipeline.  The side cameras
-    # are physically mounted 90 deg off-axis on the mast (landscape
-    # rotated into portrait), so we tell the node to de-rotate them
-    # before inference and rotate the masks back afterwards.
-    # camera_rotations is CCW degrees per camera, one of {0, 90, 180, 270}.
+    # All three ZEDs feed the segmentation pipeline in their native
+    # orientation — YOLOPv2 performed better without any pre-rotation.
     num_cameras: 3
     camera_topics:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
@@ -19,7 +16,6 @@ lane_segmentation_node:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
       - "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
       - "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
-    camera_rotations: [0, 90, 270]
 
     # ── Frames ──────────────────────────────────────────────────────
     base_frame: "base_link"
@@ -43,7 +39,7 @@ lane_segmentation_node:
     # ── Depth sampling ──────────────────────────────────────────────
     depth_scale: 1.0
     min_detection_depth_m: 0.5
-    max_detection_depth_m: 20.0
+    max_detection_depth_m: .0
     depth_search_radius_px: 2
 
     # ── Multi-camera fusion (single-camera for now, left in for future)
@@ -75,11 +71,6 @@ lane_segmentation_node:
     ll_subsample_px: 2             # lane-line stride (sparse, precise)
     min_lane_component_px: 150     # reject tiny speckles
     max_points_per_frame:  4000    # per-mask hard cap
-
-    # Set true if the YOLOPv2 head ordering comes out flipped on your
-    # checkpoint (drivable area traces the paint and lane lines fill
-    # the whole road).  Toggle without re-tracing the model.
-    swap_da_ll: true
 
     # ── Debug ───────────────────────────────────────────────────────
     publish_overlay: true
