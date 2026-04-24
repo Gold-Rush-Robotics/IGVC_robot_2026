@@ -28,6 +28,32 @@ def launch_setup(context, *args, **kwargs):
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
     sim_mode = LaunchConfiguration('sim_mode').perform(context)
     disable_tf = LaunchConfiguration('disable_tf').perform(context).lower() == 'true'
+    ros_params_override_path = LaunchConfiguration('ros_params_override_path').perform(context)
+
+    # Resolve the override YAML path (defaults to our local common_stereo.yaml)
+    if not ros_params_override_path:
+        ros_params_override_path = os.path.join(
+            get_package_share_directory('igvc_test_bringup'),
+            'config',
+            'common_stereo.yaml',
+        )
+
+    if not os.path.isfile(ros_params_override_path):
+        return [
+            LogInfo(
+                msg=TextSubstitution(
+                    text=f'ZED ros_params_override_path not found: {ros_params_override_path}'
+                )
+            )
+        ]
+
+    actions.append(
+        LogInfo(
+            msg=TextSubstitution(
+                text=f'ZED multi: applying ros_params_override_path={ros_params_override_path}'
+            )
+        )
+    )
 
     num_cams = len(cam_names)
 
@@ -103,6 +129,7 @@ def launch_setup(context, *args, **kwargs):
             'sim_mode': sim_mode,
             'publish_tf': publish_tf,
             'publish_map_tf': publish_map_tf,
+            'ros_params_override_path': ros_params_override_path,
         }
 
         if namespace:
@@ -167,6 +194,12 @@ def generate_launch_description():
                 'disable_tf',
                 default_value='true',
                 description='Disable ZED odom/map TF publishing for all cameras.',
+            ),
+            DeclareLaunchArgument(
+                'ros_params_override_path',
+                default_value='',
+                description='Path to a YAML file whose parameters override the ZED wrapper defaults. '
+                            'If empty, igvc_test_bringup/config/common_stereo.yaml is used.',
             ),
             OpaqueFunction(function=launch_setup),
         ]
