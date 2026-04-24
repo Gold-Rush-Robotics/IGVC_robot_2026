@@ -80,6 +80,13 @@ class LaneSegmentationNode(Node):
         self.occupancy_grid_frame   = p('occupancy_grid_frame',    self.base_frame)
 
         self.chassis_mask_frac      = p('chassis_mask_frac',        0.15)
+        # Trapezoidal ROI is off by default — the offline bag-replay
+        # experiment showed YOLOPv2 produces noticeably cleaner masks
+        # when fed (and kept on) the full frame, because the trapezoid
+        # was clipping drivable area on the far sides.  Re-enable only
+        # if the wider FOV starts producing spurious detections on the
+        # sky / buildings in a specific venue.
+        self.roi_enabled            = bool(p('roi_enabled',         False))
         self.roi_bottom_frac        = p('roi_bottom_frac',          0.95)
         self.roi_top_frac           = p('roi_top_frac',             0.55)
         self.min_detection_depth_m  = p('min_detection_depth_m',    0.5)
@@ -108,6 +115,12 @@ class LaneSegmentationNode(Node):
         self.max_points_per_frame   = int(p('max_points_per_frame', 4000))
         self.publish_mask_overlay   = p('publish_mask_overlay',     True)
         self.lane_marker_topic      = p('lane_marker_topic',        '/lane_segmentation/lanes')
+
+        # If the YOLOPv2 head ordering ends up inverted (drivable ↔ lane
+        # line masks swapped — common symptom: green fills the whole road
+        # while lane paint is drawn red *inside* the green patch) set
+        # this parameter true to swap them before everything downstream.
+        self.swap_da_ll             = bool(p('swap_da_ll', False))
 
         if not self.model_weights:
             raise RuntimeError(
@@ -140,9 +153,30 @@ class LaneSegmentationNode(Node):
         cam_topics   = p('camera_topics',      ['/camera/image_raw'])
         depth_topics = p('depth_topics',       ['/camera/depth/image_raw'])
         info_topics  = p('camera_info_topics', ['/camera/camera_info'])
+        cam_rots_raw = p('camera_rotations',   [0])
 
         num_cameras = min(
             num_cameras, len(cam_topics), len(depth_topics), len(info_topics))
+
+        # Per-camera CCW rotation applied to the RGB frame before YOLOPv2
+        # inference (and inverted on the resulting masks so everything
+        # lines up with depth / intrinsics afterwards).  The side ZEDs
+        # are physically mounted 90 deg off-axis on the mast; without
+        # this the model sees vertical pavement and refuses to produce
+        # a meaningful drivable area or lane mask.
+        self.cam_rotations: list = []
+        for i in range(num_cameras):
+            raw = cam_rots_raw[i] if i < len(cam_rots_raw) else 0
+            try:
+                deg = int(raw) % 360
+            except (TypeError, ValueError):
+                deg = 0
+            if deg not in (0, 90, 180, 270):
+                snapped = min((0, 90, 180, 270), key=lambda d: abs(d - deg))
+                self.get_logger().warn(
+                    f'camera_rotations[{i}]={raw} snapped to {snapped} deg.')
+                deg = snapped
+            self.cam_rotations.append(deg)
 
         self._sync_handles: list = []
         self.overlay_pubs: dict = {}
@@ -312,14 +346,33 @@ class LaneSegmentationNode(Node):
             self.get_logger().error(f'Decode error: {e}')
             return
 
-        # ── Run segmentation model ──
+        # ── Run segmentation model (with optional per-camera rotation
+        #    so side-mounted ZEDs look right-side up to the network).
+        #    We rotate the RGB into canonical road orientation, run
+        #    inference, then rotate the two masks back to the native
+        #    camera frame so depth sampling / intrinsics still line up.
+        rot_deg = (self.cam_rotations[cam_idx]
+                   if cam_idx < len(self.cam_rotations) else 0)
         try:
-            da_mask, ll_mask = self.model.infer(bgr)
+            if rot_deg:
+                bgr_rot = self._rotate_image(bgr, rot_deg)
+                da_mask, ll_mask = self.model.infer(bgr_rot)
+                da_mask = self._rotate_image(da_mask, -rot_deg)
+                ll_mask = self._rotate_image(ll_mask, -rot_deg)
+            else:
+                da_mask, ll_mask = self.model.infer(bgr)
         except Exception as e:
             self.get_logger().error(
                 f'YOLOPv2 inference error: {e}',
                 throttle_duration_sec=2.0)
             return
+
+        # Some YOLOPv2 checkpoints have the two heads in reversed order
+        # (observed empirically: the "drivable" mask traces lane paint
+        # and the "lane line" mask fills the road).  A boolean param
+        # lets the operator correct this without re-tracing the model.
+        if self.swap_da_ll:
+            da_mask, ll_mask = ll_mask, da_mask
 
         # ── Apply ROI + chassis mask to both seg outputs ──
         da_mask = self._apply_mask_roi(da_mask)
@@ -412,7 +465,13 @@ class LaneSegmentationNode(Node):
             cut = int(h * (1.0 - self.chassis_mask_frac))
             out[cut:, :] = 0
 
-        # Trapezoidal ROI — same geometry as the Hough node.
+        # Trapezoidal ROI — optional.  Off by default: the offline
+        # overlay test showed the full-frame mask is tighter to the
+        # actual road than the trapezoid, which was clipping useful
+        # drivable area at the sides.
+        if not self.roi_enabled:
+            return out
+
         roi = np.zeros((h, w), dtype=np.uint8)
         bot = self.roi_bottom_frac
         top = self.roi_top_frac
@@ -434,6 +493,27 @@ class LaneSegmentationNode(Node):
         cx = K[0, 2] if K is not None else w_d / 2.0
         cy = K[1, 2] if K is not None else h_d / 2.0
         return fx, fy, cx, cy
+
+    @staticmethod
+    def _rotate_image(img: np.ndarray, deg: int) -> np.ndarray:
+        """Rotate an image/mask by a multiple of 90 deg (no interpolation).
+
+        ``deg`` is interpreted counter-clockwise; negative values rotate
+        clockwise.  Non-multiples of 90 are not supported — :func:`__init__`
+        snaps config values to the nearest valid option.
+        """
+        if img is None or img.size == 0:
+            return img
+        deg = int(deg) % 360
+        if deg == 0:
+            return img
+        if deg == 90:
+            return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        if deg == 180:
+            return cv2.rotate(img, cv2.ROTATE_180)
+        if deg == 270:
+            return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        return img
 
     def _cam_tf_components(self, cam_tf):
         if cam_tf is None:

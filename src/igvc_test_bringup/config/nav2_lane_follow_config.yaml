@@ -226,7 +226,23 @@ local_costmap:
         enabled: true
         tf_filter_tolerance: 1.0
         footprint_clearing_enabled: true
-        observation_sources: "front_pointcloud left_pointcloud right_pointcloud"
+        observation_sources: "front_pointcloud left_pointcloud right_pointcloud lidar_scan"
+        # 2-D 360° LiDAR (sllidar / RPLIDAR).  LaserScan sees thin
+        # obstacles (cones, poles, fence posts) the ZED depth smears
+        # away, and its long raytrace range quickly clears stale
+        # marks the cameras can't see behind/around the robot.
+        lidar_scan:
+          topic: /scan
+          data_type: "LaserScan"
+          marking: true
+          clearing: true
+          min_obstacle_height: 0.0
+          max_obstacle_height: 2.0
+          obstacle_max_range: 10.0
+          obstacle_min_range: 0.15
+          raytrace_max_range: 12.0
+          raytrace_min_range: 0.15
+          inf_is_valid: true
         front_pointcloud:
           topic: /front_zed_camera_x/zed_node/point_cloud/cloud_registered
           data_type: "PointCloud2"
@@ -308,7 +324,21 @@ global_costmap:
         enabled: true
         tf_filter_tolerance: 1.0
         footprint_clearing_enabled: true
-        observation_sources: "front_pointcloud left_pointcloud right_pointcloud"
+        observation_sources: "front_pointcloud left_pointcloud right_pointcloud lidar_scan"
+        # 2-D 360° LiDAR — same rationale as the local costmap, but with
+        # the global costmap's longer ranges to match the 30×30 m window.
+        lidar_scan:
+          topic: /scan
+          data_type: "LaserScan"
+          marking: true
+          clearing: true
+          min_obstacle_height: 0.0
+          max_obstacle_height: 2.0
+          obstacle_max_range: 12.0
+          obstacle_min_range: 0.15
+          raytrace_max_range: 15.0
+          raytrace_min_range: 0.15
+          inf_is_valid: true
         front_pointcloud:
           topic: /front_zed_camera_x/zed_node/point_cloud/cloud_registered
           data_type: "PointCloud2"
