@@ -1,4 +1,4 @@
-ekf_filter_node:
+zed_multi_ekf:
   ros__parameters:
     frequency: 30.0
     sensor_timeout: 0.1

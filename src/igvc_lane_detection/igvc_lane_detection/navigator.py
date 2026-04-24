@@ -319,6 +319,13 @@ class IGVCNavigatorNode(Node):
 
         # Pick next waypoint
         if self._active_wp is None:
+            # Rate-limit the initial-send path too, otherwise a rejected
+            # goal causes 10 Hz spam (update timer fires every 100 ms).
+            if self._last_goal_send_time is not None and (
+                (now - self._last_goal_send_time).nanoseconds / 1e9
+                < self._replan_min_dt
+            ):
+                return
             wp = self._next_waypoint()
             if wp is None:
                 return
@@ -447,20 +454,24 @@ class IGVCNavigatorNode(Node):
         # Column that corresponds to lateral = 0 (robot centreline).
         centre_col0 = int(round(-orig_y / res))
 
+        # Close-range rows (roughly within ``min_detection_depth_m``) are
+        # always unknown because the depth camera can't see under its own
+        # nose.  Don't terminate on those — skip forward until we find the
+        # first row with any free cells, then start tracking the corridor.
+        entered_band = False
+
         for row in range(H):
             fwd = row * res
             if fwd > self._lookahead:
                 break
             row_free = free_mask[row]
             if not row_free.any():
-                # Before the first hit, these are just the near-field
-                # rows that no camera sees (chassis mask + min depth
-                # cutoff).  Keep scanning forward instead of declaring
-                # the lane invisible.
-                if not started:
+                if not entered_band:
+                    # Still in the blind close-range zone — keep searching.
                     continue
-                # Row is entirely unknown/blocked — stop extending the
-                # centreline rather than guessing past the sensed region.
+                # Row is entirely unknown/blocked after we've already seen
+                # the drivable band — stop extending the centreline rather
+                # than guessing past the sensed region.
                 break
 
             # Window around the target column — this is the key fix.
@@ -472,7 +483,7 @@ class IGVCNavigatorNode(Node):
 
             window_free = row_free[lo:hi]
             if not window_free.any():
-                if not started:
+                if not entered_band:
                     continue
                 break  # corridor closed off around the robot's heading
 
@@ -491,9 +502,10 @@ class IGVCNavigatorNode(Node):
                     picked = (s, e)
                     break
             if picked is None:
-                if not started:
+                if not entered_band:
                     continue
                 break
+            entered_band = True
             s, e = picked
             centre_col = lo + 0.5 * (s + e - 1)
             lateral = orig_y + centre_col * res
@@ -564,7 +576,16 @@ class IGVCNavigatorNode(Node):
             return
 
         if not handle.accepted:
-            self.get_logger().warn('Nav2 rejected goal.')
+            # Back off on rejection the same way we do on abort, otherwise
+            # the _update timer immediately retries and spams the action
+            # server at 10 Hz.
+            self._consecutive_aborts = min(self._consecutive_aborts + 1, 6)
+            backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 4.0)
+            self._abort_backoff_until = (
+                self.get_clock().now() + Duration(seconds=backoff_s))
+            self.get_logger().warn(
+                f'Nav2 rejected goal; backing off {backoff_s:.2f}s before retry.',
+                throttle_duration_sec=1.0)
             return
 
         self._current_goal_seq = goal_seq
