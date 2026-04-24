@@ -6,16 +6,16 @@ lane_segmentation_node:
     num_cameras: 3
     camera_topics:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
-      - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
-      - "/right_zed_camera_x/zed_node/rgb/color/rect/image"
+      # - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
+      # - "/right_zed_camera_x/zed_node/rgb/color/rect/image"
     depth_topics:
       - "/front_zed_camera_x/zed_node/depth/depth_registered"
-      - "/left_zed_camera_x/zed_node/depth/depth_registered"
-      - "/right_zed_camera_x/zed_node/depth/depth_registered"
+      # - "/left_zed_camera_x/zed_node/depth/depth_registered"
+      # - "/right_zed_camera_x/zed_node/depth/depth_registered"
     camera_info_topics:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
-      - "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
-      - "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+      # - "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+      # - "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
 
     # ── Frames ──────────────────────────────────────────────────────
     base_frame: "base_link"
@@ -61,7 +61,7 @@ lane_segmentation_node:
     # model_weights is intentionally empty — the launch file fills it
     # in from $YOLOPV2_WEIGHTS or the model_weights launch argument so
     # the absolute path stays out of source control.
-    model_weights: "/home/nitin/Documents/DevEnv/jazzy_ws/IGVC_robot_2026/models/yolopv2.pt"
+    model_weights: "/ros2_ws/src/IGVC_robot_2026/models/yolopv2.pt"
     model_device:  "cuda:0"
     model_half:    true
     model_img_size: 640

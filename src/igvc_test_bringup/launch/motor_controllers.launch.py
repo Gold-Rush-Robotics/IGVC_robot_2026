@@ -50,7 +50,7 @@ def generate_launch_description():
     control_node = Node(
         package="controller_manager",
         executable="ros2_control_node",
-        parameters=[{'use_sim_time': use_sim_time }, controllers_file],
+        parameters=[{'use_sim_time': use_sim_time }, description_params,controllers_file],
         output="screen",
     )
 
@@ -121,6 +121,6 @@ def generate_launch_description():
         joint_state_broadcaster_spawner,
         diff_drive_spawner,
         # rviz2_delay,
-        # joy,
-        # joy_teleop,
+        joy,
+        joy_teleop,
     ])
