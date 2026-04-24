@@ -33,7 +33,6 @@
   <exec_depend>igvc_lane_detection</exec_depend>
   <exec_depend>grr_hardware</exec_depend>
   <exec_depend>sllidar_ros2</exec_depend>
-  <exec_depend>zed_wrapper</exec_depend>
   <exec_depend>ublox_gps</exec_depend>
 
   <export>
