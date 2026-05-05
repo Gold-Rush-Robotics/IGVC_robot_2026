@@ -1,0 +1,250 @@
+# Custom object detection configuration for IGVC YOLOv12 trained model
+# This file configures the CUSTOM object detection parameters for ZED camera.
+# Classes trained on IGVC 2026 competition tasks dataset.
+
+/**:
+  ros__parameters:
+    object_detection:
+      custom_onnx_file: '' # Path to the YOLO-like ONNX file (e.g., /path/to/best.onnx)
+      custom_onnx_input_size: 512 # Resolution used with the YOLO-like ONNX file. For example, 512 means a input tensor '1x3x512x512'
+      custom_class_count: 15 # Number of classes in the custom ONNX file.
+      
+      class_000:
+        label: '3'
+        model_class_id: 0
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: false
+        is_static: false
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_001:
+        label: 'Tire'
+        model_class_id: 1
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_002:
+        label: 'pedestrianCrossing'
+        model_class_id: 2
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_003:
+        label: 'person'
+        model_class_id: 3
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: false
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_004:
+        label: 'signalAhead'
+        model_class_id: 4
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_005:
+        label: 'speedLimit20'
+        model_class_id: 5
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_006:
+        label: 'speedLimit25'
+        model_class_id: 6
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_007:
+        label: 'speedLimit30'
+        model_class_id: 7
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_008:
+        label: 'speedLimit35'
+        model_class_id: 8
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_009:
+        label: 'speedLimit40'
+        model_class_id: 9
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_010:
+        label: 'stop'
+        model_class_id: 10
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_011:
+        label: 'stopAhead'
+        model_class_id: 11
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_012:
+        label: 'tire'
+        model_class_id: 12
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_013:
+        label: 'traffic barrel'
+        model_class_id: 13
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
+
+      class_014:
+        label: 'yield'
+        model_class_id: 14
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+        tracking_timeout: -1.0
+        tracking_max_dist: -1.0
+        object_acceleration_preset: 'DEFAULT'
+        max_allowed_acceleration: 100000.0
+        velocity_smoothing_factor: 0.5
+        min_velocity_threshold: 0.2
+        prediction_timeout_s: 0.5
+        min_confirmation_time_s: 0.05
