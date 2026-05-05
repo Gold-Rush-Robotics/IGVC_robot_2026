@@ -1,21 +1,69 @@
 lane_detection_node:
   ros__parameters:
     # Camera configuration
-    num_cameras: 1
+    num_cameras: 3
     camera_topics:
-      - "/zed/zed_node/rgb/image_rect_color"
+      - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
+      - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
+      - "/right_zed_camera_x/zed_node/rgb/color/rect/image"
+
     depth_topics:
-      - "/zed/zed_node/depth/depth_registered"
+      - "/front_zed_camera_x/zed_node/depth/depth_registered"
+      - "/left_zed_camera_x/zed_node/depth/depth_registered"
+      - "/right_zed_camera_x/zed_node/depth/depth_registered"
     camera_info_topics:
-      - "/zed/zed_node/rgb/camera_info"
+      - "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+      - "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+      - "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
     
     # Feature flags
     use_depth: true
+
+    # Multi-camera lane fusion
+    lane_fusion_frame: "map"
+    fusion_timeout_sec: 0.5
+    keep_last_grid_on_miss: true
+    min_lane_points: 8
+
+    # TF requirements for FollowPath goal dispatch
+    required_tf_target_frame: "odom"
+    tf_debug_target_frames: ["base_link", "odom", "map"]
+
+    # Camera overlay debug topics
+    publish_overlay_debug: true
+    overlay_topic_prefix: "/lane_debug"
     
     # Output topics
-    lane_center_topic: "/lane_center"
+    lane_center_debug_topic: "/lane_center_debug"
+    occupancy_grid_topic: "/map"
+    occupancy_grid_frame: "base_link"
+
+    # Nav2 FollowPath action bridge
+    enable_follow_path_action: true
+    follow_path_action_name: "follow_path"
+    follow_path_controller_id: "FollowPath"
+    follow_path_goal_checker_id: "goal_checker"
+    min_action_send_period_sec: 0.25
     
     # Occupancy grid parameters
     grid_resolution: 0.05    # meters per cell
-    grid_width: 1000.0         # total grid width in meters
-    grid_height: 1000.0        # total grid height (forward distance) in meters
+    grid_width: 20.0         # total grid width in meters
+    grid_height: 20.0        # total grid height (forward distance) in meters
+
+    # Region of interest / body cropping — tuned so near-field lane
+    # pixels survive while the sky/horizon (buildings, trees, clouds) is
+    # cut out.  roi_top_frac must stay *below* the horizon line.
+    chassis_mask_frac: 0.10
+    roi_bottom_frac:  0.95
+    roi_top_frac:     0.62
+
+    # Persistent (fixed-frame) lane map.  100 m × 100 m at 0.1 m was
+    # 1 M cells and tolist()-serialising that at 2 Hz was blocking the
+    # rclpy executor, starving the per-frame callback.  40 m × 40 m @
+    # 0.125 m = ~100 k cells is plenty for an IGVC AutoNav run.
+    persistent_map_frame:      "map"
+    persistent_map_size_m:    40.0
+    persistent_map_resolution: 0.125
+    persistent_publish_hz:     1.0
+
+    lane_retention_sec: 2.0

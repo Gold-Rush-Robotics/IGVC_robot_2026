@@ -1,0 +1,64 @@
+# File: lane_detector_params.yaml
+# ROS2 parameter file for the multi_camera_lane_detector node
+# Usage:
+#   ros2 run your_package multi_camera_lane_detector \
+#     --ros-args --params-file $(ros2 pkg prefix your_package)/share/your_package/config/lane_detector_params.yaml
+#
+# Or in a launch file:
+#   Node(
+#       package='your_package',
+#       executable='multi_camera_lane_detector',
+#       name='multi_camera_lane_detector',
+#       parameters=[path_to_this_yaml]
+#   )
+
+multi_camera_lane_detection_node:
+  ros__parameters:
+
+    # =================================================================
+    # Core parameters
+    # =================================================================
+    camera_names: ["front", "left", "right"]      # Order matters for debug stitching (left → front → right)
+    target_frame: "map"                           # Frame in which lane points / lines are published (use "base_link" if you prefer robot frame)
+
+    # Topics published by this node
+    lane_pc_topic: "/lane_points"                 # PointCloud2 of all lane pixels (feed directly into Nav2 costmap)
+    lane_markers_topic: "/lane_markers"           # MarkerArray with LINE_STRIP (green = left lane, red = right lane) + POINTS
+    debug_stitched_topic: "/debug/stitched_lanes" # RGB image with cyan lane overlay + labels (visualize in RViz)
+
+    # (Optional) Only used if you later enable the OccupancyGrid publisher
+    costmap_topic: "/map"
+
+    # =================================================================
+    # Model selection
+    # =================================================================
+    # Options:
+    #   1. "Highsky7/YOLOTL"          ← recommended pretrained YOLOv8-seg (best for your node)
+    #   2. "/absolute/path/to/best.pt" ← local model you trained/exported
+    #   3. "" (empty string)           ← falls back to fast OpenCV white/yellow detection
+    model_path: ""
+
+    # =================================================================
+    # Per-camera topics (must match your actual camera drivers)
+    # =================================================================
+    # Front camera
+    
+    front_rgb_topic: "/front_zed_camera_x/zed_node/rgb/color/rect/image"
+    front_depth_topic: "/front_zed_camera_x/zed_node/depth/depth_registered"
+    front_info_topic: "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+
+    left_rgb_topic: "/left_zed_camera_x/zed_node/rgb/color/rect/image"
+    left_depth_topic: "/left_zed_camera_x/zed_node/depth/depth_registered"
+    left_info_topic: "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+
+    right_rgb_topic: "/right_zed_camera_x/zed_node/rgb/color/rect/image"
+    right_depth_topic: "/right_zed_camera_x/zed_node/depth/depth_registered"
+    right_info_topic: "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+
+    # =================================================================
+    # Advanced tuning (optional - defaults are good for most setups)
+    # =================================================================
+    # You can add these if you want to override the hardcoded values inside the node:
+    # fusion_rate_hz: 10.0          # How often the fusion_timer runs (currently fixed at 0.1 s = 10 Hz)
+    # ransac_distance_threshold: 0.15  # meters - how close a point must be to the line
+    # max_lane_distance_m: 20.0     # depth filter in project_mask_to_3d
