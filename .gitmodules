@@ -6,7 +6,7 @@
 	url = https://github.com/Gold-Rush-Robotics/IGVC_track_generator.git
 [submodule "isaac/exts"]
 	path = isaac/exts
-	url = https://github.com/stereolabs/zed-isaac-sim.git
+	url = https://github.com/Gold-Rush-Robotics/zed-isaac-sim.git
 [submodule "src/genesis_ros"]
 	path = src/genesis_ros
 	url = https://github.com/vybhav-ibr/genesis_ros.git
@@ -18,7 +18,7 @@
 	url = https://github.com/Slamtec/sllidar_ros2.git
 [submodule "src/ros_odrive"]
 	path = src/ros_odrive
-	url = https://github.com/odriverobotics/ros_odrive.git
+	url = https://github.com/Gold-Rush-Robotics/flipsky_odesc_ros_odrive.git
 [submodule "src/ros2-ublox-zedf9p"]
 	path = src/ros2-ublox-zedf9p
 	url = https://github.com/AAU-Space-Robotics/ros2-ublox-zedf9p.git

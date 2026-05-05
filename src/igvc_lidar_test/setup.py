@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'ivgc_lidar_test'
+package_name = 'igvc_lidar_test'
 
 setup(
     name=package_name,
@@ -24,8 +24,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'lidar_test = ivgc_lidar_test.lidar_test:main',
-            'lidar_save = ivgc_lidar_test.lidar_save:main',
+            'lidar_test = igvc_lidar_test.lidar_test:main',
+            'lidar_save = igvc_lidar_test.lidar_save:main',
         ],
     },
 )
