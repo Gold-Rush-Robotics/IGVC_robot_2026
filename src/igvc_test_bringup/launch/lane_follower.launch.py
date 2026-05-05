@@ -17,8 +17,13 @@ Arguments
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    PythonExpression,
+)
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -42,6 +47,12 @@ def generate_launch_description() -> LaunchDescription:
             'If true, pin map→odom to identity (0,0,0,0,0,0) for the full run. '
             'This overrides GPS/localization ownership of the transform.'))
 
+    navigator_profile_arg = DeclareLaunchArgument(
+        'navigator_profile',
+        default_value='autonav',
+        choices=['autonav', 'fsd'],
+        description='Select navigation behavior profile/executable.')
+
     use_sim_time_arg = DeclareLaunchArgument(
         'use_sim_time',
         default_value='false',
@@ -51,6 +62,7 @@ def generate_launch_description() -> LaunchDescription:
     gps_enabled  = LaunchConfiguration('gps_enabled')
     force_identity_map_to_odom = LaunchConfiguration('force_identity_map_to_odom')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    navigator_profile = LaunchConfiguration('navigator_profile')
 
     bringup = FindPackageShare('igvc_test_bringup')
 
@@ -63,7 +75,7 @@ def generate_launch_description() -> LaunchDescription:
         'force_identity_map_to_odom': force_identity_map_to_odom,
     }
 
-    ── Lane detection ────────────────────────────────────────────────────
+    # ── Lane detection ────────────────────────────────────────────────────
     lane_detection_node = Node(
         package='igvc_lane_detection',
         executable='lane_detection_node',
@@ -108,12 +120,26 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ── Navigator (replaces waypoint_navigator + local_progress_node) ─────
-    navigator_node = Node(
+    navigator_autonav_node = Node(
         package='igvc_lane_detection',
-        executable='navigation_node',
+        executable='navigation_autonav_node',
         name='igvc_navigator',
         output='screen',
         parameters=[shared_params],
+        condition=IfCondition(PythonExpression([
+            "'", navigator_profile, "' == 'autonav'"
+        ])),
+    )
+
+    navigator_fsd_node = Node(
+        package='igvc_lane_detection',
+        executable='navigation_fsd_node',
+        name='igvc_navigator',
+        output='screen',
+        parameters=[shared_params],
+        condition=IfCondition(PythonExpression([
+            "'", navigator_profile, "' == 'fsd'"
+        ])),
     )
 
     # ── Nav2 ──────────────────────────────────────────────────────────────
@@ -131,12 +157,14 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         gps_enabled_arg,
         force_identity_map_to_odom_arg,
+        navigator_profile_arg,
         use_sim_time_arg,
         lane_detection_node,
         # lane_segmentation_node,
         localization_node,
         # odom_tf_bridge_node,
-        navigator_node,
+        navigator_autonav_node,
+        navigator_fsd_node,
         nav2_launch,
     ])
 

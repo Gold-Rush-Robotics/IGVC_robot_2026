@@ -1,0 +1,12 @@
+task_id: iv1_parking_pull_out
+display_name: IV.1 Parking Pull Out
+category: function
+rule_ref: "2026 IGVC rules Table 2"
+supports_modes: [sim, hardware]
+required_checks: [odom, front_camera, lane_costmap, localization_status]
+maneuvers: [parking_pull_out]
+perception_targets: [parking_space, lane_lines]
+max_points: 100
+penalty_points: -25
+completion:
+  type: manual

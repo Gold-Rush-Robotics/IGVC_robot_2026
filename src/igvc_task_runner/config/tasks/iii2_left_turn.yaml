@@ -1,0 +1,12 @@
+task_id: iii2_left_turn
+display_name: III.2 Left Turn
+category: function
+rule_ref: "2026 IGVC rules Table 2"
+supports_modes: [sim, hardware]
+required_checks: [odom, front_camera, lane_costmap, lane_path, localization_status]
+maneuvers: [intersection_left_turn]
+perception_targets: [lane_lines, intersection]
+max_points: 100
+penalty_points: -25
+completion:
+  type: manual

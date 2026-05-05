@@ -1,0 +1,32 @@
+task_id: full_course_2026
+display_name: 2026 Self Drive Full Course
+category: full_course
+rule_ref: "2026 IGVC rules Table 3"
+supports_modes: [sim, hardware]
+required_checks: [odom, front_camera, lane_costmap, lane_path, localization_status]
+max_points: 2100
+penalty_points: -25
+completion:
+  type: manual
+sequence:
+  - {step: 1, task: iii3_right_turn, name: Right Turn at Intersection}
+  - {step: 2, task: iii1_lane_keeping, name: Lane Keeping}
+  - {step: 3, task: vi1_curved_road_lane_keeping, name: Curved Road Lane Keeping}
+  - {step: 4, task: v4_obstacle_detection_lane_changing, name: Obstacle Lane Changing}
+  - {step: 5, task: iii1_lane_keeping, name: Lane Keeping}
+  - {step: 6, task: v4_obstacle_detection_lane_changing, name: Obstacle Lane Changing}
+  - {step: 7, task: iii1_lane_keeping, name: Lane Keeping}
+  - {step: 8, task: ii1_stop_sign_detection, name: Stop Sign Detection}
+  - {step: 9, task: iii3_right_turn, name: Right Turn at Intersection}
+  - {step: 10, task: iii1_lane_keeping, name: Lane Keeping}
+  - {step: 11, task: v2_obstructed_dynamic_pedestrian_detection, name: Obstructed Dynamic Pedestrian}
+  - {step: 12, task: iii1_lane_keeping, name: Lane Keeping}
+  - {step: 13, task: vi1_curved_road_lane_keeping, name: Curved Road Lane Keeping}
+  - {step: 14, task: iii1_lane_keeping, name: Lane Keeping}
+  - {step: 15, task: vii1_pothole_detection, name: Pothole Detection}
+  - {step: 16, task: iii1_lane_keeping, name: Lane Keeping}
+  - {step: 17, task: i2_tire_detection, name: Tire Detection Lane Changing}
+  - {step: 18, task: vi1_curved_road_lane_keeping, name: Curved Road Lane Keeping}
+  - {step: 19, task: ii1_stop_sign_detection, name: Stop Sign Detection Fake Real Sign}
+  - {step: 20, task: iii2_left_turn, name: Left Turn at Intersection}
+  - {step: 21, task: iv2_parking_pull_in, name: Parking Pull In}

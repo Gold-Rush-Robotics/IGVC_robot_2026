@@ -1,0 +1,10 @@
+task_id: q2_lines_detection
+display_name: Qualification Q.2 Lines Detection
+category: qualification
+rule_ref: "2026 IGVC rules Table 1"
+supports_modes: [sim, hardware]
+required_checks: [front_camera, lane_costmap]
+maneuvers: [detect_lanes]
+perception_targets: [lane_lines]
+completion:
+  type: manual

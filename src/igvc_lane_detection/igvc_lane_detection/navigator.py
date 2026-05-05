@@ -25,6 +25,16 @@ In both modes the lane costmap already carries lethal costs on the
 boundaries, so Nav2's RegulatedPurePursuit controller + inflation layer
 handle obstacle / boundary avoidance without any additional logic here.
 
+Task-runner maneuver integration
+    Navigator consumes /igvc/maneuver_command (std_msgs/String JSON)
+    and adjusts carrot generation and goal dispatch behavior for:
+      * intersection_turn
+      * intersection_straight
+      * lane_change
+      * avoid_obstacle
+      * parking
+      * stop_at_sign / yield_to_target / perception_check
+
 Parameters
     gps_enabled           bool    true
     gps_topic             str     /gps/fix
@@ -37,6 +47,12 @@ Parameters
     waypoint_horizon_m    float   1.8     sim: how far ahead to place carrot
     replan_dist_m         float   0.6     sim: re-send goal when carrot moves this far
     lane_hold_sec         float   1.0     sim: reuse the last valid lane carrot briefly
+    maneuver_command_topic str    /igvc/maneuver_command
+    maneuver_cmd_timeout_sec float 2.0    stale command fallback timeout
+    turn_lateral_bias_m   float   0.7     lateral offset during turns
+    lane_change_bias_m    float   1.0     lateral offset during lane changes
+    parking_forward_m     float   1.2     short forward target for parking maneuvers
+    obstacle_horizon_m    float   1.1     short horizon while avoiding obstacles
     path_lookahead_m      float   4.0     centreline extraction depth
     grid_resolution       float   0.05
     grid_width_m          float   10.0
@@ -47,6 +63,7 @@ Subscriptions
     /lane_costmap         OccupancyGrid
     /odom                 Odometry
     /localization_status  std_msgs/String  from igvc_localization
+    /igvc/maneuver_command std_msgs/String JSON command from igvc_task_runner
 
 Publications
     /lane_path            nav_msgs/Path    dense centreline for visualisation
@@ -54,9 +71,10 @@ Publications
 
 from __future__ import annotations
 
+import json
 import math
 from collections import deque
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -64,8 +82,12 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
-from rclpy.qos import (DurabilityPolicy, HistoryPolicy,
-                        QoSProfile, ReliabilityPolicy)
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from rclpy.time import Time
 
 from action_msgs.msg import GoalStatus
@@ -80,18 +102,20 @@ import tf2_geometry_msgs  # noqa: F401
 
 # ── WGS-84 flat-earth helpers ─────────────────────────────────────────────────
 
-_WGS84_A  = 6_378_137.0
+_WGS84_A = 6_378_137.0
 _WGS84_E2 = 0.006_694_379_990_14
 
 
 def _ecef(lat_deg: float, lon_deg: float, alt: float = 0.0) -> tuple[float, float, float]:
     lat = math.radians(lat_deg)
     lon = math.radians(lon_deg)
-    N   = _WGS84_A / math.sqrt(1.0 - _WGS84_E2 * math.sin(lat) ** 2)
-    c   = math.cos(lat)
-    return ((N + alt) * c * math.cos(lon),
-            (N + alt) * c * math.sin(lon),
-            (N * (1.0 - _WGS84_E2) + alt) * math.sin(lat))
+    n = _WGS84_A / math.sqrt(1.0 - _WGS84_E2 * math.sin(lat) ** 2)
+    c = math.cos(lat)
+    return (
+        (n + alt) * c * math.cos(lon),
+        (n + alt) * c * math.sin(lon),
+        (n * (1.0 - _WGS84_E2) + alt) * math.sin(lat),
+    )
 
 
 def gps_to_map(lat: float, lon: float,
@@ -104,14 +128,14 @@ def gps_to_map(lat: float, lon: float,
     px, py, pz = _ecef(lat, lon)
     dx, dy, dz = px - ox, py - oy, pz - oz
     lat0, lon0 = math.radians(origin_lat), math.radians(origin_lon)
-    east  = -math.sin(lon0) * dx + math.cos(lon0) * dy
-    north = (-math.sin(lat0) * math.cos(lon0) * dx
-             - math.sin(lat0) * math.sin(lon0) * dy
-             + math.cos(lat0) * dz)
+    east = -math.sin(lon0) * dx + math.cos(lon0) * dy
+    north = (
+        -math.sin(lat0) * math.cos(lon0) * dx
+        - math.sin(lat0) * math.sin(lon0) * dy
+        + math.cos(lat0) * dz
+    )
     return east, north
 
-
-# ── Small data class ──────────────────────────────────────────────────────────
 
 class _Waypoint:
     __slots__ = ('x', 'y')
@@ -126,135 +150,145 @@ class _Waypoint:
     def to_pose_stamped(self, frame: str, stamp) -> PoseStamped:
         ps = PoseStamped()
         ps.header.frame_id = frame
-        ps.header.stamp    = stamp
+        ps.header.stamp = stamp
         ps.pose.position.x = self.x
         ps.pose.position.y = self.y
         ps.pose.orientation.w = 1.0
         return ps
 
 
-# ── Node ──────────────────────────────────────────────────────────────────────
-
 class IGVCNavigatorNode(Node):
 
-    def __init__(self) -> None:
-        super().__init__('igvc_navigator')
+    def __init__(
+        self,
+        *,
+        node_name: str = 'igvc_navigator',
+        enable_maneuver_modes: bool = True,
+    ) -> None:
+        super().__init__(node_name)
+        self._enable_maneuver_modes = enable_maneuver_modes
 
-        # ── Parameters ────────────────────────────────────────────────────
         self._declare_params()
-        self._gps_enabled     = self._p('gps_enabled',        True)
-        self._gps_topic       = self._p('gps_topic',          '/gps/fix')
-        self._origin_lat      = self._p('origin_lat',          0.0)
-        self._origin_lon      = self._p('origin_lon',          0.0)
-        self._origin_set      = (self._origin_lat != 0.0 or self._origin_lon != 0.0)
-        self._map_frame       = self._p('map_frame',           'map')
-        self._base_frame      = self._p('base_frame',          'base_link')
-        self._goal_tol        = self._p('goal_tolerance_m',    1.2)
-        self._horizon         = self._p('waypoint_horizon_m',  1.8)
-        self._replan_dist     = self._p('replan_dist_m',       0.6)
-        self._lane_hold_sec   = self._p('lane_hold_sec',       1.0)
-        self._replan_min_dt   = self._p('replan_min_dt_sec',   0.7)
-        self._lookahead       = self._p('path_lookahead_m',    4.0)
-        self._grid_res        = self._p('grid_resolution',     0.05)
-        self._grid_w          = self._p('grid_width_m',       10.0)
-        self._nav_action_name = self._p('nav_action',         'navigate_to_pose')
+        self._gps_enabled = self._p('gps_enabled', True)
+        self._gps_topic = self._p('gps_topic', '/gps/fix')
+        self._origin_lat = self._p('origin_lat', 0.0)
+        self._origin_lon = self._p('origin_lon', 0.0)
+        self._origin_set = (self._origin_lat != 0.0 or self._origin_lon != 0.0)
+        self._map_frame = self._p('map_frame', 'map')
+        self._base_frame = self._p('base_frame', 'base_link')
+        self._goal_tol = self._p('goal_tolerance_m', 1.2)
+        self._horizon = self._p('waypoint_horizon_m', 1.8)
+        self._replan_dist = self._p('replan_dist_m', 0.6)
+        self._lane_hold_sec = self._p('lane_hold_sec', 1.0)
+        self._replan_min_dt = self._p('replan_min_dt_sec', 0.7)
+        self._lookahead = self._p('path_lookahead_m', 4.0)
+        self._grid_res = self._p('grid_resolution', 0.05)
+        self._grid_w = self._p('grid_width_m', 10.0)
+        self._nav_action_name = self._p('nav_action', 'navigate_to_pose')
+        self._maneuver_topic = self._p('maneuver_command_topic', '/igvc/maneuver_command')
+        self._maneuver_timeout_sec = self._p('maneuver_cmd_timeout_sec', 2.0)
+        self._turn_bias_m = self._p('turn_lateral_bias_m', 0.7)
+        self._lane_change_bias_m = self._p('lane_change_bias_m', 1.0)
+        self._parking_forward_m = self._p('parking_forward_m', 1.2)
+        self._obstacle_horizon_m = self._p('obstacle_horizon_m', 1.1)
 
-        # ── Internal state ────────────────────────────────────────────────
-        # GPS mode: queue of _Waypoint in map frame, consumed as robot arrives
         self._gps_queue: deque[_Waypoint] = deque()
 
-        # Shared: the waypoint currently being executed by Nav2
         self._active_wp: Optional[_Waypoint] = None
-        self._goal_handle   = None
-        self._goal_pending  = False
+        self._goal_handle = None
+        self._goal_pending = False
         self._next_goal_seq = 0
         self._current_goal_seq = 0
         self._last_lane_wp: Optional[_Waypoint] = None
         self._last_lane_wp_time = None
-        self._loc_status    = 'sim' if not self._gps_enabled else 'initializing'
+        self._loc_status = 'sim' if not self._gps_enabled else 'initializing'
         self._last_goal_send_time = None
-        # Backoff: don't re-send a new goal immediately after an ABORT.
+        self._maneuver_cmd: Optional[dict[str, Any]] = None
+        self._maneuver_cmd_time = None
         self._abort_backoff_until = None
         self._consecutive_aborts = 0
 
-        # Latest sensor data
         self._grid: Optional[OccupancyGrid] = None
-        self._robot_xy: Optional[tuple[float, float]] = None  # odom frame
+        self._robot_xy: Optional[tuple[float, float]] = None
         self._robot_yaw: Optional[float] = None
 
-        # ── TF ────────────────────────────────────────────────────────────
-        self._tf_buf      = Buffer()
+        self._tf_buf = Buffer()
         self._tf_listener = TransformListener(self._tf_buf, self)
 
-        # ── Nav2 action client ────────────────────────────────────────────
         self._nav = ActionClient(self, NavigateToPose, self._nav_action_name)
 
-        # ── QoS ───────────────────────────────────────────────────────────
         map_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            history=HistoryPolicy.KEEP_LAST, depth=1)
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST, depth=5)
+            history=HistoryPolicy.KEEP_LAST,
+            depth=5,
+        )
 
-        # ── Subscriptions ─────────────────────────────────────────────────
-        self.create_subscription(OccupancyGrid, '/lane_costmap',
-                                 self._on_grid, map_qos)
-        self.create_subscription(Odometry, '/odom',
-                                 self._on_odom, 10)
-        self.create_subscription(String, '/localization_status',
-                                 self._on_loc_status, 10)
+        self.create_subscription(OccupancyGrid, '/lane_costmap', self._on_grid, map_qos)
+        self.create_subscription(Odometry, '/odom', self._on_odom, 10)
+        self.create_subscription(String, '/localization_status', self._on_loc_status, 10)
+        if self._enable_maneuver_modes:
+            self.create_subscription(
+                String, self._maneuver_topic, self._on_maneuver_cmd, 10)
 
         if self._gps_enabled:
-            self.create_subscription(NavSatFix, self._gps_topic,
-                                     self._on_gps, sensor_qos)
+            self.create_subscription(NavSatFix, self._gps_topic, self._on_gps, sensor_qos)
             self.get_logger().info(
                 f'Navigator: GPS mode — listening on {self._gps_topic}')
         else:
             self.get_logger().info(
                 'Navigator: sim mode — autonomous lane waypoint generation.')
+        if self._enable_maneuver_modes:
+            self.get_logger().info(
+                f'Navigator: maneuver command topic {self._maneuver_topic}')
+        else:
+            self.get_logger().info(
+                'Navigator: AutoNav profile (maneuver commands disabled).')
 
-        # ── Publishers ────────────────────────────────────────────────────
         self._path_pub = self.create_publisher(Path, '/lane_path', 10)
 
-        # ── Main loop ─────────────────────────────────────────────────────
-        self.create_timer(0.1, self._update)   # 10 Hz
-
-    # ── Parameter helpers ─────────────────────────────────────────────────
+        self.create_timer(0.1, self._update)
 
     def _declare_params(self) -> None:
         for name, default in [
-            ('gps_enabled',       True),
-            ('gps_topic',         '/gps/fix'),
-            ('origin_lat',         0.0),
-            ('origin_lon',         0.0),
-            ('map_frame',         'map'),
-            ('odom_frame',        'odom'),
-            ('base_frame',        'base_link'),
-            ('goal_tolerance_m',   1.2),
+            ('gps_enabled', True),
+            ('gps_topic', '/gps/fix'),
+            ('origin_lat', 0.0),
+            ('origin_lon', 0.0),
+            ('map_frame', 'map'),
+            ('odom_frame', 'odom'),
+            ('base_frame', 'base_link'),
+            ('goal_tolerance_m', 1.2),
             ('waypoint_horizon_m', 1.8),
-            ('replan_dist_m',      0.6),
-            ('lane_hold_sec',      1.0),
-            ('replan_min_dt_sec',  0.7),
-            ('path_lookahead_m',   4.0),
-            ('grid_resolution',    0.05),
-            ('grid_width_m',      10.0),
-            ('nav_action',        'navigate_to_pose'),
+            ('replan_dist_m', 0.6),
+            ('lane_hold_sec', 1.0),
+            ('replan_min_dt_sec', 0.7),
+            ('maneuver_command_topic', '/igvc/maneuver_command'),
+            ('maneuver_cmd_timeout_sec', 2.0),
+            ('turn_lateral_bias_m', 0.7),
+            ('lane_change_bias_m', 1.0),
+            ('parking_forward_m', 1.2),
+            ('obstacle_horizon_m', 1.1),
+            ('path_lookahead_m', 4.0),
+            ('grid_resolution', 0.05),
+            ('grid_width_m', 10.0),
+            ('nav_action', 'navigate_to_pose'),
         ]:
             self.declare_parameter(name, default)
 
     def _p(self, name: str, _default):
         return self.get_parameter(name).value
 
-    # ── Callbacks ─────────────────────────────────────────────────────────
-
     def _on_grid(self, msg: OccupancyGrid) -> None:
         self._grid = msg
 
     def _on_odom(self, msg: Odometry) -> None:
-        self._robot_xy = (msg.pose.pose.position.x,
-                          msg.pose.pose.position.y)
+        self._robot_xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
         q = msg.pose.pose.orientation
         self._robot_yaw = math.atan2(
             2.0 * (q.w * q.z + q.x * q.y),
@@ -264,11 +298,30 @@ class IGVCNavigatorNode(Node):
     def _on_loc_status(self, msg: String) -> None:
         self._loc_status = msg.data
 
+    def _on_maneuver_cmd(self, msg: String) -> None:
+        if not self._enable_maneuver_modes:
+            return
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            self.get_logger().warn(
+                'Ignoring invalid maneuver command JSON.',
+                throttle_duration_sec=2.0,
+            )
+            return
+        if not isinstance(payload, dict):
+            self.get_logger().warn(
+                'Ignoring maneuver command with non-object payload.',
+                throttle_duration_sec=2.0,
+            )
+            return
+        self._maneuver_cmd = payload
+        self._maneuver_cmd_time = self.get_clock().now()
+
     def _on_gps(self, msg: NavSatFix) -> None:
         if msg.status.status < 0:
             return
 
-        # Anchor origin to first good fix if not pre-configured
         if not self._origin_set:
             self._origin_lat = msg.latitude
             self._origin_lon = msg.longitude
@@ -277,35 +330,36 @@ class IGVCNavigatorNode(Node):
                 f'GPS origin set: ({self._origin_lat:.6f}, {self._origin_lon:.6f})')
 
         x, y = gps_to_map(msg.latitude, msg.longitude,
-                           self._origin_lat, self._origin_lon)
+                          self._origin_lat, self._origin_lon)
         wp = _Waypoint(x, y)
 
-        # Deduplicate: only enqueue if meaningfully different from the last
         if not self._gps_queue or self._gps_queue[-1].dist_to(wp) > 0.5:
             self._gps_queue.append(wp)
             self.get_logger().info(
                 f'GPS waypoint enqueued: map ({x:.2f}, {y:.2f})  '
                 f'queue depth={len(self._gps_queue)}')
 
-    # ── Main update ───────────────────────────────────────────────────────
-
     def _update(self) -> None:
-        # Don't navigate until TF chain is alive
         if self._loc_status == 'initializing':
             self.get_logger().warn(
                 'Waiting for localization...', throttle_duration_sec=3.0)
             return
 
-        # Don't spam Nav2 while a goal is being accepted
         if self._goal_pending:
             return
 
-        # Honour ABORT backoff so we don't thrash NavigateToPose at ~3 Hz.
+        if self._must_hold_position_for_maneuver():
+            if self._active_wp is not None:
+                self._cancel_goal()
+                self._active_wp = None
+            pts = self._extract_centreline()
+            self._path_pub.publish(self._build_path(pts))
+            return
+
         now = self.get_clock().now()
         if self._abort_backoff_until is not None and now < self._abort_backoff_until:
             return
 
-        # Check arrival at active waypoint
         if self._active_wp is not None and self._robot_xy is not None:
             robot_map = self._robot_in_map()
             if robot_map is not None:
@@ -317,10 +371,7 @@ class IGVCNavigatorNode(Node):
                     self._active_wp = None
                     self._cancel_goal()
 
-        # Pick next waypoint
         if self._active_wp is None:
-            # Rate-limit the initial-send path too, otherwise a rejected
-            # goal causes 10 Hz spam (update timer fires every 100 ms).
             if self._last_goal_send_time is not None and (
                 (now - self._last_goal_send_time).nanoseconds / 1e9
                 < self._replan_min_dt
@@ -332,27 +383,18 @@ class IGVCNavigatorNode(Node):
             self._send_goal(wp)
             return
 
-        # Sim mode: re-issue goal when the lane carrot has moved enough
         if not self._gps_enabled:
-            new_wp = self._lane_carrot()
+            new_wp = self._lane_carrot_for_mode()
             if new_wp is not None and self._active_wp.dist_to(new_wp) > self._replan_dist:
                 if self._last_goal_send_time is None or (
                     (now - self._last_goal_send_time).nanoseconds / 1e9 >= self._replan_min_dt
                 ):
                     self._send_goal(new_wp)
 
-        # Always publish the lane path for visualisation / RPP
         pts = self._extract_centreline()
         self._path_pub.publish(self._build_path(pts))
 
-    # ── Waypoint generation ───────────────────────────────────────────────
-
     def _next_waypoint(self) -> Optional[_Waypoint]:
-        """
-        GPS mode: pop the front of the GPS queue.
-        Sim mode: project a carrot along the lane centreline.
-        Falls back to a straight-ahead carrot if the lane is not visible.
-        """
         if self._gps_enabled:
             if not self._gps_queue:
                 self.get_logger().info(
@@ -360,38 +402,74 @@ class IGVCNavigatorNode(Node):
                     throttle_duration_sec=3.0)
                 return None
             return self._gps_queue.popleft()
-        else:
-            carrot = self._lane_carrot()
-            if carrot is None:
-                carrot = self._held_lane_carrot()
-                if carrot is None:
-                    self.get_logger().warn(
-                        'No lane visible — holding current course.',
-                        throttle_duration_sec=2.0)
-            return carrot
 
-    def _lane_carrot(self) -> Optional[_Waypoint]:
-        """
-        Find the lane centreline point at horizon_m ahead in base_link,
-        then transform to map frame.
-        Returns None if the grid is missing or has no free cells.
-        """
+        carrot = self._lane_carrot_for_mode()
+        if carrot is None:
+            carrot = self._held_lane_carrot()
+            if carrot is None:
+                self.get_logger().warn(
+                    'No lane visible — holding current course.',
+                    throttle_duration_sec=2.0)
+        return carrot
+
+    def _lane_carrot(
+        self,
+        *,
+        horizon_m: Optional[float] = None,
+        lateral_bias_m: float = 0.0,
+    ) -> Optional[_Waypoint]:
         pts = self._extract_centreline()
         if not pts:
             return None
 
-        # Walk the centreline to find the point nearest to horizon_m
-        target_fwd, target_lat = pts[-1]  # default: furthest visible point
+        horizon = self._horizon if horizon_m is None else horizon_m
+        target_fwd, target_lat = pts[-1]
         for fwd, lat in pts:
-            if fwd >= self._horizon:
+            if fwd >= horizon:
                 target_fwd, target_lat = fwd, lat
                 break
 
-        carrot = self._base_link_to_map(target_fwd, target_lat)
+        carrot = self._base_link_to_map(target_fwd, target_lat + lateral_bias_m)
         if carrot is not None:
             self._last_lane_wp = carrot
             self._last_lane_wp_time = self.get_clock().now()
         return carrot
+
+    def _lane_carrot_for_mode(self) -> Optional[_Waypoint]:
+        if not self._enable_maneuver_modes:
+            return self._lane_carrot()
+        mode = self._controller_mode()
+        cmd = self._active_maneuver_command()
+        if mode == 'intersection_turn':
+            direction = '' if cmd is None else str(cmd.get('turn_direction', ''))
+            sign = 1.0 if direction == 'left' else -1.0
+            return self._lane_carrot(
+                horizon_m=max(self._horizon, 2.0),
+                lateral_bias_m=sign * self._turn_bias_m,
+            )
+        if mode == 'lane_change':
+            sign = self._free_space_bias_sign()
+            return self._lane_carrot(
+                horizon_m=max(self._horizon, 2.0),
+                lateral_bias_m=sign * self._lane_change_bias_m,
+            )
+        if mode == 'avoid_obstacle':
+            sign = self._free_space_bias_sign()
+            return self._lane_carrot(
+                horizon_m=self._obstacle_horizon_m,
+                lateral_bias_m=sign * (0.5 * self._lane_change_bias_m),
+            )
+        if mode == 'parking':
+            return self._lane_carrot(
+                horizon_m=self._parking_forward_m,
+                lateral_bias_m=0.0,
+            )
+        if mode == 'intersection_straight':
+            return self._lane_carrot(
+                horizon_m=max(self._horizon, 2.2),
+                lateral_bias_m=0.0,
+            )
+        return self._lane_carrot()
 
     def _held_lane_carrot(self) -> Optional[_Waypoint]:
         if self._last_lane_wp is None or self._last_lane_wp_time is None:
@@ -402,94 +480,123 @@ class IGVCNavigatorNode(Node):
         return self._last_lane_wp
 
     def _straight_ahead_carrot(self) -> Optional[_Waypoint]:
-        """Project a point directly ahead in base_link → map."""
         return self._base_link_to_map(self._horizon, 0.0)
 
-    # ── Centreline extraction ─────────────────────────────────────────────
+    def _active_maneuver_command(self) -> Optional[dict[str, Any]]:
+        if not self._enable_maneuver_modes:
+            return None
+        if self._maneuver_cmd is None or self._maneuver_cmd_time is None:
+            return None
+        age = (self.get_clock().now() - self._maneuver_cmd_time).nanoseconds / 1e9
+        if age > self._maneuver_timeout_sec:
+            return None
+        return self._maneuver_cmd
+
+    def _controller_mode(self) -> str:
+        cmd = self._active_maneuver_command()
+        if cmd is None:
+            return 'follow_lane_path'
+        mode = cmd.get('controller_mode', 'follow_lane_path')
+        return str(mode)
+
+    def _must_hold_position_for_maneuver(self) -> bool:
+        cmd = self._active_maneuver_command()
+        if cmd is None:
+            return False
+        mode = self._controller_mode()
+        if mode in {'stop_at_sign', 'yield_to_target', 'perception_check'}:
+            return True
+        stop_required = bool(cmd.get('stop_required', False))
+        return stop_required and mode not in {
+            'lane_change',
+            'avoid_obstacle',
+            'intersection_turn',
+            'intersection_straight',
+            'parking',
+        }
+
+    def _free_space_bias_sign(self) -> float:
+        g = self._grid
+        if g is None:
+            return 1.0
+        width = g.info.width
+        height = g.info.height
+        res = g.info.resolution
+        if width <= 1 or height <= 1 or res <= 0.0:
+            return 1.0
+        row = int(max(0, min(height - 1, round(self._horizon / res))))
+        data = np.frombuffer(bytes(g.data), dtype=np.int8).reshape(height, width)
+        free = (data[row] == 0)
+        if not free.any():
+            return 1.0
+        centre_col = int(round((-g.info.origin.position.y) / res))
+        centre_col = max(0, min(width - 1, centre_col))
+
+        left_width = 0
+        for col in range(centre_col, width):
+            if free[col]:
+                left_width += 1
+            else:
+                break
+
+        right_width = 0
+        for col in range(centre_col, -1, -1):
+            if free[col]:
+                right_width += 1
+            else:
+                break
+
+        return 1.0 if left_width >= right_width else -1.0
 
     def _extract_centreline(self) -> list[tuple[float, float]]:
-        """
-        Walk the lane costmap forward from the robot.  Each row's centreline
-        is the centroid of free cells in the *connected* free band straddling
-        the robot's lateral position (col 0 in base_link coords).
-
-        The walk terminates as soon as one of the following happens:
-          * a row has no free cells (blocked — e.g. the closed end of a
-            U-turn);
-          * the next row's centroid jumps laterally by more than
-            ``max_lateral_jump_m`` compared with the previous row (the free
-            region ahead has "teleported" across a closure).
-
-        This prevents the carrot from leaping across a U-turn's closed end
-        into the return lane, which is what was causing the robot to drive
-        straight into the far line.
-        """
         g = self._grid
         if g is None:
             return []
 
-        W, H   = g.info.width, g.info.height
-        res    = g.info.resolution
-        orig_y = g.info.origin.position.y  # lateral offset of col 0 in base_link
+        width = g.info.width
+        height = g.info.height
+        res = g.info.resolution
+        orig_y = g.info.origin.position.y
 
-        data = np.frombuffer(bytes(g.data), dtype=np.int8).reshape(H, W)
-        # Strictly-free cells only (cost == 0).  Treating unknown (-1) as
-        # drivable made the free band balloon out to the grid edge
-        # whenever one lane was missing from the costmap — the centroid
-        # then sat well outside the corridor and the carrot got sent
-        # across the opposing lane.
+        data = np.frombuffer(bytes(g.data), dtype=np.int8).reshape(height, width)
         free_mask = (data == 0)
 
-        # Expected lane half-width, in cells.  We clamp the free band to a
-        # window of this size on either side of the previous centroid so a
-        # one-sided lane detection can't yank the carrot sideways.
-        lane_half_m        = 1.2
-        lane_half_cols     = max(4, int(round(lane_half_m / res)))
+        lane_half_m = 1.2
+        lane_half_cols = max(4, int(round(lane_half_m / res)))
         max_lateral_jump_m = 0.5
 
         pts: list[tuple[float, float]] = []
         prev_lat: Optional[float] = None
-        started = False  # True once we've found the first row with free cells
 
-        # Column that corresponds to lateral = 0 (robot centreline).
         centre_col0 = int(round(-orig_y / res))
 
-        # Close-range rows (roughly within ``min_detection_depth_m``) are
-        # always unknown because the depth camera can't see under its own
-        # nose.  Don't terminate on those — skip forward until we find the
-        # first row with any free cells, then start tracking the corridor.
         entered_band = False
 
-        for row in range(H):
+        for row in range(height):
             fwd = row * res
             if fwd > self._lookahead:
                 break
             row_free = free_mask[row]
             if not row_free.any():
                 if not entered_band:
-                    # Still in the blind close-range zone — keep searching.
                     continue
-                # Row is entirely unknown/blocked after we've already seen
-                # the drivable band — stop extending the centreline rather
-                # than guessing past the sensed region.
                 break
 
-            # Window around the target column — this is the key fix.
             target_col = centre_col0 if prev_lat is None else int(round(
                 (prev_lat - orig_y) / res))
-            target_col = max(0, min(W - 1, target_col))
+            target_col = max(0, min(width - 1, target_col))
             lo = max(0, target_col - lane_half_cols)
-            hi = min(W, target_col + lane_half_cols + 1)
+            hi = min(width, target_col + lane_half_cols + 1)
 
             window_free = row_free[lo:hi]
             if not window_free.any():
                 if not entered_band:
                     continue
-                break  # corridor closed off around the robot's heading
+                break
 
-            diff   = np.diff(window_free.astype(np.int8))
-            starts = np.where(diff ==  1)[0] + 1
-            ends   = np.where(diff == -1)[0] + 1
+            diff = np.diff(window_free.astype(np.int8))
+            starts = np.where(diff == 1)[0] + 1
+            ends = np.where(diff == -1)[0] + 1
             if window_free[0]:
                 starts = np.r_[0, starts]
             if window_free[-1]:
@@ -505,24 +612,22 @@ class IGVCNavigatorNode(Node):
                 if not entered_band:
                     continue
                 break
+
             entered_band = True
             s, e = picked
             centre_col = lo + 0.5 * (s + e - 1)
             lateral = orig_y + centre_col * res
 
             if prev_lat is not None and abs(lateral - prev_lat) > max_lateral_jump_m:
-                break  # centroid jumped — likely stepped across a line
+                break
             pts.append((fwd, lateral))
             prev_lat = lateral
-            started = True
 
         return pts
 
-    # ── Path message builder ──────────────────────────────────────────────
-
     def _build_path(self, pts: list[tuple[float, float]]) -> Path:
         path = Path()
-        path.header.stamp    = self.get_clock().now().to_msg()
+        path.header.stamp = self.get_clock().now().to_msg()
         path.header.frame_id = self._base_frame
 
         prev_yaw = 0.0
@@ -543,11 +648,7 @@ class IGVCNavigatorNode(Node):
 
         return path
 
-    # ── Nav2 interaction ──────────────────────────────────────────────────
-
     def _send_goal(self, wp: _Waypoint) -> bool:
-        """Dispatch a NavigateToPose goal. Returns True iff the goal was
-        actually sent to the action server."""
         if not self._nav.server_is_ready():
             self.get_logger().warn(
                 'NavigateToPose server not ready.', throttle_duration_sec=2.0)
@@ -562,7 +663,8 @@ class IGVCNavigatorNode(Node):
         goal_seq = self._next_goal_seq
         future = self._nav.send_goal_async(goal)
         future.add_done_callback(
-            lambda done, seq=goal_seq, waypoint=wp: self._on_goal_response(done, seq, waypoint))
+            lambda done, seq=goal_seq, waypoint=wp: self._on_goal_response(
+                done, seq, waypoint))
         self.get_logger().info(
             f'Sending goal: map ({wp.x:.2f}, {wp.y:.2f})')
         return True
@@ -576,9 +678,6 @@ class IGVCNavigatorNode(Node):
             return
 
         if not handle.accepted:
-            # Back off on rejection the same way we do on abort, otherwise
-            # the _update timer immediately retries and spams the action
-            # server at 10 Hz.
             self._consecutive_aborts = min(self._consecutive_aborts + 1, 6)
             backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 4.0)
             self._abort_backoff_until = (
@@ -613,9 +712,8 @@ class IGVCNavigatorNode(Node):
             self._consecutive_aborts = 0
             self._abort_backoff_until = None
         elif status == GoalStatus.STATUS_CANCELED:
-            pass  # expected when we replan
+            pass
         else:
-            # ABORTED or similar — apply exponential backoff before retrying.
             self._consecutive_aborts = min(self._consecutive_aborts + 1, 6)
             backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 4.0)
             self._abort_backoff_until = (
@@ -625,7 +723,6 @@ class IGVCNavigatorNode(Node):
                 f'backing off {backoff_s:.2f}s before retry',
                 throttle_duration_sec=1.0)
 
-        # Clear so _update picks the next waypoint on the next tick
         if self._active_wp is not None and status != GoalStatus.STATUS_CANCELED:
             self._active_wp = None
 
@@ -633,24 +730,23 @@ class IGVCNavigatorNode(Node):
         if self._goal_handle is not None:
             self._goal_handle.cancel_goal_async()
 
-    # ── TF helpers ────────────────────────────────────────────────────────
-
     def _base_link_to_map(self, forward: float, lateral: float) -> Optional[_Waypoint]:
-        """Transform a (forward, lateral) point in base_link to map frame."""
         ps = PoseStamped()
         ps.header.frame_id = self._base_frame
-        ps.header.stamp    = Time().to_msg()  # latest available
+        ps.header.stamp = Time().to_msg()
         ps.pose.position.x = forward
         ps.pose.position.y = lateral
         ps.pose.orientation.w = 1.0
         try:
-            out = self._tf_buf.transform(ps, self._map_frame,
-                                         timeout=Duration(seconds=0.05))
+            out = self._tf_buf.transform(
+                ps, self._map_frame, timeout=Duration(seconds=0.05))
             return _Waypoint(out.pose.position.x, out.pose.position.y)
         except Exception as exc:
-            if (not self._gps_enabled
-                    and self._robot_xy is not None
-                    and self._robot_yaw is not None):
+            if (
+                not self._gps_enabled
+                and self._robot_xy is not None
+                and self._robot_yaw is not None
+            ):
                 robot_x, robot_y = self._robot_xy
                 cy = math.cos(self._robot_yaw)
                 sy = math.sin(self._robot_yaw)
@@ -662,14 +758,13 @@ class IGVCNavigatorNode(Node):
             return None
 
     def _robot_in_map(self) -> Optional[tuple[float, float]]:
-        """Return robot (x, y) in map frame, or None on TF failure."""
         ps = PoseStamped()
         ps.header.frame_id = self._base_frame
-        ps.header.stamp    = Time().to_msg()
+        ps.header.stamp = Time().to_msg()
         ps.pose.orientation.w = 1.0
         try:
-            out = self._tf_buf.transform(ps, self._map_frame,
-                                         timeout=Duration(seconds=0.05))
+            out = self._tf_buf.transform(
+                ps, self._map_frame, timeout=Duration(seconds=0.05))
             return out.pose.position.x, out.pose.position.y
         except Exception:
             if not self._gps_enabled and self._robot_xy is not None:
@@ -677,11 +772,27 @@ class IGVCNavigatorNode(Node):
             return None
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-
 def main(args=None) -> None:
     rclpy.init(args=args)
-    rclpy.spin(IGVCNavigatorNode())
+    rclpy.spin(IGVCNavigatorNode(enable_maneuver_modes=False))
+    rclpy.shutdown()
+
+
+def main_autonav(args=None) -> None:
+    rclpy.init(args=args)
+    rclpy.spin(IGVCNavigatorNode(
+        node_name='igvc_navigator_autonav',
+        enable_maneuver_modes=False,
+    ))
+    rclpy.shutdown()
+
+
+def main_fsd(args=None) -> None:
+    rclpy.init(args=args)
+    rclpy.spin(IGVCNavigatorNode(
+        node_name='igvc_navigator_fsd',
+        enable_maneuver_modes=True,
+    ))
     rclpy.shutdown()
 
 

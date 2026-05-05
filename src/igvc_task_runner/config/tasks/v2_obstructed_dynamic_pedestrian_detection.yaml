@@ -1,0 +1,12 @@
+task_id: v2_obstructed_dynamic_pedestrian_detection
+display_name: V.2 Obstructed Dynamic Pedestrian Detection
+category: function
+rule_ref: "2026 IGVC rules Table 2"
+supports_modes: [sim, hardware]
+required_checks: [odom, front_camera, lane_costmap, lane_path, localization_status]
+maneuvers: [lane_keep, stop_or_yield]
+perception_targets: [dynamic_pedestrian, occlusion]
+max_points: 100
+penalty_points: -25
+completion:
+  type: manual

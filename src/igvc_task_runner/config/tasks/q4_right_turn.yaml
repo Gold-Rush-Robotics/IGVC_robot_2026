@@ -1,0 +1,10 @@
+task_id: q4_right_turn
+display_name: Qualification Q.4 Right Turn
+category: qualification
+rule_ref: "2026 IGVC rules Table 1"
+supports_modes: [sim, hardware]
+required_checks: [odom, front_camera, lane_costmap, lane_path, localization_status]
+maneuvers: [intersection_right_turn]
+perception_targets: [lane_lines, intersection]
+completion:
+  type: manual

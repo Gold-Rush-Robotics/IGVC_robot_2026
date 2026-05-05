@@ -1,0 +1,12 @@
+task_id: vi1_curved_road_lane_keeping
+display_name: VI.1 Curved Road Evaluation Lane Keeping
+category: function
+rule_ref: "2026 IGVC rules Table 2"
+supports_modes: [sim, hardware]
+required_checks: [odom, front_camera, lane_costmap, lane_path, localization_status]
+maneuvers: [lane_keep, curve_following]
+perception_targets: [lane_lines, curved_road]
+max_points: 100
+penalty_points: -25
+completion:
+  type: manual

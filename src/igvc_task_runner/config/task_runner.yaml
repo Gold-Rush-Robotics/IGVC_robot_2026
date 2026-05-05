@@ -1,0 +1,12 @@
+igvc_task_runner:
+  ros__parameters:
+    robot_mode: sim
+    task_mode: selected
+    selected_task: full_course_2026
+    task_config_dir: ""
+    status_period_sec: 0.2
+    run_log_path: ""
+    maneuver_command_topic: /igvc/maneuver_command
+    safe_stop_topics:
+      - /cmd_vel_nav
+      - /diff_drive_controller/cmd_vel

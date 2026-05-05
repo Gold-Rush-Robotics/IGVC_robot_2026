@@ -1,0 +1,10 @@
+task_id: q1_lane_keeping_go_straight
+display_name: Qualification Q.1 Lane Keeping Go Straight
+category: qualification
+rule_ref: "2026 IGVC rules Table 1"
+supports_modes: [sim, hardware]
+required_checks: [odom, front_camera, lane_costmap, lane_path, localization_status]
+maneuvers: [lane_keep, go_straight]
+perception_targets: [lane_lines]
+completion:
+  type: manual
