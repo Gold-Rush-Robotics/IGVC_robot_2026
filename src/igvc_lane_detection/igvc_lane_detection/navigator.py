@@ -13,13 +13,10 @@ GPS mode  (gps_enabled: true)
     node falls back to lane-only forward progress automatically.
 
 Sim / GPS-denied mode  (gps_enabled: false)
-    No GPS targets are used.  Instead, a waypoint is synthesised every
-    update cycle by projecting a point ahead along the detected lane
-    centreline.  The projection distance is kept short (waypoint_horizon_m)
-    so the robot is always chasing a fresh target that reflects the current
-    lane geometry.  Nav2 is driven via a rolling NavigateToPose goal — as
-    soon as the carrot moves far enough (replan_dist_m) the old goal is
-    cancelled and a new one sent.
+    No GPS targets are used.  The detected lane centreline is published as
+    /lane_path and, by default, sent to Nav2's FollowPath controller action.
+    The legacy rolling NavigateToPose carrot can be re-enabled with
+    follow_path_enabled:=false while bringing up controller-server configs.
 
 In both modes the lane costmap already carries lethal costs on the
 boundaries, so Nav2's RegulatedPurePursuit controller + inflation layer
@@ -41,6 +38,18 @@ Parameters
     grid_resolution       float   0.05
     grid_width_m          float   10.0
     nav_action            str     navigate_to_pose
+    follow_path_enabled   bool    true    sim: use Nav2 FollowPath directly
+    follow_path_action    str     follow_path
+    controller_id         str     ''      Nav2 default controller
+    goal_checker_id       str     ''      Nav2 default goal checker
+    progress_checker_id   str     ''      Nav2 default progress checker
+    min_follow_path_poses int     5       reject short/noisy local paths
+    min_follow_path_length_m float 1.5
+    path_sample_spacing_m float   0.10    controller path spacing
+    path_smooth_window    int     5       moving-average window, 1 = off
+    path_change_tolerance_m float 0.25    FollowPath resend hysteresis
+    path_change_tolerance_rad float 0.25
+    max_path_lateral_jump_m float 0.5
 
 Subscriptions
     /gps/fix              NavSatFix       (GPS mode only)
@@ -70,7 +79,7 @@ from rclpy.time import Time
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import FollowPath, NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import String
@@ -153,11 +162,23 @@ class IGVCNavigatorNode(Node):
         self._horizon         = self._p('waypoint_horizon_m',  1.8)
         self._replan_dist     = self._p('replan_dist_m',       0.6)
         self._lane_hold_sec   = self._p('lane_hold_sec',       1.0)
-        self._replan_min_dt   = self._p('replan_min_dt_sec',   0.7)
+        self._replan_min_dt   = self._p('replan_min_dt_sec',   1.0)
         self._lookahead       = self._p('path_lookahead_m',    4.0)
         self._grid_res        = self._p('grid_resolution',     0.05)
         self._grid_w          = self._p('grid_width_m',       10.0)
         self._nav_action_name = self._p('nav_action',         'navigate_to_pose')
+        self._follow_path_enabled = self._p('follow_path_enabled', True)
+        self._follow_path_action_name = self._p('follow_path_action', 'follow_path')
+        self._controller_id = self._p('controller_id', '')
+        self._goal_checker_id = self._p('goal_checker_id', '')
+        self._progress_checker_id = self._p('progress_checker_id', '')
+        self._min_follow_path_poses = self._p('min_follow_path_poses', 5)
+        self._min_follow_path_length_m = self._p('min_follow_path_length_m', 1.5)
+        self._path_sample_spacing_m = self._p('path_sample_spacing_m', 0.10)
+        self._path_smooth_window = self._p('path_smooth_window', 5)
+        self._path_change_tolerance_m = self._p('path_change_tolerance_m', 0.25)
+        self._path_change_tolerance_rad = self._p('path_change_tolerance_rad', 0.25)
+        self._max_path_lateral_jump_m = self._p('max_path_lateral_jump_m', 0.5)
 
         # ── Internal state ────────────────────────────────────────────────
         # GPS mode: queue of _Waypoint in map frame, consumed as robot arrives
@@ -173,6 +194,7 @@ class IGVCNavigatorNode(Node):
         self._last_lane_wp_time = None
         self._loc_status    = 'sim' if not self._gps_enabled else 'initializing'
         self._last_goal_send_time = None
+        self._last_sent_path: Optional[Path] = None
         # Backoff: don't re-send a new goal immediately after an ABORT.
         self._abort_backoff_until = None
         self._consecutive_aborts = 0
@@ -188,6 +210,8 @@ class IGVCNavigatorNode(Node):
 
         # ── Nav2 action client ────────────────────────────────────────────
         self._nav = ActionClient(self, NavigateToPose, self._nav_action_name)
+        self._path_nav = ActionClient(
+            self, FollowPath, self._follow_path_action_name)
 
         # ── QoS ───────────────────────────────────────────────────────────
         map_qos = QoSProfile(
@@ -236,11 +260,23 @@ class IGVCNavigatorNode(Node):
             ('waypoint_horizon_m', 1.8),
             ('replan_dist_m',      0.6),
             ('lane_hold_sec',      1.0),
-            ('replan_min_dt_sec',  0.7),
+            ('replan_min_dt_sec',  1.0),
             ('path_lookahead_m',   4.0),
             ('grid_resolution',    0.05),
             ('grid_width_m',      10.0),
             ('nav_action',        'navigate_to_pose'),
+            ('follow_path_enabled', True),
+            ('follow_path_action', 'follow_path'),
+            ('controller_id',      ''),
+            ('goal_checker_id',    ''),
+            ('progress_checker_id', ''),
+            ('min_follow_path_poses', 5),
+            ('min_follow_path_length_m', 1.5),
+            ('path_sample_spacing_m', 0.10),
+            ('path_smooth_window', 5),
+            ('path_change_tolerance_m', 0.25),
+            ('path_change_tolerance_rad', 0.25),
+            ('max_path_lateral_jump_m', 0.5),
         ]:
             self.declare_parameter(name, default)
 
@@ -290,6 +326,12 @@ class IGVCNavigatorNode(Node):
     # ── Main update ───────────────────────────────────────────────────────
 
     def _update(self) -> None:
+        # Publish controller-facing lane paths independently from the
+        # rolling NavigateToPose goal state.  This is the first migration
+        # seam toward feeding Nav2's controller with a path directly.
+        lane_path = self._lane_path_from_costmap()
+        self._path_pub.publish(lane_path)
+
         # Don't navigate until TF chain is alive
         if self._loc_status == 'initializing':
             self.get_logger().warn(
@@ -303,6 +345,22 @@ class IGVCNavigatorNode(Node):
         # Honour ABORT backoff so we don't thrash NavigateToPose at ~3 Hz.
         now = self.get_clock().now()
         if self._abort_backoff_until is not None and now < self._abort_backoff_until:
+            return
+
+        if self._uses_follow_path():
+            if not self._path_is_valid(lane_path):
+                self.get_logger().warn(
+                    'No valid lane path visible — holding current course.',
+                    throttle_duration_sec=2.0)
+                return
+            if not self._path_changed_enough(lane_path):
+                return
+            if self._last_goal_send_time is not None and (
+                (now - self._last_goal_send_time).nanoseconds / 1e9
+                < self._replan_min_dt
+            ):
+                return
+            self._send_path_goal(lane_path)
             return
 
         # Check arrival at active waypoint
@@ -340,10 +398,6 @@ class IGVCNavigatorNode(Node):
                     (now - self._last_goal_send_time).nanoseconds / 1e9 >= self._replan_min_dt
                 ):
                     self._send_goal(new_wp)
-
-        # Always publish the lane path for visualisation / RPP
-        pts = self._extract_centreline()
-        self._path_pub.publish(self._build_path(pts))
 
     # ── Waypoint generation ───────────────────────────────────────────────
 
@@ -404,6 +458,10 @@ class IGVCNavigatorNode(Node):
     def _straight_ahead_carrot(self) -> Optional[_Waypoint]:
         """Project a point directly ahead in base_link → map."""
         return self._base_link_to_map(self._horizon, 0.0)
+
+    def _uses_follow_path(self) -> bool:
+        """Return whether sim mode should drive Nav2 with FollowPath."""
+        return (not self._gps_enabled) and self._follow_path_enabled
 
     # ── Centreline extraction ─────────────────────────────────────────────
 
@@ -520,6 +578,11 @@ class IGVCNavigatorNode(Node):
 
     # ── Path message builder ──────────────────────────────────────────────
 
+    def _lane_path_from_costmap(self) -> Path:
+        """Build a controller-facing lane path from the latest costmap."""
+        return self._build_path(
+            self._condition_path_points(self._extract_centreline()))
+
     def _build_path(self, pts: list[tuple[float, float]]) -> Path:
         path = Path()
         path.header.stamp    = self.get_clock().now().to_msg()
@@ -543,7 +606,217 @@ class IGVCNavigatorNode(Node):
 
         return path
 
+    # ── Path processing and validation ───────────────────────────────────
+
+    def _condition_path_points(
+        self,
+        pts: list[tuple[float, float]],
+    ) -> list[tuple[float, float]]:
+        """Smooth and resample raw centreline points for controller tracking."""
+        if len(pts) < 2:
+            return pts
+        return self._resample_path_points(
+            self._smooth_path_points(pts), self._path_sample_spacing_m)
+
+    def _smooth_path_points(
+        self,
+        pts: list[tuple[float, float]],
+    ) -> list[tuple[float, float]]:
+        """Apply a small moving average to lateral jitter."""
+        window = int(self._path_smooth_window)
+        if window <= 1 or len(pts) < 3:
+            return pts
+        if window % 2 == 0:
+            window += 1
+        window = min(window, len(pts) if len(pts) % 2 == 1 else len(pts) - 1)
+        if window <= 1:
+            return pts
+
+        half = window // 2
+        laterals = np.asarray([lat for _, lat in pts], dtype=float)
+        padded = np.pad(laterals, (half, half), mode='edge')
+        kernel = np.ones(window, dtype=float) / float(window)
+        smooth_lat = np.convolve(padded, kernel, mode='valid')
+        smooth_lat[0] = laterals[0]
+        smooth_lat[-1] = laterals[-1]
+        return [(fwd, float(lat)) for (fwd, _), lat in zip(pts, smooth_lat)]
+
+    def _resample_path_points(
+        self,
+        pts: list[tuple[float, float]],
+        spacing_m: float,
+    ) -> list[tuple[float, float]]:
+        """Resample points at approximately uniform arc-length spacing."""
+        if len(pts) < 2 or spacing_m <= 0.0:
+            return pts
+
+        distances = [0.0]
+        for (x0, y0), (x1, y1) in zip(pts[:-1], pts[1:]):
+            distances.append(distances[-1] + math.hypot(x1 - x0, y1 - y0))
+        total = distances[-1]
+        if total <= spacing_m:
+            return pts
+
+        samples = list(np.arange(0.0, total, spacing_m))
+        if not samples or samples[-1] < total:
+            samples.append(total)
+
+        out: list[tuple[float, float]] = []
+        seg = 0
+        for sample in samples:
+            while seg < len(distances) - 2 and distances[seg + 1] < sample:
+                seg += 1
+            d0, d1 = distances[seg], distances[seg + 1]
+            ratio = 0.0 if d1 == d0 else (sample - d0) / (d1 - d0)
+            x0, y0 = pts[seg]
+            x1, y1 = pts[seg + 1]
+            out.append((x0 + ratio * (x1 - x0), y0 + ratio * (y1 - y0)))
+        return out
+
+    def _path_length(self, path: Path) -> float:
+        """Return accumulated path length in metres."""
+        if len(path.poses) < 2:
+            return 0.0
+        return sum(
+            math.hypot(
+                b.pose.position.x - a.pose.position.x,
+                b.pose.position.y - a.pose.position.y,
+            )
+            for a, b in zip(path.poses[:-1], path.poses[1:])
+        )
+
+    def _path_is_valid(self, path: Path) -> bool:
+        """Validate that a path is plausible enough to send to Nav2."""
+        if path.header.frame_id != self._base_frame:
+            return False
+        if len(path.poses) < self._min_follow_path_poses:
+            return False
+        if self._path_length(path) < self._min_follow_path_length_m:
+            return False
+
+        prev_x = path.poses[0].pose.position.x
+        prev_y = path.poses[0].pose.position.y
+        for pose in path.poses:
+            x = pose.pose.position.x
+            y = pose.pose.position.y
+            if not math.isfinite(x) or not math.isfinite(y):
+                return False
+            if x + self._grid_res < prev_x:
+                return False
+            if abs(y - prev_y) > self._max_path_lateral_jump_m:
+                return False
+            prev_x, prev_y = x, y
+        return True
+
+    def _path_changed_enough(self, path: Path) -> bool:
+        """Return true when a path differs enough to resend FollowPath."""
+        old = self._last_sent_path
+        if old is None:
+            return True
+        if not old.poses or not path.poses:
+            return True
+        if (abs(self._path_length(path) - self._path_length(old))
+            > self._path_change_tolerance_m):
+            return True
+
+        count = min(len(old.poses), len(path.poses), 20)
+        if count <= 1:
+            return True
+        old_idx = np.linspace(0, len(old.poses) - 1, count).astype(int)
+        new_idx = np.linspace(0, len(path.poses) - 1, count).astype(int)
+        for oi, ni in zip(old_idx, new_idx):
+            old_pose = old.poses[int(oi)].pose
+            new_pose = path.poses[int(ni)].pose
+            shift = math.hypot(
+                new_pose.position.x - old_pose.position.x,
+                new_pose.position.y - old_pose.position.y,
+            )
+            if shift > self._path_change_tolerance_m:
+                return True
+            heading_delta = abs(
+                self._wrap_angle(
+                    self._pose_yaw(new_pose.orientation)
+                    - self._pose_yaw(old_pose.orientation)))
+            if heading_delta > self._path_change_tolerance_rad:
+                return True
+        return False
+
+    @staticmethod
+    def _pose_yaw(q) -> float:
+        return math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
+
+    @staticmethod
+    def _wrap_angle(angle: float) -> float:
+        return math.atan2(math.sin(angle), math.cos(angle))
+
     # ── Nav2 interaction ──────────────────────────────────────────────────
+
+    def _send_path_goal(self, path: Path) -> bool:
+        """Dispatch a Nav2 FollowPath goal for the current lane path."""
+        if not self._path_is_valid(path):
+            self.get_logger().warn(
+                'Refusing to send invalid FollowPath goal.',
+                throttle_duration_sec=2.0)
+            return False
+        if not self._path_changed_enough(path):
+            return False
+        if not self._path_nav.server_is_ready():
+            self.get_logger().warn(
+                'FollowPath server not ready.', throttle_duration_sec=2.0)
+            return False
+
+        if self._goal_handle is not None:
+            self._cancel_goal()
+
+        send_time = self.get_clock().now()
+        path.header.stamp = send_time.to_msg()
+        for pose in path.poses:
+            pose.header.stamp = path.header.stamp
+
+        goal = FollowPath.Goal()
+        goal.path = path
+        goal.controller_id = self._controller_id
+        goal.goal_checker_id = self._goal_checker_id
+        goal.progress_checker_id = self._progress_checker_id
+
+        self._goal_pending = True
+        self._last_goal_send_time = send_time
+        self._next_goal_seq += 1
+        goal_seq = self._next_goal_seq
+        future = self._path_nav.send_goal_async(goal)
+        future.add_done_callback(
+            lambda done, seq=goal_seq: self._on_path_goal_response(done, seq))
+        self.get_logger().info(
+            f'Sending FollowPath goal with {len(path.poses)} poses.')
+        self._last_sent_path = path
+        return True
+
+    def _on_path_goal_response(self, future, goal_seq: int) -> None:
+        self._goal_pending = False
+        try:
+            handle = future.result()
+        except Exception as exc:
+            self.get_logger().error(f'FollowPath send error: {exc}')
+            return
+
+        if not handle.accepted:
+            self._consecutive_aborts = min(self._consecutive_aborts + 1, 6)
+            backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 4.0)
+            self._abort_backoff_until = (
+                self.get_clock().now() + Duration(seconds=backoff_s))
+            self.get_logger().warn(
+                f'Nav2 rejected FollowPath; backing off {backoff_s:.2f}s.',
+                throttle_duration_sec=1.0)
+            return
+
+        self._current_goal_seq = goal_seq
+        self._goal_handle = handle
+        self._active_wp = None
+        handle.get_result_async().add_done_callback(
+            lambda done, seq=goal_seq: self._on_goal_result(done, seq))
 
     def _send_goal(self, wp: _Waypoint) -> bool:
         """Dispatch a NavigateToPose goal. Returns True iff the goal was
