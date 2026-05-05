@@ -30,6 +30,7 @@ def generate_launch_description():
     xacro_file = os.path.join(description_pkg_path, 'urdf', 'robots','test_robot.urdf.xacro')
     controllers_file = os.path.join(config_pkg_path, 'config', 'controllers.yaml')
     rviz_file = os.path.join(config_pkg_path, 'config', 'config.rviz')
+
     robot_description = Command([
         'xacro ', xacro_file,
         ' hardware_interface:=', hardware_interface
@@ -49,7 +50,8 @@ def generate_launch_description():
     control_node = Node(
         package="controller_manager",
         executable="ros2_control_node",
-        parameters=[{'use_sim_time': use_sim_time }, controllers_file],
+        parameters=[description_params, controllers_file],
+        remappings=[('~/robot_description', '/robot_description')],
         output="screen",
     )
 
@@ -110,6 +112,7 @@ def generate_launch_description():
         )
 
 
+
     # Launch!
     return LaunchDescription([
         hardware_interface_arg,
@@ -120,5 +123,5 @@ def generate_launch_description():
         diff_drive_spawner,
         # rviz2_delay,
         joy,
-        joy_teleop
+        joy_teleop,
     ])

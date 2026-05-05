@@ -18,6 +18,7 @@ def generate_launch_description() -> LaunchDescription:
     use_sim_time = LaunchConfiguration('use_sim_time')
     sim_mode = LaunchConfiguration('sim_mode')
     disable_tf = LaunchConfiguration('disable_tf')
+    ros_params_override_path = LaunchConfiguration('ros_params_override_path')
 
     zed_multi_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -33,6 +34,7 @@ def generate_launch_description() -> LaunchDescription:
             'use_sim_time': use_sim_time,
             'sim_mode': sim_mode,
             'disable_tf': disable_tf,
+            'ros_params_override_path': ros_params_override_path,
         }.items(),
     )
 
@@ -49,9 +51,6 @@ def generate_launch_description() -> LaunchDescription:
             PathJoinSubstitution([bringup, 'config', 'zed_multi_ekf.yaml']),
             {
                 'use_sim_time': use_sim_time,
-                'odom0': LaunchConfiguration('odom0_topic'),
-                'odom1': LaunchConfiguration('odom1_topic'),
-                'odom2': LaunchConfiguration('odom2_topic'),
             },
         ],
     )
@@ -103,20 +102,11 @@ def generate_launch_description() -> LaunchDescription:
             description='Disable ZED TF publishing and let EKF own odom->base_link TF.',
         ),
         DeclareLaunchArgument(
-            'odom0_topic',
-            default_value='/left_zed_camera_x/zed_node/odom',
-            description='Left camera odom topic.',
+            'ros_params_override_path',
+            default_value='',
+            description='YAML file that overrides ZED wrapper defaults for every camera. '
+                        'Empty = use igvc_test_bringup/config/common_stereo.yaml.',
         ),
-        DeclareLaunchArgument(
-            'odom1_topic',
-            default_value='/front_zed_camera_x/zed_node/odom',
-            description='Front camera odom topic.',
-        ),
-        DeclareLaunchArgument(
-            'odom2_topic',
-            default_value='/right_zed_camera_x/zed_node/odom',
-            description='Right camera odom topic.',
-        ),
-        # zed_multi_launch,
+        zed_multi_launch,
         ekf_node,
     ])

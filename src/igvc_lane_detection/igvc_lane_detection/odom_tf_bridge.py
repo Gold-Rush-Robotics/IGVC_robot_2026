@@ -16,7 +16,7 @@ class OdomTfBridgeNode(Node):
         self.declare_parameter('odom_topic', '/odom')
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
-        self.declare_parameter('publish_rate_hz', 50.0)
+        self.declare_parameter('publish_rate_hz', 500.0)
 
         self._odom_topic = self.get_parameter('odom_topic').value
         self._odom_frame = self.get_parameter('odom_frame_id').value

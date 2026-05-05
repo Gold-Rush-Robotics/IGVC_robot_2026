@@ -34,8 +34,9 @@ Parameters
     odom_frame            str     odom
     base_frame            str     base_link
     goal_tolerance_m      float   1.2     Nav2 arrival radius
-    waypoint_horizon_m    float   3.0     sim: how far ahead to place carrot
-    replan_dist_m         float   0.8     sim: re-send goal when carrot moves this far
+    waypoint_horizon_m    float   1.8     sim: how far ahead to place carrot
+    replan_dist_m         float   0.6     sim: re-send goal when carrot moves this far
+    lane_hold_sec         float   1.0     sim: reuse the last valid lane carrot briefly
     path_lookahead_m      float   4.0     centreline extraction depth
     grid_resolution       float   0.05
     grid_width_m          float   10.0
@@ -149,8 +150,9 @@ class IGVCNavigatorNode(Node):
         self._map_frame       = self._p('map_frame',           'map')
         self._base_frame      = self._p('base_frame',          'base_link')
         self._goal_tol        = self._p('goal_tolerance_m',    1.2)
-        self._horizon         = self._p('waypoint_horizon_m',  3.0)
-        self._replan_dist     = self._p('replan_dist_m',       1.5)
+        self._horizon         = self._p('waypoint_horizon_m',  1.8)
+        self._replan_dist     = self._p('replan_dist_m',       0.6)
+        self._lane_hold_sec   = self._p('lane_hold_sec',       1.0)
         self._replan_min_dt   = self._p('replan_min_dt_sec',   0.7)
         self._lookahead       = self._p('path_lookahead_m',    4.0)
         self._grid_res        = self._p('grid_resolution',     0.05)
@@ -165,8 +167,15 @@ class IGVCNavigatorNode(Node):
         self._active_wp: Optional[_Waypoint] = None
         self._goal_handle   = None
         self._goal_pending  = False
+        self._next_goal_seq = 0
+        self._current_goal_seq = 0
+        self._last_lane_wp: Optional[_Waypoint] = None
+        self._last_lane_wp_time = None
         self._loc_status    = 'sim' if not self._gps_enabled else 'initializing'
         self._last_goal_send_time = None
+        # Backoff: don't re-send a new goal immediately after an ABORT.
+        self._abort_backoff_until = None
+        self._consecutive_aborts = 0
 
         # Latest sensor data
         self._grid: Optional[OccupancyGrid] = None
@@ -224,8 +233,9 @@ class IGVCNavigatorNode(Node):
             ('odom_frame',        'odom'),
             ('base_frame',        'base_link'),
             ('goal_tolerance_m',   1.2),
-            ('waypoint_horizon_m', 3.0),
-            ('replan_dist_m',      1.5),
+            ('waypoint_horizon_m', 1.8),
+            ('replan_dist_m',      0.6),
+            ('lane_hold_sec',      1.0),
             ('replan_min_dt_sec',  0.7),
             ('path_lookahead_m',   4.0),
             ('grid_resolution',    0.05),
@@ -290,6 +300,11 @@ class IGVCNavigatorNode(Node):
         if self._goal_pending:
             return
 
+        # Honour ABORT backoff so we don't thrash NavigateToPose at ~3 Hz.
+        now = self.get_clock().now()
+        if self._abort_backoff_until is not None and now < self._abort_backoff_until:
+            return
+
         # Check arrival at active waypoint
         if self._active_wp is not None and self._robot_xy is not None:
             robot_map = self._robot_in_map()
@@ -304,10 +319,16 @@ class IGVCNavigatorNode(Node):
 
         # Pick next waypoint
         if self._active_wp is None:
+            # Rate-limit the initial-send path too, otherwise a rejected
+            # goal causes 10 Hz spam (update timer fires every 100 ms).
+            if self._last_goal_send_time is not None and (
+                (now - self._last_goal_send_time).nanoseconds / 1e9
+                < self._replan_min_dt
+            ):
+                return
             wp = self._next_waypoint()
             if wp is None:
                 return
-            self._active_wp = wp
             self._send_goal(wp)
             return
 
@@ -315,11 +336,9 @@ class IGVCNavigatorNode(Node):
         if not self._gps_enabled:
             new_wp = self._lane_carrot()
             if new_wp is not None and self._active_wp.dist_to(new_wp) > self._replan_dist:
-                now = self.get_clock().now()
                 if self._last_goal_send_time is None or (
                     (now - self._last_goal_send_time).nanoseconds / 1e9 >= self._replan_min_dt
                 ):
-                    self._active_wp = new_wp
                     self._send_goal(new_wp)
 
         # Always publish the lane path for visualisation / RPP
@@ -344,10 +363,11 @@ class IGVCNavigatorNode(Node):
         else:
             carrot = self._lane_carrot()
             if carrot is None:
-                self.get_logger().warn(
-                    'No lane visible — driving straight.',
-                    throttle_duration_sec=2.0)
-                carrot = self._straight_ahead_carrot()
+                carrot = self._held_lane_carrot()
+                if carrot is None:
+                    self.get_logger().warn(
+                        'No lane visible — holding current course.',
+                        throttle_duration_sec=2.0)
             return carrot
 
     def _lane_carrot(self) -> Optional[_Waypoint]:
@@ -367,7 +387,19 @@ class IGVCNavigatorNode(Node):
                 target_fwd, target_lat = fwd, lat
                 break
 
-        return self._base_link_to_map(target_fwd, target_lat)
+        carrot = self._base_link_to_map(target_fwd, target_lat)
+        if carrot is not None:
+            self._last_lane_wp = carrot
+            self._last_lane_wp_time = self.get_clock().now()
+        return carrot
+
+    def _held_lane_carrot(self) -> Optional[_Waypoint]:
+        if self._last_lane_wp is None or self._last_lane_wp_time is None:
+            return None
+        age = (self.get_clock().now() - self._last_lane_wp_time).nanoseconds / 1e9
+        if age > self._lane_hold_sec:
+            return None
+        return self._last_lane_wp
 
     def _straight_ahead_carrot(self) -> Optional[_Waypoint]:
         """Project a point directly ahead in base_link → map."""
@@ -377,9 +409,20 @@ class IGVCNavigatorNode(Node):
 
     def _extract_centreline(self) -> list[tuple[float, float]]:
         """
-        Scan the lane costmap row by row (forward distance).
-        For each row find the centroid of free (cost=0) cells.
-        Returns [(forward_m, lateral_m), ...] sorted by forward distance.
+        Walk the lane costmap forward from the robot.  Each row's centreline
+        is the centroid of free cells in the *connected* free band straddling
+        the robot's lateral position (col 0 in base_link coords).
+
+        The walk terminates as soon as one of the following happens:
+          * a row has no free cells (blocked — e.g. the closed end of a
+            U-turn);
+          * the next row's centroid jumps laterally by more than
+            ``max_lateral_jump_m`` compared with the previous row (the free
+            region ahead has "teleported" across a closure).
+
+        This prevents the carrot from leaping across a U-turn's closed end
+        into the return lane, which is what was causing the robot to drive
+        straight into the far line.
         """
         g = self._grid
         if g is None:
@@ -387,21 +430,91 @@ class IGVCNavigatorNode(Node):
 
         W, H   = g.info.width, g.info.height
         res    = g.info.resolution
-        orig_y = g.info.origin.position.y  # = -grid_width/2
+        orig_y = g.info.origin.position.y  # lateral offset of col 0 in base_link
 
         data = np.frombuffer(bytes(g.data), dtype=np.int8).reshape(H, W)
+        # Strictly-free cells only (cost == 0).  Treating unknown (-1) as
+        # drivable made the free band balloon out to the grid edge
+        # whenever one lane was missing from the costmap — the centroid
+        # then sat well outside the corridor and the carrot got sent
+        # across the opposing lane.
+        free_mask = (data == 0)
+
+        # Expected lane half-width, in cells.  We clamp the free band to a
+        # window of this size on either side of the previous centroid so a
+        # one-sided lane detection can't yank the carrot sideways.
+        lane_half_m        = 1.2
+        lane_half_cols     = max(4, int(round(lane_half_m / res)))
+        max_lateral_jump_m = 0.5
+
         pts: list[tuple[float, float]] = []
+        prev_lat: Optional[float] = None
+        started = False  # True once we've found the first row with free cells
+
+        # Column that corresponds to lateral = 0 (robot centreline).
+        centre_col0 = int(round(-orig_y / res))
+
+        # Close-range rows (roughly within ``min_detection_depth_m``) are
+        # always unknown because the depth camera can't see under its own
+        # nose.  Don't terminate on those — skip forward until we find the
+        # first row with any free cells, then start tracking the corridor.
+        entered_band = False
 
         for row in range(H):
             fwd = row * res
             if fwd > self._lookahead:
                 break
-            free_cols = np.where(data[row] == 0)[0]
-            if len(free_cols) == 0:
-                continue
-            centre_col = float(np.mean(free_cols))
-            lateral    = orig_y + centre_col * res
+            row_free = free_mask[row]
+            if not row_free.any():
+                if not entered_band:
+                    # Still in the blind close-range zone — keep searching.
+                    continue
+                # Row is entirely unknown/blocked after we've already seen
+                # the drivable band — stop extending the centreline rather
+                # than guessing past the sensed region.
+                break
+
+            # Window around the target column — this is the key fix.
+            target_col = centre_col0 if prev_lat is None else int(round(
+                (prev_lat - orig_y) / res))
+            target_col = max(0, min(W - 1, target_col))
+            lo = max(0, target_col - lane_half_cols)
+            hi = min(W, target_col + lane_half_cols + 1)
+
+            window_free = row_free[lo:hi]
+            if not window_free.any():
+                if not entered_band:
+                    continue
+                break  # corridor closed off around the robot's heading
+
+            diff   = np.diff(window_free.astype(np.int8))
+            starts = np.where(diff ==  1)[0] + 1
+            ends   = np.where(diff == -1)[0] + 1
+            if window_free[0]:
+                starts = np.r_[0, starts]
+            if window_free[-1]:
+                ends = np.r_[ends, hi - lo]
+
+            rel_target = target_col - lo
+            picked = None
+            for s, e in zip(starts, ends):
+                if s <= rel_target < e:
+                    picked = (s, e)
+                    break
+            if picked is None:
+                if not entered_band:
+                    continue
+                break
+            entered_band = True
+            s, e = picked
+            centre_col = lo + 0.5 * (s + e - 1)
+            lateral = orig_y + centre_col * res
+
+            if prev_lat is not None and abs(lateral - prev_lat) > max_lateral_jump_m:
+                break  # centroid jumped — likely stepped across a line
             pts.append((fwd, lateral))
+            prev_lat = lateral
+            started = True
 
         return pts
 
@@ -432,23 +545,29 @@ class IGVCNavigatorNode(Node):
 
     # ── Nav2 interaction ──────────────────────────────────────────────────
 
-    def _send_goal(self, wp: _Waypoint) -> None:
+    def _send_goal(self, wp: _Waypoint) -> bool:
+        """Dispatch a NavigateToPose goal. Returns True iff the goal was
+        actually sent to the action server."""
         if not self._nav.server_is_ready():
             self.get_logger().warn(
                 'NavigateToPose server not ready.', throttle_duration_sec=2.0)
-            return
+            return False
 
+        send_time = self.get_clock().now()
         goal = NavigateToPose.Goal()
-        goal.pose = wp.to_pose_stamped(self._map_frame,
-                                       self.get_clock().now().to_msg())
+        goal.pose = wp.to_pose_stamped(self._map_frame, send_time.to_msg())
         self._goal_pending = True
-        self._last_goal_send_time = self.get_clock().now()
+        self._last_goal_send_time = send_time
+        self._next_goal_seq += 1
+        goal_seq = self._next_goal_seq
         future = self._nav.send_goal_async(goal)
-        future.add_done_callback(self._on_goal_response)
+        future.add_done_callback(
+            lambda done, seq=goal_seq, waypoint=wp: self._on_goal_response(done, seq, waypoint))
         self.get_logger().info(
             f'Sending goal: map ({wp.x:.2f}, {wp.y:.2f})')
+        return True
 
-    def _on_goal_response(self, future) -> None:
+    def _on_goal_response(self, future, goal_seq: int, wp: _Waypoint) -> None:
         self._goal_pending = False
         try:
             handle = future.result()
@@ -457,15 +576,25 @@ class IGVCNavigatorNode(Node):
             return
 
         if not handle.accepted:
-            self.get_logger().warn('Nav2 rejected goal.')
-            self._active_wp = None
+            # Back off on rejection the same way we do on abort, otherwise
+            # the _update timer immediately retries and spams the action
+            # server at 10 Hz.
+            self._consecutive_aborts = min(self._consecutive_aborts + 1, 6)
+            backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 4.0)
+            self._abort_backoff_until = (
+                self.get_clock().now() + Duration(seconds=backoff_s))
+            self.get_logger().warn(
+                f'Nav2 rejected goal; backing off {backoff_s:.2f}s before retry.',
+                throttle_duration_sec=1.0)
             return
 
+        self._current_goal_seq = goal_seq
         self._goal_handle = handle
-        handle.get_result_async().add_done_callback(self._on_goal_result)
+        self._active_wp = wp
+        handle.get_result_async().add_done_callback(
+            lambda done, seq=goal_seq: self._on_goal_result(done, seq))
 
-    def _on_goal_result(self, future) -> None:
-        self._goal_handle = None
+    def _on_goal_result(self, future, goal_seq: int) -> None:
         try:
             result = future.result()
             status = result.status
@@ -473,12 +602,28 @@ class IGVCNavigatorNode(Node):
             self.get_logger().warn(f'Goal result error: {exc}')
             status = GoalStatus.STATUS_ABORTED
 
+        if goal_seq != self._current_goal_seq:
+            return
+
+        self._goal_handle = None
+        self._current_goal_seq = 0
+
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info('Nav2 goal succeeded.')
+            self._consecutive_aborts = 0
+            self._abort_backoff_until = None
         elif status == GoalStatus.STATUS_CANCELED:
             pass  # expected when we replan
         else:
-            self.get_logger().warn(f'Nav2 goal ended with status {status}.')
+            # ABORTED or similar — apply exponential backoff before retrying.
+            self._consecutive_aborts = min(self._consecutive_aborts + 1, 6)
+            backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 4.0)
+            self._abort_backoff_until = (
+                self.get_clock().now() + Duration(seconds=backoff_s))
+            self.get_logger().warn(
+                f'received non-success goal result: status={status}; '
+                f'backing off {backoff_s:.2f}s before retry',
+                throttle_duration_sec=1.0)
 
         # Clear so _update picks the next waypoint on the next tick
         if self._active_wp is not None and status != GoalStatus.STATUS_CANCELED:
@@ -487,7 +632,6 @@ class IGVCNavigatorNode(Node):
     def _cancel_goal(self) -> None:
         if self._goal_handle is not None:
             self._goal_handle.cancel_goal_async()
-            self._goal_handle = None
 
     # ── TF helpers ────────────────────────────────────────────────────────
 

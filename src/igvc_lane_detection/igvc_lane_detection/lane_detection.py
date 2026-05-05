@@ -32,28 +32,21 @@ class LaneDetectionNode(Node):
         self.grid_width_m           = p('grid_width',               10.0)
         self.grid_height_m          = p('grid_height',              10.0)
         self.publish_overlay        = p('publish_overlay',           True)
-        self.fusion_timeout_sec     = p('fusion_timeout_sec',         0.5)
+        self.fusion_timeout_sec     = p('fusion_timeout_sec',         2.0)
         self.keep_last_grid_on_miss = p('keep_last_grid_on_miss',    True)
-        self.min_lane_points        = p('min_lane_points',            6)
+        self.min_lane_points        = p('min_lane_points',            3)
         self.occupancy_grid_frame   = p('occupancy_grid_frame',      self.base_frame)
 
         # ── Chassis / ROI exclusion ────────────────────────────────────────
-        # chassis_mask_frac: fraction of image height to black out from the
-        # bottom BEFORE any processing.  Removes the robot's own body from
-        # the field of view entirely.  0.0 = no masking.  Start at ~0.15 and
-        # increase until the chassis disappears from the overlay.
         self.chassis_mask_frac  = p('chassis_mask_frac',   0.15)
-        # roi_bottom_frac: how far down the trapezoid ROI extends (0–1).
-        # Lowering this lifts the ROI off the chassis.  Must be greater than
-        # roi_top_frac.  Ignored rows still benefit from chassis_mask_frac.
         self.roi_bottom_frac    = p('roi_bottom_frac',     0.82)
-        # roi_top_frac: vertical position of the top edge of the ROI trapezoid.
         self.roi_top_frac       = p('roi_top_frac',        0.55)
-        # Minimum depth accepted during 3-D projection.  Points closer than
-        # this are treated as belonging to the robot chassis and discarded.
-        # The original value was 0.1 m; 1.0 m safely excludes all chassis
-        # geometry while keeping road-level lane markings.
-        self.min_detection_depth_m = p('min_detection_depth_m', 1.0)
+        # Minimum depth accepted during 3-D projection.  0.5 m keeps a safe
+        # margin above the chassis (~0.3 m) while allowing ground points that
+        # are physically close to the camera (e.g. mounted at ~0.6 m height).
+        self.min_detection_depth_m = p('min_detection_depth_m', 0.5)
+        self.depth_search_radius_px = p('depth_search_radius_px', 2)
+        self.min_projected_line_points = p('min_projected_line_points', 3)
 
         # ── Persistent map parameters ──────────────────────────────────────
         # The persistent map lives in a fixed frame (default: odom) and
@@ -66,10 +59,11 @@ class LaneDetectionNode(Node):
         self.persist_res        = p('persistent_map_resolution',  0.10)   # m/cell – coarser saves RAM
         self.persist_size_m     = p('persistent_map_size_m',     100.0)   # square side length
         self.persist_decay      = p('persistent_map_decay',       0.998)  # multiplied each update
-        self.persist_hit_w      = p('persistent_hit_weight',      8.0)    # added per observed point
-        self.persist_threshold  = p('persistent_threshold',       20.0)   # publish as boundary
+        self.persist_hit_w      = p('persistent_hit_weight',      12.0)    # added per observed point
+        self.persist_threshold  = p('persistent_threshold',       15.0)   # publish as boundary
         self.persist_max        = p('persistent_max_value',      200.0)   # clamp to prevent blowup
         self.persist_pub_hz     = p('persistent_publish_hz',       2.0)   # how often to publish map
+        self.persist_clear_radius = p('persistent_clear_radius_m', 0.8)
 
         self._init_persistent_map()
 
@@ -203,8 +197,33 @@ class LaneDetectionNode(Node):
 
         # Cells above threshold → lethal boundary (100); else unknown (-1)
         data = np.where(self._phits >= self.persist_threshold, 100, -1).astype(np.int8)
+        self._clear_persistent_robot_footprint(data)
         g.data = data.flatten().tolist()
         self.persist_pub.publish(g)
+
+    def _clear_persistent_robot_footprint(self, data):
+        if self.persist_clear_radius <= 0.0:
+            return
+        tf = self._lookup_tf(self.persist_frame, self.base_frame, None)
+        if tf is None:
+            return
+
+        col_c, row_c = self._world_to_pgrid(
+            tf.transform.translation.x,
+            tf.transform.translation.y,
+        )
+        radius_cells = max(1, int(np.ceil(self.persist_clear_radius / self.persist_res)))
+        row_lo = max(0, row_c - radius_cells)
+        row_hi = min(self._pN, row_c + radius_cells + 1)
+        col_lo = max(0, col_c - radius_cells)
+        col_hi = min(self._pN, col_c + radius_cells + 1)
+
+        if row_lo >= row_hi or col_lo >= col_hi:
+            return
+
+        rows, cols = np.ogrid[row_lo:row_hi, col_lo:col_hi]
+        mask = (rows - row_c) ** 2 + (cols - col_c) ** 2 <= radius_cells ** 2
+        data[row_lo:row_hi, col_lo:col_hi][mask] = 0
 
     # ═══════════════════════════════════════════════════════════════════════
     # Camera info
@@ -233,14 +252,27 @@ class LaneDetectionNode(Node):
             self.get_logger().error(f'Decode error: {e}')
             return
 
-        left_px, right_px, dbg_lines = self._detect_lanes(bgr)
+        left_px, right_px, dbg_lines = self._detect_lanes(bgr, cam_idx)
+
+        cam_frame = depth_msg.header.frame_id or rgb_msg.header.frame_id
+        cam_tf = None
+        if cam_frame and cam_frame != self.base_frame:
+            cam_tf = self._lookup_tf(self.base_frame, cam_frame, rgb_msg.header.stamp)
+            if cam_tf is None and (left_px is not None or right_px is not None):
+                self.get_logger().warn(
+                    f'No TF from {cam_frame} to {self.base_frame}; '
+                    f'falling back to pinhole projection for cam[{cam_idx}]',
+                    throttle_duration_sec=2.0)
+
+        raw_left_3d = self._line_to_3d(left_px,  depth, cam_idx, cam_tf)
+        raw_right_3d = self._line_to_3d(right_px, depth, cam_idx, cam_tf)
+        overlay_left_px, overlay_right_px = self._relabel_projected_pixels(
+            left_px, raw_left_3d, right_px, raw_right_3d)
+        left_3d, right_3d = self._relabel_projected_sides(raw_left_3d, raw_right_3d)
 
         if self.publish_overlay and cam_idx in self.overlay_pubs:
-            self._publish_overlay(cam_idx, bgr, dbg_lines, left_px, right_px, rgb_msg)
-
-        left_3d  = self._line_to_3d(left_px,  depth, cam_idx)
-        right_3d = self._line_to_3d(right_px, depth, cam_idx)
-        left_3d, right_3d = self._fill_missing(left_3d, right_3d)
+            self._publish_overlay(
+                cam_idx, bgr, dbg_lines, overlay_left_px, overlay_right_px, rgb_msg)
 
         self._cam_state[cam_idx] = {
             'stamp':    rgb_msg.header.stamp,
@@ -249,6 +281,8 @@ class LaneDetectionNode(Node):
         }
 
         fused_left, fused_right = self._fuse_lanes(rgb_msg.header.stamp)
+
+        fused_left, fused_right = self._fill_missing(fused_left, fused_right)
 
         if fused_left is not None and fused_right is not None:
             new_grid = self._build_grid(fused_left, fused_right, rgb_msg.header.stamp)
@@ -291,10 +325,11 @@ class LaneDetectionNode(Node):
             if state['right_3d'] is not None:
                 right_pts.extend(state['right_3d'])
 
-        if len(left_pts) < self.min_lane_points or len(right_pts) < self.min_lane_points:
-            return None, None
-
-        return left_pts, right_pts
+        # Allow updating the map with only one side if the other can be assumed
+        if (len(left_pts) >= 2 or len(right_pts) >= 2):   # changed from both >= min
+            return left_pts, right_pts
+        self.get_logger().warn((f'Not enough lane points for fusion. Left: {len(left_pts)}, Right: {len(right_pts)}'), throttle_duration_sec=2.0)
+        return None, None
 
     # ═══════════════════════════════════════════════════════════════════════
     # Lane detection  ── lean, lighting-robust pipeline
@@ -302,66 +337,70 @@ class LaneDetectionNode(Node):
     #
     # Design rationale
     # ────────────────
-    # White/yellow paint on black asphalt is extremely high contrast; we do
-    # NOT need adaptive thresholding or morphological closing — those steps
-    # were destroying thin distant lines.  The pipeline is now:
+    # The pipeline is colour-gated: Canny only runs on pixels that already
+    # passed the white/yellow HSV filter.  This means asphalt texture, dirt,
+    # shadows and painted numbers are suppressed before any edge detection.
     #
-    #   chassis mask → CLAHE (L channel) → grayscale Canny → ROI → Hough
-    #
-    # Line classification is done purely by where each segment's midpoint
-    # sits relative to the image centre column.  The old slope filter
-    # (MIN_ABS_SLOPE = 0.3) was killing distant lines whose image-space
-    # slope approaches zero as they near the vanishing point; it is gone.
-    # Truly horizontal noise (|dy| < 3 px) is the only shape rejected.
+    # Pipeline:
+    #   chassis mask
+    #   → CLAHE on L (clipLimit 2.0 — lifts dim markings without amplifying grain)
+    #   → HSV colour mask (white + yellow) on CLAHE image
+    #   → dilate mask by 1 px to widen thin distant lines
+    #   → Canny on (colour_mask * L_eq)  ← colour-gated grayscale edges only
+    #   → ROI trapezoid
+    #   → HoughLinesP
+    #   → midpoint-based left/right classification
 
-    def _detect_lanes(self, bgr):
+    def _detect_lanes(self, bgr, cam_idx):
         h_img, w_img = bgr.shape[:2]
 
-        # ── Step 0: Chassis mask ─────────────────────────────────────────
+        # ── Step 0: Chassis mask (unchanged) ─────────────────────────────
         if self.chassis_mask_frac > 0.0:
             bgr = bgr.copy()
             cut = int(h_img * (1.0 - self.chassis_mask_frac))
             bgr[cut:, :] = 0
 
-        # ── Step 1: CLAHE on L channel for lighting robustness ──────────
-        # Equalises local contrast so faint markings in shadow/glare are
-        # lifted to detectable brightness before Canny.
+        # ── Step 1: CLAHE on L channel (lighting-robust, surface-agnostic) ──
         lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
         l, a, b_ch = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        l_eq  = clahe.apply(l)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l_eq = clahe.apply(l)
 
-        # ── Step 2: Colour mask (white + yellow) ────────────────────────
-        # Run on the CLAHE-brightened image so dim markings aren't missed.
-        bgr_eq     = cv2.cvtColor(cv2.merge([l_eq, a, b_ch]), cv2.COLOR_LAB2BGR)
-        hsv        = cv2.cvtColor(bgr_eq, cv2.COLOR_BGR2HSV)
-        white_mask  = cv2.inRange(hsv, np.array([0,  0, 160]), np.array([180, 55, 255]))
-        yellow_mask = cv2.inRange(hsv, np.array([15, 60,  80]), np.array([40, 255, 255]))
-        color_mask  = cv2.bitwise_or(white_mask, yellow_mask)
+        # ── Step 2: Colour-gated grayscale edges ─────────────────────────
+        # Gate Canny by a white+yellow HSV mask.  The ROI trapezoid
+        # already excludes the sky/horizon, so we can be fairly
+        # permissive here: we only need to reject the very dark asphalt
+        # (low V) and strongly-saturated foliage/dirt (high S non-yellow).
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        white_mask  = cv2.inRange(hsv, (0,   0, 150), (180,  70, 255))
+        yellow_mask = cv2.inRange(hsv, (15, 60,  80), ( 40, 255, 255))
+        colour_mask = cv2.bitwise_or(white_mask, yellow_mask)
+        colour_mask = cv2.dilate(
+            colour_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), 1)
 
-        # ── Step 3: Canny on CLAHE-equalised greyscale ──────────────────
-        # Use a 3×3 Gaussian (not 5×5) — distant lines are 1-2 px wide;
-        # a larger blur smears them below Canny's hysteresis thresholds.
-        blurred = cv2.GaussianBlur(l_eq, (3, 3), 0)
-        edges_l  = cv2.Canny(blurred, 40, 120)
+        gated = cv2.bitwise_and(l_eq, l_eq, mask=colour_mask)
+        blurred = cv2.GaussianBlur(gated, (5, 5), 0)
 
-        # Also run Canny on the colour mask to catch bold nearby markings.
-        edges_c = cv2.Canny(color_mask, 50, 150)
+        edges = cv2.Canny(blurred, 40, 120, apertureSize=3)
 
-        edges = cv2.bitwise_or(edges_l, edges_c)
-        roi   = self._apply_roi(edges)
+        # ROI trapezoid (already very effective)
+        roi = self._apply_roi(edges)
 
-        # ── Step 4: Probabilistic Hough ─────────────────────────────────
-        # minLineLength=15  — catches short distant segments
-        # maxLineGap=100    — bridges dashes without merging sky edges
-        # threshold=20      — lower vote threshold for faint distant lines
-        hough = cv2.HoughLinesP(roi, rho=1, theta=np.pi / 180,
-                                threshold=20, minLineLength=15, maxLineGap=100)
+        # ── Step 3: Probabilistic Hough ──────────────────────────────────
+        hough = cv2.HoughLinesP(
+            roi,
+            rho=1,
+            theta=np.pi / 180,
+            threshold=35,
+            minLineLength=30,
+            maxLineGap=60,
+        )
         if hough is None:
             return None, None, None
 
-        left_px, right_px = self._fit_lines(bgr, hough)
+        left_px, right_px = self._fit_lines(bgr, hough, cam_idx)
         return left_px, right_px, hough
+
 
     def _apply_roi(self, img):
         mask = np.zeros_like(img)
@@ -377,67 +416,143 @@ class LaneDetectionNode(Node):
         cv2.fillPoly(mask, pts, 255)
         return cv2.bitwise_and(img, mask)
 
-    def _fit_lines(self, img, hough):
+    def _fit_lines(self, img, hough, cam_idx):
         h, w = img.shape[:2]
         y_bot = int(h * self.roi_bottom_frac)
         y_top = int(h * self.roi_top_frac)
+        allow_shallow_side_segments = cam_idx != 0
 
         left_segs,  left_wts  = [], []
         right_segs, right_wts = [], []
+        left_relaxed_segs, left_relaxed_wts = [], []
+        right_relaxed_segs, right_relaxed_wts = [], []
+
+        min_inward_dx = 5.0
+        relaxed_min_inward_dx = 0.5
 
         for seg in hough:
             x1, y1, x2, y2 = seg[0]
 
-            # Reject perfectly horizontal noise (sky horizon, roof edges).
-            # A lane marking always has SOME vertical component in a forward
-            # camera; 3 px is deliberately tiny to keep distant lines.
-            if abs(y2 - y1) < 3:
-                continue
-
             dx = float(x2 - x1)
             dy = float(y2 - y1)
             length = np.hypot(dx, dy)
+            slope = dy / dx if abs(dx) > 0.1 else (1e6 if dy > 0 else -1e6)
+            intercept = y1 - slope * x1
 
-            # Classify by the midpoint's x position relative to image centre.
-            # This is robust even when slope is near-zero (distant lines).
-            mx = (x1 + x2) * 0.5
-            if mx < w * 0.5:
-                # Extra guard: left candidates must not lean strongly rightward
-                if dx == 0 or (dy / dx) > 0 or abs(dy / dx) > 0.05:
-                    slope     = dy / dx if dx != 0 else 1e6
-                    intercept = y1 - slope * x1
+            # ── Angle filter ─────────────────────────────────────────────
+            # Reject only the most horizontal segments (true horizon / roof
+            # lines) and near-vertical ones (poles, posts). Side cameras on
+            # tight turns can see valid lane boundaries at ~80°+ from
+            # vertical, so the upper bound must be loose.
+            angle_from_vert = np.degrees(np.arctan2(abs(dx), abs(dy) + 1e-9))
+            if angle_from_vert < 10:
+                continue
+
+            if angle_from_vert > 87:
+                if allow_shallow_side_segments:
+                    if cam_idx == 1:
+                        left_relaxed_segs.append((slope, intercept))
+                        left_relaxed_wts.append(length)
+                    elif cam_idx == 2:
+                        right_relaxed_segs.append((slope, intercept))
+                        right_relaxed_wts.append(length)
+                continue
+
+            # ── Left / right classification by ROI-bottom intercept ──────
+            # Midpoint-based classification breaks on sharp turns because a
+            # real boundary can cross the image centre while still being the
+            # same physical lane edge.  Instead, classify by where the line
+            # hits the *bottom* of the ROI (closest / highest-confidence
+            # part of the image), then require it to lean inward toward the
+            # corridor as it rises.
+            x_bot = (y_bot - intercept) / (slope + 1e-9)
+            x_top = (y_top - intercept) / (slope + 1e-9)
+            inward_dx = x_top - x_bot
+
+            if x_bot < w * 0.5:
+                if inward_dx > min_inward_dx:
                     left_segs.append((slope, intercept))
                     left_wts.append(length)
+                if inward_dx > relaxed_min_inward_dx:
+                    left_relaxed_segs.append((slope, intercept))
+                    left_relaxed_wts.append(length)
             else:
-                if dx == 0 or (dy / dx) < 0 or abs(dy / dx) > 0.05:
-                    slope     = dy / dx if dx != 0 else -1e6
-                    intercept = y1 - slope * x1
+                if inward_dx < -min_inward_dx:
                     right_segs.append((slope, intercept))
                     right_wts.append(length)
+                if inward_dx < -relaxed_min_inward_dx:
+                    right_relaxed_segs.append((slope, intercept))
+                    right_relaxed_wts.append(length)
+
+        if not left_segs and left_relaxed_segs:
+            left_segs, left_wts = left_relaxed_segs, left_relaxed_wts
+        if not right_segs and right_relaxed_segs:
+            right_segs, right_wts = right_relaxed_segs, right_relaxed_wts
 
         def to_px(segs, wts):
             if not segs:
                 return None
             s, b = np.average(segs, axis=0, weights=wts)
-            if abs(s) < 1e-6:   # degenerate horizontal average — discard
+            if abs(s) < 1e-6:
                 return None
             return ((int((y_bot - b) / s), y_bot),
                     (int((y_top - b) / s), y_top))
+        left_px = to_px(left_segs, left_wts)
+        right_px = to_px(right_segs, right_wts)
 
-        return to_px(left_segs, left_wts), to_px(right_segs, right_wts)
+        if left_px is not None and right_px is not None:
+            lx = left_px[0][0]
+            rx = right_px[0][0]
+            same_left_half = lx < w * 0.5 and rx < w * 0.5
+            same_right_half = lx > w * 0.5 and rx > w * 0.5
+            min_sep_px = max(24, int(0.12 * w))
+            too_close = abs(rx - lx) < min_sep_px
+
+            if too_close:
+                left_strength = float(np.sum(left_wts)) if left_wts else 0.0
+                right_strength = float(np.sum(right_wts)) if right_wts else 0.0
+                if left_strength >= right_strength:
+                    right_px = None
+                else:
+                    left_px = None
+            elif same_left_half or same_right_half:
+                # Tight turns can place both real boundaries on one image half.
+                # Keep both when they are well separated and let projection/
+                # lateral-sign relabeling decide final side assignment.
+                pass
+
+        return left_px, right_px
 
     # ═══════════════════════════════════════════════════════════════════════
     # 3-D projection
     # ═══════════════════════════════════════════════════════════════════════
 
-    def _line_to_3d(self, line, depth, cam_idx, n=20):
+    @staticmethod
+    def _quat_to_rot(qx, qy, qz, qw):
+        return np.array([
+            [1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy - qz * qw), 2.0 * (qx * qz + qy * qw)],
+            [2.0 * (qx * qy + qz * qw), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz - qx * qw)],
+            [2.0 * (qx * qz - qy * qw), 2.0 * (qy * qz + qx * qw), 1.0 - 2.0 * (qx * qx + qy * qy)],
+        ], dtype=np.float32)
+
+    def _line_to_3d(self, line, depth, cam_idx, cam_tf=None, n=20):
         if line is None:
             return None
         (x1, y1), (x2, y2) = line
         h_d, w_d = depth.shape[:2]
         K  = self.K.get(cam_idx)
         fx = K[0, 0] if K is not None else 500.0
+        fy = K[1, 1] if K is not None else fx
         cx = K[0, 2] if K is not None else w_d / 2.0
+        cy = K[1, 2] if K is not None else h_d / 2.0
+
+        rot = None
+        trans = None
+        if cam_tf is not None:
+            q = cam_tf.transform.rotation
+            rot = self._quat_to_rot(q.x, q.y, q.z, q.w)
+            t = cam_tf.transform.translation
+            trans = np.array([t.x, t.y, t.z], dtype=np.float32)
 
         pts = []
         for t in np.linspace(0.0, 1.0, n):
@@ -445,18 +560,184 @@ class LaneDetectionNode(Node):
             v = int(y1 + t * (y2 - y1))
             if not (0 <= u < w_d and 0 <= v < h_d):
                 continue
-            d = float(depth[v, u])
-            if not (self.min_detection_depth_m < d < 20.0):
+            d = self._sample_valid_depth(depth, u, v)
+            if d is None:
                 continue
-            pts.append((d, -(u - cx) * d / fx))  # (forward, lateral)
-        return pts if pts else None
+
+            if rot is None or trans is None:
+                pts.append((d, -(u - cx) * d / fx))  # (forward, lateral)
+                continue
+
+            # Registered depth images are typically expressed in the camera
+            # optical frame: x=right, y=down, z=forward.  Transform each
+            # sampled point into base_link so multi-camera fusion happens in
+            # one consistent frame.
+            point_cam = np.array([
+                (u - cx) * d / fx,
+                (v - cy) * d / fy,
+                d,
+            ], dtype=np.float32)
+            point_base = rot @ point_cam + trans
+            fwd = float(point_base[0])
+            lat = float(point_base[1])
+            min_fwd = -0.4 if cam_idx != 0 else 0.0
+            if fwd <= min_fwd:
+                continue
+            if fwd < 0.0:
+                fwd = 0.0
+            pts.append((fwd, lat))
+        if len(pts) < self.min_projected_line_points:
+            return None
+        return pts
+
+    def _sample_valid_depth(self, depth, u, v):
+        radius = max(0, int(self.depth_search_radius_px))
+        u0 = max(0, u - radius)
+        u1 = min(depth.shape[1], u + radius + 1)
+        v0 = max(0, v - radius)
+        v1 = min(depth.shape[0], v + radius + 1)
+        patch = depth[v0:v1, u0:u1]
+        if patch.size == 0:
+            return None
+
+        valid = patch[np.isfinite(patch)]
+        valid = valid[(valid > self.min_detection_depth_m) & (valid < 20.0)]
+        if valid.size == 0:
+            return None
+        return float(np.median(valid))
+
+    def _relabel_projected_sides(self, left_3d, right_3d):
+        tol = 0.05
+
+        def mean_lat(pts):
+            if pts is None or not pts:
+                return None
+            return float(np.mean([lat for _, lat in pts]))
+
+        left_groups = []
+        right_groups = []
+
+        for nominal_side, pts in (("left", left_3d), ("right", right_3d)):
+            if pts is None:
+                continue
+            lat = mean_lat(pts)
+            if lat is None:
+                continue
+            if lat > tol:
+                left_groups.append(pts)
+            elif lat < -tol:
+                right_groups.append(pts)
+            elif nominal_side == "left":
+                left_groups.append(pts)
+            else:
+                right_groups.append(pts)
+
+        merged_left = [pt for pts in left_groups for pt in pts] or None
+        merged_right = [pt for pts in right_groups for pt in pts] or None
+        return merged_left, merged_right
+
+    def _relabel_projected_pixels(self, left_px, left_3d, right_px, right_3d):
+        tol = 0.05
+
+        def mean_lat(pts):
+            if pts is None or not pts:
+                return None
+            return float(np.mean([lat for _, lat in pts]))
+
+        left_candidates = []
+        right_candidates = []
+
+        for nominal_side, px, pts in (("left", left_px, left_3d), ("right", right_px, right_3d)):
+            if px is None:
+                continue
+            lat = mean_lat(pts)
+            if lat is None or abs(lat) <= tol:
+                target_side = nominal_side
+            else:
+                target_side = "left" if lat > 0.0 else "right"
+
+            if target_side == "left":
+                left_candidates.append((px, 0 if pts is None else len(pts)))
+            else:
+                right_candidates.append((px, 0 if pts is None else len(pts)))
+
+        overlay_left = max(left_candidates, key=lambda item: item[1])[0] if left_candidates else None
+        overlay_right = max(right_candidates, key=lambda item: item[1])[0] if right_candidates else None
+        return overlay_left, overlay_right
 
     def _fill_missing(self, left_3d, right_3d):
         W = self.assumed_lane_width
+        min_valid_sep = max(0.6, 0.35 * W)
+        side_tol = 0.08
+        min_side_pts = max(3, int(self.min_projected_line_points))
+
+        def mean_lat(pts):
+            if pts is None or not pts:
+                return None
+            return float(np.mean([lat for _, lat in pts]))
+
+        # Repartition fused points by actual lateral sign in base_link.
+        # This is the most reliable separator when camera-view heuristics
+        # disagree near turn apexes.
+        all_pts = []
+        if left_3d is not None:
+            all_pts.extend(left_3d)
+        if right_3d is not None:
+            all_pts.extend(right_3d)
+
+        if all_pts:
+            pos_pts = [(fwd, lat) for fwd, lat in all_pts if lat > side_tol]
+            neg_pts = [(fwd, lat) for fwd, lat in all_pts if lat < -side_tol]
+            if len(pos_pts) >= min_side_pts:
+                left_3d = pos_pts
+            elif left_3d is not None and mean_lat(left_3d) is not None and mean_lat(left_3d) > 0.0:
+                left_3d = left_3d
+            else:
+                left_3d = None
+
+            if len(neg_pts) >= min_side_pts:
+                right_3d = neg_pts
+            elif right_3d is not None and mean_lat(right_3d) is not None and mean_lat(right_3d) < 0.0:
+                right_3d = right_3d
+            else:
+                right_3d = None
+
+        left_lat = mean_lat(left_3d)
+        right_lat = mean_lat(right_3d)
+
+        # Safety net: if a detected boundary lands on the wrong lateral side
+        # of the robot, relabel it before synthesising the missing boundary.
+        if left_3d is not None and left_lat is not None and left_lat < -0.1:
+            if right_3d is None:
+                right_3d, left_3d = left_3d, None
+            elif right_lat is not None and right_lat > 0.1:
+                left_3d, right_3d = right_3d, left_3d
+        if right_3d is not None and right_lat is not None and right_lat > 0.1:
+            if left_3d is None:
+                left_3d, right_3d = right_3d, None
+            elif left_lat is not None and left_lat < -0.1:
+                left_3d, right_3d = right_3d, left_3d
+
+        left_lat = mean_lat(left_3d)
+        right_lat = mean_lat(right_3d)
+
+        if left_3d is not None and right_3d is not None and left_lat is not None and right_lat is not None:
+            sep = left_lat - right_lat
+            invalid_signs = (left_lat <= 0.0) or (right_lat >= 0.0)
+            collapsed = sep < min_valid_sep
+            if invalid_signs or collapsed:
+                left_count = len(left_3d)
+                right_count = len(right_3d)
+                if left_count >= right_count:
+                    right_3d = [(fwd, lat - W) for fwd, lat in left_3d]
+                else:
+                    left_3d = [(fwd, lat + W) for fwd, lat in right_3d]
+
         if left_3d is not None and right_3d is None:
             right_3d = [(fwd, lat - W) for fwd, lat in left_3d]
         elif right_3d is not None and left_3d is None:
             left_3d  = [(fwd, lat + W) for fwd, lat in right_3d]
+        # If both missing → return None, None (already handled upstream)
         return left_3d, right_3d
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -468,32 +749,42 @@ class LaneDetectionNode(Node):
         if left_pts is None or right_pts is None:
             return g
 
-        lpts = sorted(left_pts,  key=lambda p: p[0])
+        lpts = sorted(left_pts, key=lambda p: p[0])
         rpts = sorted(right_pts, key=lambda p: p[0])
-        if len(lpts) < 2 or len(rpts) < 2:
+
+        # === FIXED: only reject if BOTH sides are insufficient ===
+        if len(lpts) < 2 and len(rpts) < 2:
             return g
 
-        W, H, res = g.info.width, g.info.height, self.grid_res
+        # Ensure both sides exist (mirrors _fill_missing logic)
+        W = self.assumed_lane_width
+        if len(lpts) >= 2 and len(rpts) < 2:
+            rpts = [(fwd, lat - W) for fwd, lat in lpts]
+        elif len(rpts) >= 2 and len(lpts) < 2:
+            lpts = [(fwd, lat + W) for fwd, lat in rpts]
+
+        W_grid, H, res = g.info.width, g.info.height, self.grid_res
         data = list(g.data)
 
         for row in range(H):
             fwd = row * res
-            ll  = self._interp(lpts, fwd)
-            rl  = self._interp(rpts, fwd)
+            ll = self._interp(lpts, fwd)
+            rl = self._interp(rpts, fwd)
             if ll is None or rl is None:
                 continue
-            left_col  = max(0, min(W - 1, int((ll + self.grid_width_m / 2) / res)))
-            right_col = max(0, min(W - 1, int((rl + self.grid_width_m / 2) / res)))
+
+            left_col = max(0, min(W_grid - 1, int((ll + self.grid_width_m / 2) / res)))
+            right_col = max(0, min(W_grid - 1, int((rl + self.grid_width_m / 2) / res)))
             lo, hi = min(left_col, right_col), max(left_col, right_col)
-            for col in range(W):
+
+            for col in range(W_grid):
                 if lo < col < hi:
-                    data[row * W + col] = 0    # free — driveable interior
+                    data[row * W_grid + col] = 0      # free
                 elif col == lo or col == hi:
-                    data[row * W + col] = 100  # lethal — lane boundary
+                    data[row * W_grid + col] = 100    # lethal boundary
 
         g.data = data
         return g
-
     def _empty_grid(self, stamp=None):
         g = OccupancyGrid()
         g.header.stamp    = self.get_clock().now().to_msg() if stamp is None else stamp

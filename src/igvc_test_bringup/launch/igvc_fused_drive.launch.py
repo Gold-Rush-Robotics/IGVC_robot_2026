@@ -34,6 +34,14 @@ def generate_launch_description() -> LaunchDescription:
             'use_sim_time': use_sim_time,
         }.items(),
     )
+    lane_segmentation = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([bringup, 'launch', 'lane_segmentation.launch.py'])
+        ),
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+        }.items(),
+    )
 
     lane_follower = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -45,16 +53,17 @@ def generate_launch_description() -> LaunchDescription:
         }.items(),
     )
 
-    odom_tf_bridge_node = Node(
-        package='igvc_lane_detection',
-        executable='odom_tf_bridge_node',
-        name='odom_tf_bridge',
-        output='screen',
+    odom_to_tf_ros2 = Node(
+        package="odom_to_tf_ros2",
+        executable="odom_to_tf",
+        name="odom_to_tf",
+        output="screen",
         parameters=[
             {'use_sim_time': use_sim_time},
-            {'odom_topic': '/odom'},
-            {'odom_frame_id': 'odom'},
-            {'base_frame_id': 'base_link'},
+            {'odom_topic': '/front_zed_camera_x/zed_node/odom'},
+            {'frame_id': 'odom'},
+            {'child_frame_id': 'base_link'},
+            {'use_original_timestamp': True},
         ],
     )
     gps_node = Node(
@@ -69,6 +78,21 @@ def generate_launch_description() -> LaunchDescription:
             gps_config,
         ],
     )
+     # Bridge Nav2 Twist output to the stamped cmd_vel expected by ros2_control.
+    twist_stamper_node = Node(
+        package='twist_stamper',
+        executable='twist_stamper',
+        name='twist_stamper',
+        output='screen',
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            {'frame_id': 'base_link'},
+        ],
+        remappings=[
+            ('cmd_vel_in', '/diff_drive_controller/cmd_vel_unstamped'),
+            ('cmd_vel_out', '/diff_drive_controller/cmd_vel'),
+        ],
+    )
 
 
     return LaunchDescription([
@@ -79,7 +103,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             'gps_enabled',
-            default_value='true',
+            default_value='false',
             choices=['true', 'false'],
             description='Enable GPS-driven localization logic if true.',
         ),
@@ -88,9 +112,11 @@ def generate_launch_description() -> LaunchDescription:
             default_value='CanInterface',
             description='Hardware interface used by motor controllers.',
         ),
-        zed_multi_fused_odom,
+        # zed_multi_fused_odom,
         motor_controllers,
         # lane_follower,
-        # odom_tf_bridge_node,
-        gps_node,
+        lane_segmentation,
+        odom_to_tf_ros2,
+        # gps_node,
+        twist_stamper_node,
     ])

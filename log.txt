@@ -1,0 +1,1 @@
+[collision_monitor-19] [WARN] [1776287161.552968718] [collision_monitor]: [front_pointcloud]: Latest source and current collision monitor node timestamps differ on 6.534602 seconds. Ignoring the source.
