@@ -118,7 +118,10 @@ def generate_launch_description() -> LaunchDescription:
         executable='navigation_node',
         name='igvc_navigator',
         output='screen',
-        parameters=[shared_params],
+        parameters=[
+            shared_params,
+            PathJoinSubstitution([bringup, 'config', 'navigator_config.yaml']),
+        ],
     )
 
     # ── Nav2 ──────────────────────────────────────────────────────────

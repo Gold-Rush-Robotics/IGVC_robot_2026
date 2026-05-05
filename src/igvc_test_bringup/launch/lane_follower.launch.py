@@ -63,7 +63,7 @@ def generate_launch_description() -> LaunchDescription:
         'force_identity_map_to_odom': force_identity_map_to_odom,
     }
 
-    ── Lane detection ────────────────────────────────────────────────────
+    # ── Lane detection ────────────────────────────────────────────────────
     lane_detection_node = Node(
         package='igvc_lane_detection',
         executable='lane_detection_node',
@@ -113,7 +113,10 @@ def generate_launch_description() -> LaunchDescription:
         executable='navigation_node',
         name='igvc_navigator',
         output='screen',
-        parameters=[shared_params],
+        parameters=[
+            shared_params,
+            PathJoinSubstitution([bringup, 'config', 'navigator_config.yaml']),
+        ],
     )
 
     # ── Nav2 ──────────────────────────────────────────────────────────────
