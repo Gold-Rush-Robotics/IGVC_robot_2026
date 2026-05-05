@@ -112,12 +112,27 @@ class YolopV2:
         half: bool = True,
         img_size: int = 640,
         resize_hw: Tuple[int, int] = (720, 1280),
+        preprocess: bool = True,
+        clahe_clip: float = 2.0,
+        clahe_tile: Tuple[int, int] = (8, 8),
+        blur_ksize: Tuple[int, int] = (5, 5),
+        blur_sigma: float = 0.0,
     ) -> None:
         self.weights_path = weights_path
         self.requested_device = device
         self.half = bool(half)
         self.img_size = int(img_size)
         self.resize_hw = tuple(resize_hw)  # (H, W)
+
+        # Pre-processing: CLAHE histogram equalisation on the luma channel
+        # (boosts contrast in shadows / bright sun without colour shifts)
+        # followed by a Gaussian blur (suppresses high-frequency texture
+        # noise that otherwise produces speckle in the lane mask).
+        self.preprocess_enabled = bool(preprocess)
+        self.blur_ksize = tuple(blur_ksize)
+        self.blur_sigma = float(blur_sigma)
+        self._clahe = cv2.createCLAHE(
+            clipLimit=float(clahe_clip), tileGridSize=tuple(clahe_tile))
 
         self._model = None  # torch.jit.ScriptModule once loaded
         self._device = None  # torch.device once loaded
@@ -191,6 +206,10 @@ class YolopV2:
             bgr, (self.resize_hw[1], self.resize_hw[0]),
             interpolation=cv2.INTER_LINEAR)
 
+        # 1b) Optional contrast/denoise preprocessor.
+        if self.preprocess_enabled:
+            resized = self._preprocess(resized)
+
         # 2) Letterbox to a stride-multiple square.
         lb, ratio, (dw, dh) = _letterbox(
             resized, new_shape=self.img_size, stride=self._stride,
@@ -226,8 +245,23 @@ class YolopV2:
                 da_mask, (src_w, src_h), interpolation=cv2.INTER_NEAREST)
             ll_mask = cv2.resize(
                 ll_mask, (src_w, src_h), interpolation=cv2.INTER_NEAREST)
-
+        
         return da_mask.astype(np.uint8), ll_mask.astype(np.uint8)
+
+    # ── Pre-processing ────────────────────────────────────────────────
+
+    def _preprocess(self, bgr: np.ndarray) -> np.ndarray:
+        """CLAHE histogram equalisation on Y (YUV) + Gaussian blur.
+
+        Operates on the luma channel only so colour balance is preserved
+        and the network still sees a natural-looking RGB image.
+        """
+        yuv = cv2.cvtColor(bgr, cv2.COLOR_BGR2YUV)
+        yuv[:, :, 0] = self._clahe.apply(yuv[:, :, 0])
+        out = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
+        if self.blur_ksize and self.blur_ksize[0] > 1 and self.blur_ksize[1] > 1:
+            out = cv2.GaussianBlur(out, self.blur_ksize, self.blur_sigma)
+        return out
 
     # ── Post-processing (YOLOPv2-equivalent) ──────────────────────────
 
