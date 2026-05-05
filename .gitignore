@@ -5,5 +5,15 @@ dataset/*
 .venv/*
 runs/*
 *.pt
+<<<<<<< HEAD
 isaacsim/*
 .venv/
+=======
+models/
+rosbags/
+isaacsim/*
+**.pyc
+
+rosbag_export_test/
+yolopv2_bag/
+>>>>>>> origin/main

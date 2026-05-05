@@ -1,0 +1,82 @@
+lane_segmentation_node:
+  ros__parameters:
+    # ── Camera configuration ────────────────────────────────────────
+    # All three ZEDs feed the segmentation pipeline in their native
+    # orientation — YOLOPv2 performed better without any pre-rotation.
+    num_cameras: 3
+    camera_topics:
+      - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
+      # - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
+      # - "/right_zed_camera_x/zed_node/rgb/color/rect/image"
+    depth_topics:
+      - "/front_zed_camera_x/zed_node/depth/depth_registered"
+      # - "/left_zed_camera_x/zed_node/depth/depth_registered"
+      # - "/right_zed_camera_x/zed_node/depth/depth_registered"
+    camera_info_topics:
+      - "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+      # - "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+      # - "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+
+    # ── Frames ──────────────────────────────────────────────────────
+    base_frame: "base_link"
+    occupancy_grid_frame: "base_link"
+
+    # ── Local rolling costmap ───────────────────────────────────────
+    grid_resolution: 0.05
+    grid_width:     20.0
+    grid_height:    20.0
+
+    # ── Region of interest / body cropping ──────────────────────────
+    # roi_enabled=false → use the full frame (matches the offline
+    # bag-replay overlay which produced the cleanest masks).  Flip to
+    # true to re-enable the trapezoidal crop defined by the two
+    # *_frac params below.
+    chassis_mask_frac: 0.15
+    roi_enabled:      false
+    roi_bottom_frac:  0.95
+    roi_top_frac:     0.55
+
+    # ── Depth sampling ──────────────────────────────────────────────
+    depth_scale: 1.0
+    min_detection_depth_m: 0.5
+    max_detection_depth_m: 5.0
+    depth_search_radius_px: 2
+
+    # ── Multi-camera fusion (single-camera for now, left in for future)
+    fusion_timeout_sec: 0.5
+    keep_last_grid_on_miss: true
+
+    # ── Persistent (fixed-frame) lane map ───────────────────────────
+    persistent_map_frame:      "map"
+    persistent_map_size_m:    40.0
+    persistent_map_resolution: 0.125
+    persistent_map_decay:      0.998
+    persistent_hit_weight:     4.0
+    persistent_threshold:     15.0
+    persistent_max_value:    200.0
+    persistent_publish_hz:     2.0
+    persistent_clear_radius_m: 0.8
+
+    # ── YOLOPv2 segmentation model ──────────────────────────────────
+    # model_weights is intentionally empty — the launch file fills it
+    # in from $YOLOPV2_WEIGHTS or the model_weights launch argument so
+    # the absolute path stays out of source control.
+    model_weights: "/ros2_ws/src/IGVC_robot_2026/models/yolopv2.pt"
+    model_device:  "cuda:0"
+    model_half:    true
+    model_img_size: 640
+
+    # Mask → point-cloud rasterisation
+    da_subsample_px: 6             # drivable-area stride (cheap, dense)
+    ll_subsample_px: 2             # lane-line stride (sparse, precise)
+    # Lowered from 150 → 20 px: with the side cameras now contributing
+    # paint, a lot of lane evidence arrives as thin 30-80 px slivers
+    # (dashed markings, far-field lines, oblique angles on the 90°
+    # rotated L/R feeds).  150 px was silently dropping every one of
+    # them, producing overlays full of red paint but lane=0 downstream.
+    min_lane_component_px: 150
+    max_points_per_frame:  4000    # per-mask hard cap
+
+    # ── Debug ───────────────────────────────────────────────────────
+    publish_overlay: true
+    lane_marker_topic: "/lane_segmentation/lanes"
