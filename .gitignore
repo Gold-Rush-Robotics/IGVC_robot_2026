@@ -5,4 +5,10 @@ dataset/*
 .venv/*
 runs/*
 *.pt
+models/
+rosbags/
 isaacsim/*
+**.pyc
+
+rosbag_export_test/
+yolopv2_bag/

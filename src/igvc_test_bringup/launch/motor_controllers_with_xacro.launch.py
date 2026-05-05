@@ -15,9 +15,15 @@ def generate_launch_description():
         default_value='IsaacDriveHardware',
         description='Hardware interface to use (IsaacDriveHardware or CanInterface)'
     )
+    use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='false',
+        description='Use simulation clock if true'
+    )
     
     # Get launch configurations
     hardware_interface = LaunchConfiguration('hardware_interface')
+    use_sim_time = LaunchConfiguration('use_sim_time')
     
     # Get package paths
     description_pkg = get_package_share_directory('igvc_test_description')
@@ -38,7 +44,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'robot_description': robot_description,
-            'use_sim_time': False
+            'use_sim_time': use_sim_time
         }]
     )
 
@@ -46,11 +52,13 @@ def generate_launch_description():
     yaml_launch = IncludeLaunchDescription(
         FrontendLaunchDescriptionSource(
             os.path.join(bringup_pkg, 'launch', 'motor_controllers_nodes.launch.yaml')
-        )
+        ),
+        launch_arguments={'use_sim_time': use_sim_time}.items()
     )
 
     return LaunchDescription([
         hardware_interface_arg,
+        use_sim_time_arg,
         robot_state_publisher,
         yaml_launch,
     ])

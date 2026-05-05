@@ -1,0 +1,23 @@
+services:
+  igvc_dev_zed:
+    image: ghcr.io/gold-rush-robotics/dev-zed:5.2.1-13.1.1
+    container_name: igvc_dev_zed
+    stdin_open: true
+    tty: true
+    privileged: true
+    network_mode: host
+    runtime: nvidia
+    gpus: all
+    volumes:
+      - .:/root/ros2_ws/src/IGVC_robot_2026
+      - /tmp:/tmp
+      - /dev:/dev
+      - /dev/shm:/dev/shm
+    command: >-
+      /bin/bash -lc "
+      cp -f /root/ros2_ws/src/IGVC_robot_2026/src/igvc_test_bringup/config/common_stereo.yaml
+      /root/ros2_ws/src/zed-ros2-wrapper/zed_wrapper/config/common_stereo.yaml
+      && source /opt/ros/jazzy/setup.bash
+      && colcon build --symlink-install --packages-select igvc_test_bringup
+      && ros2 launch igvc_test_bringup simulation_launch.launch.yaml
+      "
