@@ -8,7 +8,7 @@
       od_enabled: true  # Enable object detection
       detection_model: 'CUSTOM_YOLOLIKE_BOX_OBJECTS'  # Use custom YOLO-like ONNX model
       custom_onnx_file: '/home/root/ros2_ws/jazzy_ws/IGVC_robot_2026/best.onnx'  # Path to ONNX file (can be set via launch argument or environment)
-      custom_onnx_input_size: 512  # Input tensor size: 1x3x512x512
+      custom_onnx_input_size: 640  # Input tensor size: 1x3x512x512
       custom_class_count: 15  # Number of classes in the IGVC YOLOv12 model
       allow_reduced_precision_inference: true
       max_range: 10.0  # Maximum detection range in meters
