@@ -11,7 +11,7 @@
       custom_onnx_input_size: 512  # Input tensor size: 1x3x512x512
       custom_class_count: 15  # Number of classes in the IGVC YOLOv12 model
       allow_reduced_precision_inference: true
-      max_range: 20.0  # Maximum detection range in meters
+      max_range: 10.0  # Maximum detection range in meters
       confidence_threshold: 50.0  # Minimum detection confidence [0, 99]
       prediction_timeout: 0.5  # Tracking prediction timeout in seconds
       enable_tracking: true  # Enable object tracking across frames
