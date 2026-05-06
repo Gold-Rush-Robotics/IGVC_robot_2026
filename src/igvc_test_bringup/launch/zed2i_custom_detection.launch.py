@@ -9,9 +9,9 @@ from launch.substitutions import LaunchConfiguration, TextSubstitution
 
 def generate_launch_description():
     """
-    Launch a single ZED2i camera with custom object detection.
+    Launch a single zedx camera with custom object detection.
     
-    This launch file is a test/example for running ZED2i with YOLOv12 IGVC 
+    This launch file is a test/example for running zedx with YOLOv12 IGVC 
     custom object detection enabled. The custom ONNX model path can be 
     specified via the 'custom_onnx_file' argument or overridden via 
     'ros_params_override_path'.
@@ -19,26 +19,26 @@ def generate_launch_description():
     
     package_share_dir = get_package_share_directory('igvc_test_bringup')
     
-    # Use the ZED2i custom detection config (OD-enabled) by default
-    config_file = os.path.join(package_share_dir, 'config', 'zed2i_custom_detection.yaml')
+    # Use the zedx custom detection config (OD-enabled) by default
+    config_file = os.path.join(package_share_dir, 'config', 'zedx_custom_detection.yaml')
     
     # Get ZED wrapper launch
     zed_camera_launch = os.path.join(
         get_package_share_directory('zed_wrapper'),
-        'launch/include',
+        'launch',
         'zed_camera.launch.py',
     )
     
     return LaunchDescription([
         DeclareLaunchArgument(
             'camera_name',
-            default_value='zed2i',
-            description='Name of the ZED2i camera node.',
+            default_value='zedx',
+            description='Name of the zedx camera node.',
         ),
         DeclareLaunchArgument(
             'camera_model',
-            default_value='zed2i',
-            description='ZED camera model (e.g., zed2i, zedx, zed2).',
+            default_value='zedx',
+            description='ZED camera model (e.g., zedx, zedx, zed2).',
         ),
         DeclareLaunchArgument(
             'serial_number',
@@ -77,7 +77,7 @@ def generate_launch_description():
         ),
         LogInfo(
             msg=TextSubstitution(
-                text='Starting ZED2i camera with IGVC YOLOv12 custom object detection...'
+                text='Starting zedx camera with IGVC YOLOv12 custom object detection...'
             )
         ),
         IncludeLaunchDescription(
