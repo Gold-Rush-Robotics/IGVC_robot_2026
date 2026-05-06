@@ -50,7 +50,7 @@ lane_segmentation_node:
     persistent_map_frame:      "map"
     persistent_map_size_m:    40.0
     persistent_map_resolution: 0.125
-    persistent_map_decay:      0.998
+    persistent_map_decay:      0.2
     persistent_hit_weight:     4.0
     persistent_threshold:     15.0
     persistent_max_value:    200.0
