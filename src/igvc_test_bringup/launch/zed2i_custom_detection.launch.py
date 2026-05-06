@@ -20,7 +20,7 @@ def generate_launch_description():
     package_share_dir = get_package_share_directory('igvc_test_bringup')
     
     # Use the zedx custom detection config (OD-enabled) by default
-    config_file = os.path.join(package_share_dir, 'config', 'zedx_custom_detection.yaml')
+    config_file = os.path.join(package_share_dir, 'config', 'zed2i_custom_detection.yaml')
     
     # Get ZED wrapper launch
     zed_camera_launch = os.path.join(
