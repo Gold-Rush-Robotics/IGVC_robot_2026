@@ -25,7 +25,7 @@ def generate_launch_description():
     # Get ZED wrapper launch
     zed_camera_launch = os.path.join(
         get_package_share_directory('zed_wrapper'),
-        'launch',
+        'launch/include',
         'zed_camera.launch.py',
     )
     

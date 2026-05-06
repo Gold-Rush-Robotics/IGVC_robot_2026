@@ -15,7 +15,7 @@
       confidence_threshold: 50.0  # Minimum detection confidence [0, 99]
       prediction_timeout: 0.5  # Tracking prediction timeout in seconds
       enable_tracking: true  # Enable object tracking across frames
-      filtering_mode: '1'  # '1' = NMS3D
+      filtering_mode: 1  # '1' = NMS3D
 
       # IGVC YOLOv12 class definitions
       class_000:
