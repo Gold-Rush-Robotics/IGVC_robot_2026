@@ -99,6 +99,10 @@ def generate_launch_description() -> LaunchDescription:
                 [bringup, 'config', 'lane_segmentation_config.yaml']),
             {
                 'use_sim_time': use_sim_time,
+                'model_weights': model_weights,
+                'model_device': model_device,
+                'model_half': model_half,
+                'publish_overlay': publish_overlay,
             },
         ],
     )

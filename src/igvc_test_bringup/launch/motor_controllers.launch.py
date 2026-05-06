@@ -26,7 +26,6 @@ def generate_launch_description():
     # Get Local Files
     description_pkg_path = os.path.join(get_package_share_directory('igvc_test_description'))
     config_pkg_path = os.path.join(get_package_share_directory('igvc_test_bringup'))
-    joystick_file = os.path.join(config_pkg_path, 'config', 'xbox-holonomic.config.yaml')
     xacro_file = os.path.join(description_pkg_path, 'urdf', 'robots','test_robot.urdf.xacro')
     controllers_file = os.path.join(config_pkg_path, 'config', 'controllers.yaml')
     rviz_file = os.path.join(config_pkg_path, 'config', 'config.rviz')
@@ -90,29 +89,6 @@ def generate_launch_description():
     )
 
 
-    # Start Joystick Node
-    joy = Node(
-            package='joy', 
-            executable='joy_node', 
-            name='joy_node',
-            parameters=[{
-                'dev': '/dev/input/js0',
-                'deadzone': 0.3,
-                'autorepeat_rate': 20.0,
-            }])
-
-
-    # Start Teleop Node to translate joystick commands to robot commands
-    joy_teleop = Node(
-        package='teleop_twist_joy', 
-        executable='teleop_node',
-        name='teleop_twist_joy_node', 
-        parameters=[joystick_file],
-        remappings=[('/cmd_vel', '/diff_drive_controller/cmd_vel')]
-        )
-
-
-
     # Launch!
     return LaunchDescription([
         hardware_interface_arg,
@@ -122,6 +98,4 @@ def generate_launch_description():
         joint_state_broadcaster_spawner,
         diff_drive_spawner,
         # rviz2_delay,
-        joy,
-        joy_teleop,
     ])

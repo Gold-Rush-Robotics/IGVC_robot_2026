@@ -1,12 +1,13 @@
 # YOLOv12 Training Guide for IGVC Dataset
 
-This directory contains scripts to train a YOLOv12 object detection model on the IGVC dataset.
+This directory contains scripts, data, seed weights, and run outputs for training a YOLOv12 object detection model on the IGVC dataset.
 
 ## Prerequisites
 
 1. Install Python 3.8 or later
-2. Install required packages:
+2. Move into the training directory and install required packages:
    ```bash
+   cd training
    pip install -r training_requirements.txt
    ```
 
@@ -16,12 +17,16 @@ This directory contains scripts to train a YOLOv12 object detection model on the
 - **train_yolov12.sh** - Convenient bash wrapper for quick training
 - **training_requirements.txt** - Python dependencies
 - **dataset/data.yaml** - Dataset configuration (train/val/test splits)
+- **weights/yolov12n.pt** - Seed YOLOv12 nano weights
+- **runs/** - Training outputs and checkpoints
 
 ## Quick Start
 
 ### Option 1: Using the Bash Script (Easiest)
 
 ```bash
+cd training
+
 # Train with default settings (nano model, 100 epochs)
 ./train_yolov12.sh
 
@@ -41,6 +46,8 @@ This directory contains scripts to train a YOLOv12 object detection model on the
 ### Option 2: Using Python Script (Full Control)
 
 ```bash
+cd training
+
 # Train with default settings
 python3 train_yolov12.py
 
