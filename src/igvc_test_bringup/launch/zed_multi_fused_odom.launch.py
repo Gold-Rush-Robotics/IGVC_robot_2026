@@ -107,6 +107,6 @@ def generate_launch_description() -> LaunchDescription:
             description='YAML file that overrides ZED wrapper defaults for every camera. '
                         'Empty = use igvc_test_bringup/config/common_stereo.yaml.',
         ),
-        zed_multi_launch,
+        # zed_multi_launch,
         ekf_node,
     ])

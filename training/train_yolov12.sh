@@ -2,8 +2,11 @@
 # YOLOv12 Training Script Wrapper
 # Usage: ./train_yolov12.sh [options]
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || exit 1
+
 # Default values
-MODEL="yolov12n.pt"
+MODEL="weights/yolov12n.pt"
 EPOCHS=100
 BATCH=128
 IMGSZ=640
@@ -48,7 +51,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [options]"
             echo ""
             echo "Options:"
-            echo "  --model MODEL       Model size (yolov12n.pt, yolov12s.pt, etc.) [default: yolov12n.pt]"
+            echo "  --model MODEL       Model path or model size (yolov12n.pt, yolov12s.pt, etc.) [default: weights/yolov12n.pt]"
             echo "  --epochs N          Number of epochs [default: 100]"
             echo "  --batch N           Batch size [default: 16]"
             echo "  --imgsz N           Image size [default: 640]"
@@ -72,7 +75,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Build Python command
-CMD="python3 train_yolov12.py"
+CMD="python3 $SCRIPT_DIR/train_yolov12.py"
 CMD="$CMD --model $MODEL"
 CMD="$CMD --epochs $EPOCHS"
 CMD="$CMD --batch $BATCH"

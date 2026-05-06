@@ -1,9 +1,9 @@
 build/*
 install/*
 log/*
-dataset/*
+training/dataset/*
 .venv/*
-runs/*
+training/runs/*
 *.pt
 models/
 rosbags/

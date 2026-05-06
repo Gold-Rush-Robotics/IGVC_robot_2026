@@ -11,6 +11,15 @@ from ultralytics import YOLO
 import argparse
 from datetime import datetime
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def resolve_training_path(path_value):
+    path = Path(path_value)
+    if path.is_absolute() or path.exists():
+        return path
+    return SCRIPT_DIR / path
+
 
 def parse_arguments():
     """Parse command line arguments."""
@@ -19,9 +28,8 @@ def parse_arguments():
     parser.add_argument(
         '--model', 
         type=str, 
-        default='yolov12n.pt',
-        choices=['yolov12n.pt', 'yolov12s.pt', 'yolov12m.pt', 'yolov12l.pt', 'yolov12x.pt'],
-        help='YOLOv12 model size (n=nano, s=small, m=medium, l=large, x=xlarge)'
+        default=str(SCRIPT_DIR / 'weights' / 'yolov12n.pt'),
+        help='YOLOv12 model path or model size (yolov12n.pt, yolov12s.pt, etc.)'
     )
     parser.add_argument(
         '--epochs', 
@@ -67,13 +75,13 @@ def parse_arguments():
     parser.add_argument(
         '--data', 
         type=str, 
-        default='dataset/data.yaml',
+        default=str(SCRIPT_DIR / 'dataset' / 'data.yaml'),
         help='Path to dataset configuration file'
     )
     parser.add_argument(
         '--project', 
         type=str, 
-        default='runs/detect',
+        default=str(SCRIPT_DIR / 'runs' / 'detect'),
         help='Project name (results directory)'
     )
     parser.add_argument(
@@ -177,6 +185,10 @@ def check_dataset(data_path):
 def main():
     """Main training function."""
     args = parse_arguments()
+    args.data = str(resolve_training_path(args.data))
+    args.project = str(resolve_training_path(args.project))
+    if '/' in args.model or '\\' in args.model:
+        args.model = str(resolve_training_path(args.model))
     
     # Print training configuration
     print("=" * 60)

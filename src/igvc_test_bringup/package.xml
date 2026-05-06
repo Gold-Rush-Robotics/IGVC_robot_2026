@@ -13,7 +13,7 @@
   <test_depend>ament_lint_common</test_depend>
 
   <!-- Third-party / stock ROS 2 runtime nodes used by the launch files. -->
-  <exec_depend>usb_cam</exec_depend>
+  <!-- <exec_depend>usb_cam</exec_depend>
   <exec_depend>robot_localization</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>joint_state_publisher_gui</exec_depend>
@@ -26,14 +26,14 @@
   <exec_depend>teleop_twist_joy</exec_depend>
   <exec_depend>twist_stamper</exec_depend>
   <exec_depend>navigation2</exec_depend>
-  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend> -->
 
   <!-- Workspace packages launched from this bringup. -->
-  <exec_depend>igvc_test_description</exec_depend>
+  <!-- <exec_depend>igvc_test_description</exec_depend>
   <exec_depend>igvc_lane_detection</exec_depend>
   <exec_depend>grr_hardware</exec_depend>
   <exec_depend>sllidar_ros2</exec_depend>
-  <exec_depend>ublox_gps</exec_depend>
+  <exec_depend>ublox_gps</exec_depend> -->
 
   <export>
     <build_type>ament_cmake</build_type>
