@@ -22,7 +22,7 @@ waypoint_follower:
     stop_on_failure: false    # keep going to next waypoint even if one fails
     waypoint_task_executor_plugin: "wait_at_waypoint"
     wait_at_waypoint:
-      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      plugin: "nav2_waypoint_follower/WaitAtWaypoint"
       enabled: true
       waypoint_pause_duration: 0   # no pause needed for IGVC
 
@@ -38,8 +38,14 @@ planner_server:
       allow_unknown: true              # needed: unknown cells exist at course edges
       max_iterations: 1000000
       max_on_approach_iterations: 1000
-      max_planning_time: 0.2           # cap so 5 Hz replan never stalls
-      cost_travel_multiplier: 6.0
+      # Larger budget so the search can explore longer detours around
+      # lane paint instead of giving up and aborting the goal.
+      max_planning_time: 1.0
+      # Heavier cost penalty so paths through inflated (paint-adjacent)
+      # cells are only taken when no free corridor exists.  Nav2's
+      # default for this is 2.0; raising it biases the A* search toward
+      # longer but cleaner routes.
+      cost_travel_multiplier: 12.0
       use_final_approach_orientation: false
       smoother:
         max_iterations: 1000
@@ -66,7 +72,7 @@ controller_server:
     controller_plugins: ["FollowPath"]
 
     progress_checker:
-      plugin: "nav2_controller::SimpleProgressChecker"
+      plugin: "nav2_controller/SimpleProgressChecker"
       # Very lenient so MPPI warm-up / brief stalls near lane paint
       # don't abort the goal.  Lane-following courses may legitimately
       # need >15 s to squeeze past tight features.
@@ -74,7 +80,7 @@ controller_server:
       movement_time_allowance: 45.0
 
     goal_checker:
-      plugin: "nav2_controller::SimpleGoalChecker"
+      plugin: "nav2_controller/SimpleGoalChecker"
       xy_goal_tolerance: 0.5          # GPS is ~1-2m accuracy outdoors
       yaw_goal_tolerance: 0.5
       stateful: true
@@ -85,7 +91,7 @@ controller_server:
       # rollout and churned in an optimizer-reset loop.  RPP is far more
       # tolerant of sparse / noisy lane updates while still benefiting
       # from the 5 Hz global replanning above.
-      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      plugin: "nav2_regulated_pure_pursuit_controller/RegulatedPurePursuitController"
       desired_linear_vel: 0.9
       desired_angular_vel: 0.9
       lookahead_dist: 1.1
@@ -130,42 +136,28 @@ collision_monitor:
     polygons: ["SlowZone", "StopZone"]
 
     # Slow to 50% when anything enters 1.0m ahead
-    # SlowZone:
-    #   type: "polygon"
-    #   action_type: "slowdown"
-    #   polygon_sub_topic: "/collision_monitor/slow_zone"
-    #   footprint_topic: "/local_costmap/published_footprint"
-    #   time_before_collision: 2.0
-    #   simulation_time_step: 0.1
-    #   min_points: 4
-    #   slowdown_ratio: 0.5
-    #   visualize: true
-    #   enabled: false
-
-    # # Hard stop if anything enters 0.4m
-    # StopZone:
-    #   type: "polygon"
-    #   action_type: "stop"
-    #   polygon_sub_topic: "/collision_monitor/stop_zone"
-    #   footprint_topic: "/local_costmap/published_footprint"
-    #   time_before_collision: 0.8
-    #   simulation_time_step: 0.1
-    #   min_points: 4
-    #   visualize: true
-    #   enabled: false
-
-
     SlowZone:
       type: "polygon"
-      # Humble's rcl_yaml_param_parser cannot handle list-of-lists, so the
-      # polygon is given as a flat [x1,y1,x2,y2,...] sequence.
-      points: [1.0, 0.5, 1.0, -0.5, 0.0, -0.5, 0.0, 0.5]
       action_type: "slowdown"
+      polygon_sub_topic: "/collision_monitor/slow_zone"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 2.0
+      simulation_time_step: 0.1
+      min_points: 4
+      slowdown_ratio: 0.5
+      visualize: true
       enabled: false
+
+    # Hard stop if anything enters 0.4m
     StopZone:
       type: "polygon"
-      points: [1.0, 0.5, 1.0, -0.5, 0.0, -0.5, 0.0, 0.5]
-      action_type: "slowdown"
+      action_type: "stop"
+      polygon_sub_topic: "/collision_monitor/stop_zone"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 0.8
+      simulation_time_step: 0.1
+      min_points: 4
+      visualize: true
       enabled: false
 
     observation_sources: ["front_pointcloud", "left_pointcloud", "right_pointcloud"]
@@ -236,27 +228,11 @@ local_costmap:
       plugins: ["obstacle_layer", "lane_layer", "inflation_layer"]
 
       obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
+        plugin: "nav2_costmap_2d/ObstacleLayer"
         enabled: true
         tf_filter_tolerance: 1.0
         footprint_clearing_enabled: true
-        observation_sources: "front_pointcloud left_pointcloud right_pointcloud lidar_scan"
-        # 2-D 360° LiDAR (sllidar / RPLIDAR).  LaserScan sees thin
-        # obstacles (cones, poles, fence posts) the ZED depth smears
-        # away, and its long raytrace range quickly clears stale
-        # marks the cameras can't see behind/around the robot.
-        lidar_scan:
-          topic: /scan
-          data_type: "LaserScan"
-          marking: true
-          clearing: true
-          min_obstacle_height: 0.0
-          max_obstacle_height: 2.0
-          obstacle_max_range: 10.0
-          obstacle_min_range: 0.15
-          raytrace_max_range: 12.0
-          raytrace_min_range: 0.15
-          inf_is_valid: true
+        observation_sources: "front_pointcloud left_pointcloud right_pointcloud"
         front_pointcloud:
           topic: /front_zed_camera_x/zed_node/point_cloud/cloud_registered
           data_type: "PointCloud2"
@@ -297,26 +273,31 @@ local_costmap:
       # grid's origin shifts every tick — which was starving the planner
       # and causing NavigateToPose goals to abort immediately.
       #
-      # NOTE: lethal_cost_threshold is set ABOVE 100 so lane cells come in
-      # as high-cost (253) rather than lethal (254).  With MPPI, lethal
-      # cells cause every rollout that touches paint to be rejected, which
-      # deadlocks the optimiser on narrow lanes.  High-cost still steers
-      # the robot away strongly via CostCritic + PathAlignCritic.
+      # NOTE: lethal_cost_threshold is set below the lane_map's painted
+      # value (100) so lane cells come in as LETHAL (254).  Keeping them
+      # as high-cost let RPP bulldoze across the paint whenever the goal
+      # pulled hard enough.  Combined with a generous inflation radius
+      # (> robot half-width) this makes lane paint a real barrier without
+      # deadlocking the planner — as long as there's an alternate route.
       lane_layer:
-        plugin: "nav2_costmap_2d::StaticLayer"
+        plugin: "nav2_costmap_2d/StaticLayer"
         map_subscribe_transient_local: true
         subscribe_to_updates: true
         map_topic: "/lane_map"
-        lethal_cost_threshold: 90
+        lethal_cost_threshold: 50
         unknown_cost_value: 1
         track_unknown_space: false
         use_maximum: true
         trinary_costmap: false
 
       inflation_layer:
-        plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 2.5
-        inflation_radius: 0.35
+        plugin: "nav2_costmap_2d/InflationLayer"
+        # Half-width of the footprint is 0.35 m; inflate to 0.55 m so
+        # the planner keeps at least ~20 cm of clearance from paint.
+        # Lower scaling factor => costs fall off more slowly, so RPP is
+        # steered away earlier instead of only reacting at the edge.
+        cost_scaling_factor: 1.5
+        inflation_radius: 0.55
 
 global_costmap:
   global_costmap:
@@ -327,32 +308,20 @@ global_costmap:
       publish_frequency: 1.0
       transform_tolerance: 1.0
       rolling_window: true
-      width: 30
-      height: 30
+      # Enlarged to 60x60 m so the planner can see far-away detours
+      # instead of dead-ending at the edge of a 30 m window.
+      width: 60
+      height: 60
       resolution: 0.10
       track_unknown_space: false
       footprint: "[[0.50, 0.35], [0.50, -0.35], [-0.50, -0.35], [-0.50, 0.35]]"
       plugins: ["obstacle_layer", "lane_layer", "inflation_layer"]
       obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
+        plugin: "nav2_costmap_2d/ObstacleLayer"
         enabled: true
         tf_filter_tolerance: 1.0
         footprint_clearing_enabled: true
-        observation_sources: "front_pointcloud left_pointcloud right_pointcloud lidar_scan"
-        # 2-D 360° LiDAR — same rationale as the local costmap, but with
-        # the global costmap's longer ranges to match the 30×30 m window.
-        lidar_scan:
-          topic: /scan
-          data_type: "LaserScan"
-          marking: true
-          clearing: true
-          min_obstacle_height: 0.0
-          max_obstacle_height: 2.0
-          obstacle_max_range: 12.0
-          obstacle_min_range: 0.15
-          raytrace_max_range: 15.0
-          raytrace_min_range: 0.15
-          inf_is_valid: true
+        observation_sources: "front_pointcloud left_pointcloud right_pointcloud"
         front_pointcloud:
           topic: /front_zed_camera_x/zed_node/point_cloud/cloud_registered
           data_type: "PointCloud2"
@@ -387,16 +356,18 @@ global_costmap:
           raytrace_max_range: 12.0
           raytrace_min_range: 0.75
       lane_layer:
-        plugin: "nav2_costmap_2d::StaticLayer"
+        plugin: "nav2_costmap_2d/StaticLayer"
         map_subscribe_transient_local: true
         subscribe_to_updates: true
         map_topic: "/lane_map"
-        lethal_cost_threshold: 90
+        lethal_cost_threshold: 50
         unknown_cost_value: 1
         track_unknown_space: false
         use_maximum: true
         trinary_costmap: false
       inflation_layer:
-        plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 2.0
-        inflation_radius: 0.25
+        plugin: "nav2_costmap_2d/InflationLayer"
+        # Same clearance as the local costmap so the planner never
+        # produces paths the controller immediately rejects.
+        cost_scaling_factor: 1.5
+        inflation_radius: 0.55
