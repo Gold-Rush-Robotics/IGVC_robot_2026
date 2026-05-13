@@ -27,15 +27,18 @@ def launch_setup(context, *args, **kwargs):
     namespace = LaunchConfiguration('namespace').perform(context)
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
     sim_mode = LaunchConfiguration('sim_mode').perform(context)
+    sim_address = LaunchConfiguration('sim_address').perform(context)
     disable_tf = LaunchConfiguration('disable_tf').perform(context).lower() == 'true'
     ros_params_override_path = LaunchConfiguration('ros_params_override_path').perform(context)
 
-    # Resolve the override YAML path (defaults to our local common_stereo.yaml)
+    # Resolve the override YAML path. Real hardware uses common_stereo_real.yaml;
+    # Isaac Sim uses common_stereo_sim.yaml unless explicitly overridden.
     if not ros_params_override_path:
+        default_config = 'common_stereo_sim.yaml' if sim_mode.lower() == 'true' else 'common_stereo_real.yaml'
         ros_params_override_path = os.path.join(
             get_package_share_directory('igvc_test_bringup'),
             'config',
-            'common_stereo.yaml',
+            default_config,
         )
 
     if not os.path.isfile(ros_params_override_path):
@@ -134,6 +137,8 @@ def launch_setup(context, *args, **kwargs):
 
         if namespace:
             launch_arguments['namespace'] = namespace
+        if sim_address:
+            launch_arguments['sim_address'] = sim_address
         if sim_port:
             launch_arguments['sim_port'] = sim_port
 
@@ -191,6 +196,11 @@ def generate_launch_description():
                 description='Enable ZED simulation mode if true.',
             ),
             DeclareLaunchArgument(
+                'sim_address',
+                default_value='',
+                description='Optional simulation server address. Leave empty to use the YAML default.',
+            ),
+            DeclareLaunchArgument(
                 'disable_tf',
                 default_value='true',
                 description='Disable ZED odom/map TF publishing for all cameras.',
@@ -199,7 +209,8 @@ def generate_launch_description():
                 'ros_params_override_path',
                 default_value='',
                 description='Path to a YAML file whose parameters override the ZED wrapper defaults. '
-                            'If empty, igvc_test_bringup/config/common_stereo.yaml is used.',
+                            'If empty, common_stereo_real.yaml is used for real mode and '
+                            'common_stereo_sim.yaml is used for sim mode.',
             ),
             OpaqueFunction(function=launch_setup),
         ]
