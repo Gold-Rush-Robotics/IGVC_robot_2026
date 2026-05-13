@@ -48,19 +48,17 @@ lane_segmentation_node:
     keep_last_grid_on_miss: true
 
     # ── Lane-line correlation / map alignment ───────────────────────
-    enable_line_correlation: true
-    line_correlation_max_age_sec: 0.5
-    line_correlation_match_distance_m: 0.35
-    line_correlation_match_angle_rad: 0.35
-    line_correlation_min_overlap_ratio: 0.25
-    line_correlation_new_line_min_length_m: 0.6
-    line_correlation_min_points: 4
-    line_correlation_nudge_alpha: 0.15
-    line_correlation_reject_between_parallel_lines: true
-    line_correlation_debug: false
+    # Pose deduplication: skip persistent map write if the robot hasn't moved
+    # enough since the last write (prevents lane cells stacking on top of each
+    # other when YOLO frames are slower than the robot motion).
+    min_pose_change_m:   0.05
+    min_pose_change_rad: 0.02
 
-    # ── Persistent (fixed-frame) lane map ───────────────────────────
-    persistent_map_frame:      "map"
+    # ── Persistent (fixed-frame) lane map ─────────────────────────────
+    # Use odom frame (not map) so TF lookup goes directly to ZED odom
+    # (~100 Hz) instead of through the EKF (30 Hz) — fixes the root cause
+    # of lanes stacking at the same world position.
+    persistent_map_frame:      "odom"
     persistent_pose_source:    "odom"
     odom_topic:                "/front_zed_camera_x/zed_node/odom"
     persistent_map_size_m:    40.0

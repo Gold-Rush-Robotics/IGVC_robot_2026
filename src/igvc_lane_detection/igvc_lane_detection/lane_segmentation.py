@@ -86,7 +86,7 @@ class LaneSegmentationNode(Node):
             float(p('fusion_timeout_sec', 0.1)), self.max_time_offset_sec)
         self.keep_last_grid_on_miss = p('keep_last_grid_on_miss',   True)
         self.occupancy_grid_frame   = p('occupancy_grid_frame',    self.base_frame)
-        self.sync_queue_size        = max(1, int(p('sync_queue_size', 2)))
+        self.sync_queue_size        = max(1, int(p('sync_queue_size', 1)))
         self.sync_slop_sec          = float(p('sync_slop_sec', 0.1))
         self.max_frame_age_sec      = float(p('max_frame_age_sec', 0.5))
 
@@ -117,17 +117,9 @@ class LaneSegmentationNode(Node):
         self.persist_pose_source  = p('persistent_pose_source',      'tf')
         self.odom_topic           = p('odom_topic',                  '/odom')
 
-        # ── Lane-line correlation / map-alignment gate ───────────────
-        self.enable_line_correlation = bool(p('enable_line_correlation', True))
-        self.line_corr_max_age_sec = float(p('line_correlation_max_age_sec', 0.5))
-        self.line_corr_match_dist_m = float(p('line_correlation_match_distance_m', 0.35))
-        self.line_corr_match_angle_rad = float(p('line_correlation_match_angle_rad', 0.35))
-        self.line_corr_min_overlap = float(p('line_correlation_min_overlap_ratio', 0.25))
-        self.line_corr_new_min_length_m = float(p('line_correlation_new_line_min_length_m', 0.6))
-        self.line_corr_min_points = int(p('line_correlation_min_points', 4))
-        self.line_corr_nudge_alpha = float(p('line_correlation_nudge_alpha', 0.15))
-        self.line_corr_reject_between = bool(p('line_correlation_reject_between_parallel_lines', True))
-        self.line_corr_debug = bool(p('line_correlation_debug', False))
+        # ── Pose deduplication — skip persistent write if not moved ────
+        self.min_pose_change_m   = float(p('min_pose_change_m',   0.05))
+        self.min_pose_change_rad = float(p('min_pose_change_rad', 0.02))
 
         # ── Segmentation-specific parameters ─────────────────────────
         self.model_weights          = p('model_weights',            '')
@@ -218,8 +210,7 @@ class LaneSegmentationNode(Node):
         self._last_persistent_stamp = None
         self._cam_state: dict = {}
         self._latest_odom: Optional[Odometry] = None
-        self._line_tracks: dict = {}
-        self._next_line_track_id = 0
+        self._last_persist_pose: Optional[Tuple] = None
 
         self.tf_buffer   = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -337,6 +328,18 @@ class LaneSegmentationNode(Node):
             return
 
         tx, ty, _tz, yaw, _orientation = pose
+
+        # Dedup: skip write if robot hasn't moved enough since last update.
+        # Prevents lane cells stacking on top of each other when YOLO frames
+        # share the same effective pose (e.g. slow inference, stationary robot).
+        if self._last_persist_pose is not None:
+            lx, ly, lyaw = self._last_persist_pose
+            dist = np.hypot(tx - lx, ty - ly)
+            dang = abs(((yaw - lyaw + np.pi) % (2.0 * np.pi)) - np.pi)
+            if dist < self.min_pose_change_m and dang < self.min_pose_change_rad:
+                return
+        self._last_persist_pose = (tx, ty, yaw)
+
         cos_y, sin_y = np.cos(yaw), np.sin(yaw)
         n = self._pN
 
@@ -407,6 +410,7 @@ class LaneSegmentationNode(Node):
 
     def _on_images(self, rgb_msg: Image, depth_msg: Image, cam_idx: int) -> None:
         self._got_frame = True
+
         process_time = self.get_clock().now()
         process_stamp = process_time.to_msg()
 
@@ -418,20 +422,6 @@ class LaneSegmentationNode(Node):
                 f'Dropping stale synced frame from cam[{cam_idx}] '
                 f'(age={frame_age:.2f}s > {self.max_frame_age_sec:.2f}s). '
                 'YOLO/input is behind camera rate.',
-                throttle_duration_sec=2.0)
-            return
-
-        if not self._within_time_budget(rgb_msg.header.stamp, depth_msg.header.stamp):
-            self.get_logger().warn(
-                f'Dropping cam[{cam_idx}] RGB/depth pair: stamp delta exceeds '
-                f'{self.max_time_offset_sec:.3f}s.',
-                throttle_duration_sec=2.0)
-            return
-
-        if self._stamp_age_sec(rgb_msg.header.stamp) > self.max_time_offset_sec:
-            self.get_logger().warn(
-                f'Dropping cam[{cam_idx}] frame: camera stamp is older than '
-                f'{self.max_time_offset_sec:.3f}s.',
                 throttle_duration_sec=2.0)
             return
 
@@ -493,10 +483,6 @@ class LaneSegmentationNode(Node):
         lane_pts, lane_components = self._project_lane_mask(
             ll_mask, depth, cam_idx, cam_tf)
 
-        lane_components = self._correlate_lane_components(
-            lane_components, rgb_msg.header.stamp)
-        lane_pts = [pt for comp in lane_components for pt in comp]
-
         # ── Publish overlay ──
         if self.publish_overlay and cam_idx in self.overlay_pubs:
             self._publish_overlay(cam_idx, bgr, da_mask, ll_mask, rgb_msg)
@@ -514,13 +500,9 @@ class LaneSegmentationNode(Node):
             self.latest_grid = self._build_grid(
                 fused_free, fused_lane, process_stamp)
             self.grid_pub.publish(self.latest_grid)
-            self._update_persistent_map(fused_lane, None)
+            self._update_persistent_map(fused_lane, rgb_msg.header.stamp)
         elif self.keep_last_grid_on_miss:
-            if self._within_time_budget(self.latest_grid.header.stamp, rgb_msg.header.stamp):
-                self.grid_pub.publish(self.latest_grid)
-            else:
-                self.latest_grid = self._empty_grid(rgb_msg.header.stamp)
-                self.grid_pub.publish(self.latest_grid)
+            self.grid_pub.publish(self.latest_grid)
         else:
             self.latest_grid = self._empty_grid(process_stamp)
             self.grid_pub.publish(self.latest_grid)
@@ -543,15 +525,6 @@ class LaneSegmentationNode(Node):
                 active.append(state)
         return active
 
-    def _within_time_budget(self, a, b) -> bool:
-        dt = abs((Time.from_msg(a) - Time.from_msg(b)).nanoseconds / 1e9)
-        return dt <= self.max_time_offset_sec
-
-    def _stamp_age_sec(self, stamp) -> float:
-        stamp_t = Time.from_msg(stamp)
-        if stamp_t.nanoseconds == 0:
-            return 0.0
-        return abs((self.get_clock().now() - stamp_t).nanoseconds / 1e9)
 
     def _fuse_points(self, stamp) -> Tuple[List, List]:
         free_pts: List[Tuple[float, float]] = []
@@ -560,276 +533,6 @@ class LaneSegmentationNode(Node):
             free_pts.extend(state['free'])
             lane_pts.extend(state['lane'])
         return free_pts, lane_pts
-
-    # ═══════════════════════════════════════════════════════════════════
-    # Lane-line correlation
-    # ═══════════════════════════════════════════════════════════════════
-
-    def _correlate_lane_components(
-        self,
-        components: Sequence[Sequence[Tuple[float, float]]],
-        stamp,
-    ) -> List[List[Tuple[float, float]]]:
-        if not self.enable_line_correlation or not components:
-            return [list(comp) for comp in components]
-
-        tf = lookup_tf(self.tf_buffer, self.persist_frame, self.base_frame, stamp)
-        if tf is None:
-            self.get_logger().debug(
-                'Line correlation skipped: no stamped TF to persistent frame.',
-                throttle_duration_sec=2.0)
-            return [list(comp) for comp in components]
-
-        self._prune_line_tracks(stamp)
-
-        accepted: List[List[Tuple[float, float]]] = []
-        for comp in components:
-            desc = self._fit_component_line(comp, tf)
-            if desc is None:
-                self._debug_line_corr('reject: too few or incoherent points')
-                continue
-
-            best_track, match = self._best_line_track_match(desc)
-            persistent_score = self._persistent_hit_score(desc['world_points'])
-            matched = (
-                best_track is not None
-                and match is not None
-                and match['distance'] <= self.line_corr_match_dist_m
-                and match['angle'] <= self.line_corr_match_angle_rad
-                and match['overlap'] >= self.line_corr_min_overlap
-            )
-
-            if matched:
-                world_points = self._nudge_world_points_to_track(
-                    desc['world_points'], best_track)
-                base_points = self._world_points_to_base(world_points, tf)
-                self._update_line_track(best_track['id'], world_points, stamp)
-                accepted.append(base_points)
-                self._debug_line_corr(
-                    f"match track={best_track['id']} dist={match['distance']:.2f} "
-                    f"angle={match['angle']:.2f} overlap={match['overlap']:.2f} "
-                    f"map={persistent_score:.2f}")
-                continue
-
-            if desc['length'] < self.line_corr_new_min_length_m:
-                self._debug_line_corr(f"reject: short new line len={desc['length']:.2f}")
-                continue
-
-            if self._is_between_parallel_tracks(desc) and persistent_score < 0.25:
-                self._debug_line_corr('reject: between stable parallel tracks')
-                continue
-
-            track_id = self._create_line_track(desc['world_points'], stamp)
-            accepted.append(list(comp))
-            self._debug_line_corr(
-                f"new track={track_id} len={desc['length']:.2f} map={persistent_score:.2f}")
-
-        return accepted
-
-    def _fit_component_line(self, comp, tf):
-        if len(comp) < self.line_corr_min_points:
-            return None
-
-        base_points = np.asarray(comp, dtype=np.float32)
-        if base_points.ndim != 2 or base_points.shape[1] != 2:
-            return None
-
-        world_points = self._base_points_to_world(base_points, tf)
-        return self._line_descriptor(world_points)
-
-    def _base_points_to_world(self, base_points: np.ndarray, tf) -> np.ndarray:
-        q = tf.transform.rotation
-        yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
-        cos_y, sin_y = np.cos(yaw), np.sin(yaw)
-        tx = tf.transform.translation.x
-        ty = tf.transform.translation.y
-
-        fwd = base_points[:, 0]
-        lat = base_points[:, 1]
-        world = np.empty_like(base_points, dtype=np.float32)
-        world[:, 0] = tx + cos_y * fwd - sin_y * lat
-        world[:, 1] = ty + sin_y * fwd + cos_y * lat
-        return world
-
-    def _world_points_to_base(self, world_points: np.ndarray, tf) -> List[Tuple[float, float]]:
-        q = tf.transform.rotation
-        yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
-        cos_y, sin_y = np.cos(yaw), np.sin(yaw)
-        tx = tf.transform.translation.x
-        ty = tf.transform.translation.y
-
-        dx = world_points[:, 0] - tx
-        dy = world_points[:, 1] - ty
-        fwd = cos_y * dx + sin_y * dy
-        lat = -sin_y * dx + cos_y * dy
-        return [(float(x), float(y)) for x, y in zip(fwd.tolist(), lat.tolist())]
-
-    def _line_descriptor(self, world_points: np.ndarray):
-        if world_points.shape[0] < self.line_corr_min_points:
-            return None
-
-        centroid = np.mean(world_points, axis=0)
-        centered = world_points - centroid
-        try:
-            _, singular_values, vh = np.linalg.svd(centered, full_matrices=False)
-        except np.linalg.LinAlgError:
-            return None
-
-        direction = vh[0].astype(np.float32)
-        norm = float(np.linalg.norm(direction))
-        if norm < 1e-6:
-            return None
-        direction /= norm
-
-        projections = centered @ direction
-        p_min = float(np.min(projections))
-        p_max = float(np.max(projections))
-        length = p_max - p_min
-        if length < 1e-3:
-            return None
-
-        normal = np.array([-direction[1], direction[0]], dtype=np.float32)
-        lateral_scatter = float(np.std(centered @ normal))
-        longitudinal_scatter = float(np.std(projections))
-        if lateral_scatter > max(0.15, self.line_corr_match_dist_m * 1.5):
-            return None
-
-        return {
-            'world_points': world_points,
-            'centroid': centroid.astype(np.float32),
-            'direction': direction,
-            'normal': normal,
-            'p_min': p_min,
-            'p_max': p_max,
-            'length': float(length),
-            'lateral_scatter': lateral_scatter,
-            'longitudinal_scatter': longitudinal_scatter,
-        }
-
-    def _best_line_track_match(self, desc):
-        best_track = None
-        best_match = None
-        best_score = None
-        for track in self._line_tracks.values():
-            match = self._line_match(desc, track)
-            score = match['distance'] + match['angle'] - match['overlap']
-            if best_score is None or score < best_score:
-                best_score = score
-                best_track = track
-                best_match = match
-        return best_track, best_match
-
-    def _line_match(self, desc, track):
-        direction = desc['direction']
-        track_direction = track['direction']
-        dot = float(np.clip(abs(np.dot(direction, track_direction)), 0.0, 1.0))
-        angle = float(np.arccos(dot))
-
-        delta = desc['centroid'] - track['centroid']
-        distance = float(abs(np.dot(delta, track['normal'])))
-
-        projections = (desc['world_points'] - track['centroid']) @ track_direction
-        new_min = float(np.min(projections))
-        new_max = float(np.max(projections))
-        overlap = max(0.0, min(new_max, track['p_max']) - max(new_min, track['p_min']))
-        denom = max(0.05, min(new_max - new_min, track['p_max'] - track['p_min']))
-        overlap_ratio = float(np.clip(overlap / denom, 0.0, 1.0))
-        return {'distance': distance, 'angle': angle, 'overlap': overlap_ratio}
-
-    def _nudge_world_points_to_track(self, world_points: np.ndarray, track) -> np.ndarray:
-        alpha = float(np.clip(self.line_corr_nudge_alpha, 0.0, 1.0))
-        if alpha <= 0.0:
-            return world_points
-
-        projections = (world_points - track['centroid']) @ track['direction']
-        closest = track['centroid'] + projections[:, None] * track['direction']
-        return ((1.0 - alpha) * world_points + alpha * closest).astype(np.float32)
-
-    def _persistent_hit_score(self, world_points: np.ndarray) -> float:
-        if world_points.size == 0:
-            return 0.0
-
-        radius_cells = max(1, int(np.ceil(self.line_corr_match_dist_m / self.persist_res)))
-        scores = []
-        for wx, wy in world_points[::max(1, len(world_points) // 20)]:
-            col, row = self._world_to_pgrid(float(wx), float(wy))
-            row_lo = max(0, row - radius_cells)
-            row_hi = min(self._pN, row + radius_cells + 1)
-            col_lo = max(0, col - radius_cells)
-            col_hi = min(self._pN, col + radius_cells + 1)
-            if row_lo >= row_hi or col_lo >= col_hi:
-                continue
-            scores.append(float(np.max(self._phits[row_lo:row_hi, col_lo:col_hi])))
-        if not scores:
-            return 0.0
-        return float(np.clip(np.mean(scores) / max(self.persist_threshold, 1e-6), 0.0, 1.0))
-
-    def _is_between_parallel_tracks(self, desc) -> bool:
-        if not self.line_corr_reject_between or len(self._line_tracks) < 2:
-            return False
-
-        parallel = []
-        for track in self._line_tracks.values():
-            match = self._line_match(desc, track)
-            if match['angle'] <= self.line_corr_match_angle_rad:
-                signed_distance = float(np.dot(track['centroid'] - desc['centroid'], desc['normal']))
-                parallel.append((signed_distance, match['distance']))
-
-        if len(parallel) < 2:
-            return False
-
-        left = [p for p in parallel if p[0] > self.line_corr_match_dist_m]
-        right = [p for p in parallel if p[0] < -self.line_corr_match_dist_m]
-        if not left or not right:
-            return False
-
-        nearest_left = min(abs(p[0]) for p in left)
-        nearest_right = min(abs(p[0]) for p in right)
-        return nearest_left < 2.0 and nearest_right < 2.0
-
-    def _create_line_track(self, world_points: np.ndarray, stamp) -> int:
-        desc = self._line_descriptor(world_points)
-        if desc is None:
-            return -1
-        track_id = self._next_line_track_id
-        self._next_line_track_id += 1
-        self._line_tracks[track_id] = {
-            'id': track_id,
-            'stamp': stamp,
-            'confidence': 1.0,
-            **{key: value for key, value in desc.items() if key != 'world_points'},
-            'world_points': world_points,
-        }
-        return track_id
-
-    def _update_line_track(self, track_id: int, world_points: np.ndarray, stamp) -> None:
-        if track_id not in self._line_tracks:
-            self._create_line_track(world_points, stamp)
-            return
-        desc = self._line_descriptor(world_points)
-        if desc is None:
-            return
-        confidence = min(10.0, self._line_tracks[track_id].get('confidence', 1.0) + 1.0)
-        self._line_tracks[track_id].update({
-            'stamp': stamp,
-            'confidence': confidence,
-            **{key: value for key, value in desc.items() if key != 'world_points'},
-            'world_points': world_points,
-        })
-
-    def _prune_line_tracks(self, stamp) -> None:
-        now_t = Time.from_msg(stamp)
-        stale = []
-        for track_id, track in self._line_tracks.items():
-            age = abs((now_t - Time.from_msg(track['stamp'])).nanoseconds / 1e9)
-            if age > self.line_corr_max_age_sec:
-                stale.append(track_id)
-        for track_id in stale:
-            del self._line_tracks[track_id]
-
-    def _debug_line_corr(self, msg: str) -> None:
-        if self.line_corr_debug:
-            self.get_logger().info(f'line_correlation: {msg}', throttle_duration_sec=1.0)
 
     # ═══════════════════════════════════════════════════════════════════
     # Mask → base_link projection
@@ -1176,8 +879,6 @@ class LaneSegmentationNode(Node):
     # ═══════════════════════════════════════════════════════════════════
 
     def _republish_grid(self) -> None:
-        if self._stamp_age_sec(self.latest_grid.header.stamp) > self.max_time_offset_sec:
-            return
         self.grid_pub.publish(self.latest_grid)
 
     def _watchdog(self) -> None:
