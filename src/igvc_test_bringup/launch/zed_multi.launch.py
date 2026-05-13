@@ -162,7 +162,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 'cam_serials',
-                default_value='[46941578,40636496,43593214]',
+                default_value='[46941578,43593214,40636496]',
                 description='Optional camera serials array (or empty).',
             ),
             DeclareLaunchArgument(

@@ -34,6 +34,15 @@ def generate_launch_description() -> LaunchDescription:
             'use_sim_time': use_sim_time,
         }.items(),
     )
+    teleop = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([bringup, 'launch', 'teleop.launch.py'])
+        ),
+        launch_arguments={
+            'hardware_interface': hardware_interface,
+            'use_sim_time': use_sim_time,
+        }.items(),
+    )
     lane_segmentation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([bringup, 'launch', 'lane_segmentation.launch.py'])
@@ -53,17 +62,19 @@ def generate_launch_description() -> LaunchDescription:
         }.items(),
     )
 
-    odom_to_tf_ros2 = Node(
-        package="odom_to_tf_ros2",
-        executable="odom_to_tf",
-        name="odom_to_tf",
+    odom_tf_bridge_node = Node(
+        package="igvc_lane_detection",
+        executable="odom_tf_bridge_node",
+        name="odom_tf_bridge",
         output="screen",
         parameters=[
             {'use_sim_time': use_sim_time},
             {'odom_topic': '/front_zed_camera_x/zed_node/odom'},
-            {'frame_id': 'odom'},
-            {'child_frame_id': 'base_link'},
-            {'use_original_timestamp': True},
+            {'odom_frame_id': 'odom'},
+            {'base_frame_id': 'base_link'},
+            {'publish_rate_hz': 100.0},
+            {'use_original_timestamp': False},
+            {'warn_odom_age_sec': 0.5},
         ],
     )
     gps_node = Node(
@@ -113,10 +124,10 @@ def generate_launch_description() -> LaunchDescription:
             description='Hardware interface used by motor controllers.',
         ),
         # zed_multi_fused_odom,
-        motor_controllers,
+        teleop,
         # lane_follower,
         lane_segmentation,
-        odom_to_tf_ros2,
+        odom_tf_bridge_node,
         # gps_node,
         twist_stamper_node,
     ])
