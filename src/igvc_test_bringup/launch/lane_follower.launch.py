@@ -61,6 +61,7 @@ def generate_launch_description() -> LaunchDescription:
         'use_sim_time': use_sim_time,
         'gps_enabled':  gps_enabled,
         'force_identity_map_to_odom': force_identity_map_to_odom,
+        'max_odom_age_sec': 0.1,
     }
 
     # ── Lane detection ────────────────────────────────────────────────────

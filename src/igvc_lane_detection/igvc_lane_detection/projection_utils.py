@@ -98,10 +98,12 @@ def pixel_to_base(
 
 
 def lookup_tf(tf_buffer, target_frame: str, source_frame: str, stamp):
-    """TF lookup with graceful fallback to the latest available transform.
+    """TF lookup at the requested timestamp.
 
-    Matches ``LaneDetectionNode._lookup_tf`` including the exception-based
-    fallback so behaviour is identical.
+    Camera-derived occupancy data must not silently use an arbitrary latest
+    transform; doing so can mix image/depth data with robot poses outside the
+    timing budget.  ``stamp=None`` is still treated as "latest" for callers
+    that are explicitly not tied to a sensor sample.
     """
     try:
         t = Time.from_msg(stamp) if stamp is not None else Time()
@@ -109,9 +111,4 @@ def lookup_tf(tf_buffer, target_frame: str, source_frame: str, stamp):
             target_frame, source_frame, t,
             timeout=Duration(seconds=0.05))
     except Exception:
-        try:
-            return tf_buffer.lookup_transform(
-                target_frame, source_frame, Time(),
-                timeout=Duration(seconds=0.05))
-        except Exception:
-            return None
+        return None
