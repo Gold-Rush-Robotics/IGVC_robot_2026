@@ -26,10 +26,16 @@ import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from message_filters import ApproximateTimeSynchronizer, Subscriber
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import ColorRGBA
@@ -78,6 +84,9 @@ class LaneSegmentationNode(Node):
         self.fusion_timeout_sec     = p('fusion_timeout_sec',        2.0)
         self.keep_last_grid_on_miss = p('keep_last_grid_on_miss',   True)
         self.occupancy_grid_frame   = p('occupancy_grid_frame',    self.base_frame)
+        self.sync_queue_size        = max(1, int(p('sync_queue_size', 2)))
+        self.sync_slop_sec          = float(p('sync_slop_sec', 0.1))
+        self.max_frame_age_sec      = float(p('max_frame_age_sec', 0.5))
 
         self.chassis_mask_frac      = p('chassis_mask_frac',        0.15)
         # Trapezoidal ROI is off by default — the offline bag-replay
@@ -103,6 +112,8 @@ class LaneSegmentationNode(Node):
         self.persist_max          = p('persistent_max_value',      200.0)
         self.persist_pub_hz       = p('persistent_publish_hz',       2.0)
         self.persist_clear_radius = p('persistent_clear_radius_m',   0.8)
+        self.persist_pose_source  = p('persistent_pose_source',      'tf')
+        self.odom_topic           = p('odom_topic',                  '/odom')
 
         # ── Segmentation-specific parameters ─────────────────────────
         self.model_weights          = p('model_weights',            '')
@@ -159,10 +170,14 @@ class LaneSegmentationNode(Node):
                 CameraInfo, info_topics[i],
                 lambda msg, idx=i: self._on_info(msg, idx), 10)
 
-            rgb_sub   = Subscriber(self, Image, cam_topics[i])
-            depth_sub = Subscriber(self, Image, depth_topics[i])
+            rgb_sub = Subscriber(
+                self, Image, cam_topics[i], qos_profile=qos_profile_sensor_data)
+            depth_sub = Subscriber(
+                self, Image, depth_topics[i], qos_profile=qos_profile_sensor_data)
             sync = ApproximateTimeSynchronizer(
-                [rgb_sub, depth_sub], queue_size=5, slop=0.1)
+                [rgb_sub, depth_sub],
+                queue_size=self.sync_queue_size,
+                slop=self.sync_slop_sec)
             sync.registerCallback(
                 lambda r, d, idx=i: self._on_images(r, d, idx))
             self._sync_handles.append((rgb_sub, depth_sub, sync))
@@ -187,9 +202,20 @@ class LaneSegmentationNode(Node):
 
         self.latest_grid = self._empty_grid()
         self._cam_state: dict = {}
+        self._latest_odom: Optional[Odometry] = None
 
         self.tf_buffer   = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        if self.persist_pose_source == 'odom':
+            odom_qos = QoSProfile(
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1)
+            self.create_subscription(
+                Odometry, self.odom_topic, self._on_odom, odom_qos)
+            self.get_logger().info(
+                f'Persistent map pose source: odom topic {self.odom_topic}')
 
         self.create_timer(1.0, self._republish_grid)
         self.create_timer(
@@ -219,6 +245,66 @@ class LaneSegmentationNode(Node):
         row = int((wy - self._p_oy) / self.persist_res)
         return col, row
 
+    def _on_odom(self, msg: Odometry) -> None:
+        self._latest_odom = msg
+
+    def _persistent_pose(self, stamp=None):
+        if self.persist_pose_source == 'odom':
+            return self._persistent_pose_from_odom()
+
+        transform = lookup_tf(
+            self.tf_buffer, self.persist_frame, self.base_frame, stamp)
+        if transform is None:
+            return None
+
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        return (
+            translation.x,
+            translation.y,
+            translation.z,
+            yaw_from_quat(rotation.x, rotation.y, rotation.z, rotation.w),
+            rotation,
+        )
+
+    def _persistent_pose_from_odom(self):
+        if self._latest_odom is None:
+            self.get_logger().warn(
+                f'Waiting for odometry on {self.odom_topic} before updating persistent map.',
+                throttle_duration_sec=2.0)
+            return None
+
+        odom = self._latest_odom
+        odom_frame = odom.header.frame_id or 'odom'
+        pose = odom.pose.pose
+        odom_yaw = yaw_from_quat(
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w)
+
+        if odom_frame == self.persist_frame:
+            return (
+                pose.position.x,
+                pose.position.y,
+                pose.position.z,
+                odom_yaw,
+                pose.orientation,
+            )
+
+        transform = lookup_tf(
+            self.tf_buffer, self.persist_frame, odom_frame, None)
+        if transform is None:
+            return None
+
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        transform_yaw = yaw_from_quat(rotation.x, rotation.y, rotation.z, rotation.w)
+        cos_yaw, sin_yaw = np.cos(transform_yaw), np.sin(transform_yaw)
+        x = translation.x + cos_yaw * pose.position.x - sin_yaw * pose.position.y
+        y = translation.y + sin_yaw * pose.position.x + cos_yaw * pose.position.y
+        return (x, y, translation.z + pose.position.z, transform_yaw + odom_yaw, pose.orientation)
+
     def _update_persistent_map(
         self, lane_pts: Optional[Sequence[Tuple[float, float]]], stamp,
     ) -> None:
@@ -228,15 +314,11 @@ class LaneSegmentationNode(Node):
             self._phits *= self.persist_decay
             return
 
-        tf = lookup_tf(
-            self.tf_buffer, self.persist_frame, self.base_frame, stamp)
-        if tf is None:
+        pose = self._persistent_pose(stamp)
+        if pose is None:
             return
 
-        tx = tf.transform.translation.x
-        ty = tf.transform.translation.y
-        q = tf.transform.rotation
-        yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
+        tx, ty, _tz, yaw, _orientation = pose
         cos_y, sin_y = np.cos(yaw), np.sin(yaw)
         n = self._pN
 
@@ -271,13 +353,12 @@ class LaneSegmentationNode(Node):
     def _clear_persistent_robot_footprint(self, data: np.ndarray) -> None:
         if self.persist_clear_radius <= 0.0:
             return
-        tf = lookup_tf(
-            self.tf_buffer, self.persist_frame, self.base_frame, None)
-        if tf is None:
+        pose = self._persistent_pose(None)
+        if pose is None:
             return
 
-        col_c, row_c = self._world_to_pgrid(
-            tf.transform.translation.x, tf.transform.translation.y)
+        tx, ty, _tz, _yaw, _orientation = pose
+        col_c, row_c = self._world_to_pgrid(tx, ty)
         radius_cells = max(
             1, int(np.ceil(self.persist_clear_radius / self.persist_res)))
         row_lo = max(0, row_c - radius_cells)
@@ -306,6 +387,19 @@ class LaneSegmentationNode(Node):
 
     def _on_images(self, rgb_msg: Image, depth_msg: Image, cam_idx: int) -> None:
         self._got_frame = True
+        process_time = self.get_clock().now()
+        process_stamp = process_time.to_msg()
+
+        frame_age = (
+            process_time - Time.from_msg(rgb_msg.header.stamp)
+        ).nanoseconds / 1e9
+        if self.max_frame_age_sec > 0.0 and frame_age > self.max_frame_age_sec:
+            self.get_logger().warn(
+                f'Dropping stale synced frame from cam[{cam_idx}] '
+                f'(age={frame_age:.2f}s > {self.max_frame_age_sec:.2f}s). '
+                'YOLO/input is behind camera rate.',
+                throttle_duration_sec=2.0)
+            return
 
         try:
             bgr = self.bridge.imgmsg_to_cv2(rgb_msg, 'bgr8')
@@ -351,8 +445,7 @@ class LaneSegmentationNode(Node):
         cam_tf = None
         if cam_frame and cam_frame != self.base_frame:
             cam_tf = lookup_tf(
-                self.tf_buffer, self.base_frame, cam_frame,
-                rgb_msg.header.stamp)
+                self.tf_buffer, self.base_frame, cam_frame, None)
             if cam_tf is None:
                 self.get_logger().warn(
                     f'No TF from {cam_frame} to {self.base_frame}; '
@@ -372,32 +465,32 @@ class LaneSegmentationNode(Node):
 
         # ── Cache per-camera state for multi-camera fusion ──
         self._cam_state[cam_idx] = {
-            'stamp':    rgb_msg.header.stamp,
+            'stamp':    process_stamp,
             'free':     free_pts,
             'lane':     lane_pts,
         }
 
-        fused_free, fused_lane = self._fuse_points(rgb_msg.header.stamp)
+        fused_free, fused_lane = self._fuse_points(process_stamp)
 
         if fused_free or fused_lane:
             self.latest_grid = self._build_grid(
-                fused_free, fused_lane, rgb_msg.header.stamp)
+                fused_free, fused_lane, process_stamp)
             self.grid_pub.publish(self.latest_grid)
-            self._update_persistent_map(fused_lane, rgb_msg.header.stamp)
+            self._update_persistent_map(fused_lane, None)
         elif self.keep_last_grid_on_miss:
-            self.latest_grid.header.stamp = rgb_msg.header.stamp
+            self.latest_grid.header.stamp = process_stamp
             self.grid_pub.publish(self.latest_grid)
         else:
-            self.latest_grid = self._empty_grid(rgb_msg.header.stamp)
+            self.latest_grid = self._empty_grid(process_stamp)
             self.grid_pub.publish(self.latest_grid)
 
         # ── Publish per-component lane markers ──
-        self._publish_lane_markers(lane_components, rgb_msg.header.stamp)
+        self._publish_lane_markers(lane_components, process_stamp)
 
         self.get_logger().info(
             f'cam[{cam_idx}] free={len(free_pts)} lane={len(lane_pts)} '
             f'components={len(lane_components)} '
-            f'active_cams={len(self._active_cam_states(rgb_msg.header.stamp))}',
+            f'active_cams={len(self._active_cam_states(process_stamp))}',
             throttle_duration_sec=1.0)
 
     def _active_cam_states(self, stamp) -> List[dict]:
