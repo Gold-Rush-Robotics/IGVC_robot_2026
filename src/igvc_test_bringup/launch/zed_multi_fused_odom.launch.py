@@ -17,8 +17,10 @@ def generate_launch_description() -> LaunchDescription:
     namespace = LaunchConfiguration('namespace')
     use_sim_time = LaunchConfiguration('use_sim_time')
     sim_mode = LaunchConfiguration('sim_mode')
+    sim_address = LaunchConfiguration('sim_address')
     disable_tf = LaunchConfiguration('disable_tf')
     ros_params_override_path = LaunchConfiguration('ros_params_override_path')
+    area_memory_path = LaunchConfiguration('area_memory_path')
 
     zed_multi_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -33,8 +35,10 @@ def generate_launch_description() -> LaunchDescription:
             'namespace': namespace,
             'use_sim_time': use_sim_time,
             'sim_mode': sim_mode,
+            'sim_address': sim_address,
             'disable_tf': disable_tf,
             'ros_params_override_path': ros_params_override_path,
+            'area_memory_path': area_memory_path,
         }.items(),
     )
 
@@ -68,7 +72,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             'cam_serials',
-            default_value='[43593214,40636496,46941578]',
+            default_value='[46941578,40636496,43593214]',
             description='Optional camera serials array (or empty).',
         ),
         DeclareLaunchArgument(
@@ -97,16 +101,26 @@ def generate_launch_description() -> LaunchDescription:
             description='Enable ZED simulation mode if true.',
         ),
         DeclareLaunchArgument(
+            'sim_address',
+            default_value='',
+            description='Optional simulation server address. Leave empty to use the YAML default.',
+        ),
+        DeclareLaunchArgument(
             'disable_tf',
             default_value='true',
             description='Disable ZED TF publishing and let EKF own odom->base_link TF.',
         ),
         DeclareLaunchArgument(
             'ros_params_override_path',
-            default_value='',
+            default_value=PathJoinSubstitution([bringup, 'config', 'common_stereo_real.yaml']),
             description='YAML file that overrides ZED wrapper defaults for every camera. '
-                        'Empty = use igvc_test_bringup/config/common_stereo.yaml.',
+                        'Defaults to igvc_test_bringup/config/common_stereo_real.yaml.',
         ),
-        # zed_multi_launch,
+        DeclareLaunchArgument(
+            'area_memory_path',
+            default_value='/tmp/zed_area_memory',
+            description='Directory for per-camera ZED area-memory files when area memory is enabled.',
+        ),
+        zed_multi_launch,
         ekf_node,
     ])

@@ -1,4 +1,7 @@
 import os
+import re
+
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -15,6 +18,39 @@ def _parse_array_param(raw_value: str):
     return items
 
 
+def _safe_path_component(value: str) -> str:
+    safe_value = re.sub(r'[^A-Za-z0-9_.-]+', '_', value).strip('._')
+    return safe_value or 'camera'
+
+
+def _camera_params_path(base_params_path: str, camera_name: str, area_memory_path: str) -> str:
+    with open(base_params_path, 'r', encoding='utf-8') as params_file:
+        params = yaml.safe_load(params_file)
+
+    ros_parameters = params.get('/**', {}).get('ros__parameters', {})
+    pos_tracking = ros_parameters.get('pos_tracking', {})
+
+    if not pos_tracking.get('area_memory', False):
+        return base_params_path
+
+    os.makedirs(area_memory_path, exist_ok=True)
+    area_memory_file = os.path.join(area_memory_path, f'{_safe_path_component(camera_name)}.area')
+    pos_tracking['area_memory_db_path'] = area_memory_file
+    pos_tracking['area_file_path'] = area_memory_file
+    pos_tracking['save_area_memory_on_closing'] = True
+
+    generated_params_dir = '/tmp/igvc_zed_params'
+    os.makedirs(generated_params_dir, exist_ok=True)
+    generated_params_path = os.path.join(
+        generated_params_dir,
+        f'{_safe_path_component(camera_name)}_common_stereo.yaml',
+    )
+    with open(generated_params_path, 'w', encoding='utf-8') as params_file:
+        yaml.safe_dump(params, params_file, sort_keys=False)
+
+    return generated_params_path
+
+
 def launch_setup(context, *args, **kwargs):
     actions = []
 
@@ -27,15 +63,19 @@ def launch_setup(context, *args, **kwargs):
     namespace = LaunchConfiguration('namespace').perform(context)
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
     sim_mode = LaunchConfiguration('sim_mode').perform(context)
+    sim_address = LaunchConfiguration('sim_address').perform(context)
     disable_tf = LaunchConfiguration('disable_tf').perform(context).lower() == 'true'
     ros_params_override_path = LaunchConfiguration('ros_params_override_path').perform(context)
+    area_memory_path = LaunchConfiguration('area_memory_path').perform(context)
 
-    # Resolve the override YAML path (defaults to our local common_stereo.yaml)
+    # Resolve the override YAML path. Real hardware uses common_stereo_real.yaml;
+    # Isaac Sim uses common_stereo_sim.yaml unless explicitly overridden.
     if not ros_params_override_path:
+        default_config = 'common_stereo_sim.yaml' if sim_mode.lower() == 'true' else 'common_stereo_real.yaml'
         ros_params_override_path = os.path.join(
             get_package_share_directory('igvc_test_bringup'),
             'config',
-            'common_stereo.yaml',
+            default_config,
         )
 
     if not os.path.isfile(ros_params_override_path):
@@ -120,6 +160,12 @@ def launch_setup(context, *args, **kwargs):
         )
         actions.append(LogInfo(msg=TextSubstitution(text=info)))
 
+        camera_params_path = _camera_params_path(
+            ros_params_override_path,
+            camera_name,
+            area_memory_path,
+        )
+
         launch_arguments = {
             'camera_name': camera_name,
             'camera_model': camera_model,
@@ -129,11 +175,13 @@ def launch_setup(context, *args, **kwargs):
             'sim_mode': sim_mode,
             'publish_tf': publish_tf,
             'publish_map_tf': publish_map_tf,
-            'ros_params_override_path': ros_params_override_path,
+            'ros_params_override_path': camera_params_path,
         }
 
         if namespace:
             launch_arguments['namespace'] = namespace
+        if sim_address:
+            launch_arguments['sim_address'] = sim_address
         if sim_port:
             launch_arguments['sim_port'] = sim_port
 
@@ -191,6 +239,11 @@ def generate_launch_description():
                 description='Enable ZED simulation mode if true.',
             ),
             DeclareLaunchArgument(
+                'sim_address',
+                default_value='',
+                description='Optional simulation server address. Leave empty to use the YAML default.',
+            ),
+            DeclareLaunchArgument(
                 'disable_tf',
                 default_value='true',
                 description='Disable ZED odom/map TF publishing for all cameras.',
@@ -199,7 +252,13 @@ def generate_launch_description():
                 'ros_params_override_path',
                 default_value='',
                 description='Path to a YAML file whose parameters override the ZED wrapper defaults. '
-                            'If empty, igvc_test_bringup/config/common_stereo.yaml is used.',
+                            'If empty, common_stereo_real.yaml is used for real mode and '
+                            'common_stereo_sim.yaml is used for sim mode.',
+            ),
+            DeclareLaunchArgument(
+                'area_memory_path',
+                default_value='/tmp/zed_area_memory',
+                description='Directory for per-camera ZED area-memory files when area memory is enabled.',
             ),
             OpaqueFunction(function=launch_setup),
         ]
