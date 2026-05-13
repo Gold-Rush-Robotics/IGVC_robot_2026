@@ -54,16 +54,16 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     odom_to_tf_ros2 = Node(
-        package="odom_to_tf_ros2",
-        executable="odom_to_tf",
-        name="odom_to_tf",
+        package='igvc_lane_detection',
+        executable='odom_tf_bridge_node',
+        name='odom_tf_bridge',
         output="screen",
         parameters=[
             {'use_sim_time': use_sim_time},
             {'odom_topic': '/front_zed_camera_x/zed_node/odom'},
-            {'frame_id': 'odom'},
-            {'child_frame_id': 'base_link'},
-            {'use_original_timestamp': True},
+            {'odom_frame_id': 'odom'},
+            {'base_frame_id': 'base_link'},
+            {'max_odom_age_sec': 0.1},
         ],
     )
     gps_node = Node(

@@ -166,6 +166,7 @@ class IGVCNavigatorNode(Node):
         self._lookahead       = self._p('path_lookahead_m',    4.0)
         self._grid_res        = self._p('grid_resolution',     0.05)
         self._grid_w          = self._p('grid_width_m',       10.0)
+        self._max_costmap_age = self._p('max_costmap_age_sec', 0.1)
         self._nav_action_name = self._p('nav_action',         'navigate_to_pose')
         self._follow_path_enabled = self._p('follow_path_enabled', True)
         self._follow_path_action_name = self._p('follow_path_action', 'follow_path')
@@ -179,6 +180,9 @@ class IGVCNavigatorNode(Node):
         self._path_change_tolerance_m = self._p('path_change_tolerance_m', 0.25)
         self._path_change_tolerance_rad = self._p('path_change_tolerance_rad', 0.25)
         self._max_path_lateral_jump_m = self._p('max_path_lateral_jump_m', 0.5)
+        self._max_odom_age = self._p('max_odom_age_sec', self._max_costmap_age)
+        self._max_odom_costmap_skew = self._p(
+            'max_odom_costmap_skew_sec', self._max_costmap_age)
 
         # ── Internal state ────────────────────────────────────────────────
         # GPS mode: queue of _Waypoint in map frame, consumed as robot arrives
@@ -203,6 +207,7 @@ class IGVCNavigatorNode(Node):
         self._grid: Optional[OccupancyGrid] = None
         self._robot_xy: Optional[tuple[float, float]] = None  # odom frame
         self._robot_yaw: Optional[float] = None
+        self._odom_stamp = None
 
         # ── TF ────────────────────────────────────────────────────────────
         self._tf_buf      = Buffer()
@@ -277,18 +282,45 @@ class IGVCNavigatorNode(Node):
             ('path_change_tolerance_m', 0.25),
             ('path_change_tolerance_rad', 0.25),
             ('max_path_lateral_jump_m', 0.5),
+            ('max_costmap_age_sec', 0.1),
+            ('max_odom_age_sec', 0.1),
+            ('max_odom_costmap_skew_sec', 0.1),
         ]:
             self.declare_parameter(name, default)
 
     def _p(self, name: str, _default):
         return self.get_parameter(name).value
 
+    def _stamp_age_sec(self, stamp) -> float:
+        stamp_t = Time.from_msg(stamp)
+        if stamp_t.nanoseconds == 0:
+            return float('inf')
+        return abs((self.get_clock().now() - stamp_t).nanoseconds / 1e9)
+
+    @staticmethod
+    def _stamp_delta_sec(lhs, rhs) -> float:
+        lhs_t = Time.from_msg(lhs)
+        rhs_t = Time.from_msg(rhs)
+        if lhs_t.nanoseconds == 0 or rhs_t.nanoseconds == 0:
+            return float('inf')
+        return abs((lhs_t - rhs_t).nanoseconds / 1e9)
+
     # ── Callbacks ─────────────────────────────────────────────────────────
 
     def _on_grid(self, msg: OccupancyGrid) -> None:
+        if self._stamp_age_sec(msg.header.stamp) > self._max_costmap_age:
+            self.get_logger().warn(
+                f'Dropping stale lane costmap older than {self._max_costmap_age:.3f}s.',
+                throttle_duration_sec=2.0)
+            return
         self._grid = msg
 
     def _on_odom(self, msg: Odometry) -> None:
+        if self._stamp_age_sec(msg.header.stamp) > self._max_odom_age:
+            self.get_logger().warn(
+                f'Dropping unstamped/stale odom older than {self._max_odom_age:.3f}s.',
+                throttle_duration_sec=2.0)
+            return
         self._robot_xy = (msg.pose.pose.position.x,
                           msg.pose.pose.position.y)
         q = msg.pose.pose.orientation
@@ -296,6 +328,7 @@ class IGVCNavigatorNode(Node):
             2.0 * (q.w * q.z + q.x * q.y),
             1.0 - 2.0 * (q.y * q.y + q.z * q.z),
         )
+        self._odom_stamp = msg.header.stamp
 
     def _on_loc_status(self, msg: String) -> None:
         self._loc_status = msg.data
@@ -580,12 +613,26 @@ class IGVCNavigatorNode(Node):
 
     def _lane_path_from_costmap(self) -> Path:
         """Build a controller-facing lane path from the latest costmap."""
+        if self._grid is None or self._stamp_age_sec(self._grid.header.stamp) > self._max_costmap_age:
+            return self._build_path([], self.get_clock().now().to_msg())
+        if self._odom_stamp is None or self._stamp_age_sec(self._odom_stamp) > self._max_odom_age:
+            self.get_logger().warn(
+                f'No fresh stamped odom within {self._max_odom_age:.3f}s; suppressing lane path.',
+                throttle_duration_sec=2.0)
+            return self._build_path([], self._grid.header.stamp)
+        if self._stamp_delta_sec(self._grid.header.stamp, self._odom_stamp) > self._max_odom_costmap_skew:
+            self.get_logger().warn(
+                'Lane costmap and odom stamps differ by more than '
+                f'{self._max_odom_costmap_skew:.3f}s; suppressing lane path.',
+                throttle_duration_sec=2.0)
+            return self._build_path([], self._grid.header.stamp)
         return self._build_path(
-            self._condition_path_points(self._extract_centreline()))
+            self._condition_path_points(self._extract_centreline()),
+            self._grid.header.stamp)
 
-    def _build_path(self, pts: list[tuple[float, float]]) -> Path:
+    def _build_path(self, pts: list[tuple[float, float]], stamp=None) -> Path:
         path = Path()
-        path.header.stamp    = self.get_clock().now().to_msg()
+        path.header.stamp    = stamp if stamp is not None else self.get_clock().now().to_msg()
         path.header.frame_id = self._base_frame
 
         prev_yaw = 0.0
