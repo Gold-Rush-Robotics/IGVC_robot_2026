@@ -72,6 +72,11 @@ lane_segmentation_node:
     persistent_publish_hz:     2.0
     persistent_clear_radius_m: 0.8
 
+    # Keep the synchronizer latest-only so YOLO does not chew through
+    # a backlog of old RGB+depth pairs when the camera out-runs inference.
+    sync_queue_size: 1
+    max_frame_age_sec: 0.1
+
     # ── YOLOPv2 segmentation model ──────────────────────────────────
     # model_weights is intentionally empty — the launch file fills it
     # in from $YOLOPV2_WEIGHTS or the model_weights launch argument so
