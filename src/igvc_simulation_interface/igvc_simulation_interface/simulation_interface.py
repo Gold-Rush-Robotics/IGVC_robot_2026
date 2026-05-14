@@ -19,7 +19,12 @@ from simulation_interfaces.srv import (
 from geometry_msgs.msg import PoseStamped, Quaternion, Point
 
 # Container path root (detected from workspace structure)
-CONTAINER_DEVENV_ROOT = '/workspace/DevEnv'
+# The container path to the IGVC workspace root. Prefer env var so it can
+# be overridden without a rebuild; fall back to the legacy path.
+CONTAINER_DEVENV_ROOT = os.environ.get(
+    'IGVC_WORKSPACE_ROOT',
+    os.environ.get('CONTAINER_DEVENV_ROOT', '/root/ros2_ws/src/IGVC_robot_2026')
+)
 
 # Service names
 GET_FEATURES_SERVICE = "/get_simulator_features"
@@ -302,12 +307,34 @@ class SimulationInterface(Node):
             True if world loaded successfully, False otherwise.
         """
         if field_usd_path is None:
-            # Try to locate field1.usd in workspace
-            try:
-                pkg_share = get_package_share_directory('igvc_simulation_interface')
-                workspace_root = os.path.normpath(os.path.join(pkg_share, '..', '..', '..','..'))
+            # Try to locate IGVC_track_generator/field.usd in workspace.
+            # Priority: env var → realpath of pkg_share (follows --symlink-install) → cwd
+            workspace_root = None
+            env_root = os.environ.get('IGVC_WORKSPACE_ROOT', '')
+            if env_root and os.path.isdir(os.path.join(env_root, 'IGVC_track_generator')):
+                workspace_root = env_root
+            if workspace_root is None:
+                try:
+                    pkg_share = get_package_share_directory('igvc_simulation_interface')
+                    # realpath resolves --symlink-install symlinks back to the source tree
+                    real_share = os.path.realpath(pkg_share)
+                    candidate = os.path.normpath(os.path.join(real_share, '..', '..', '..', '..'))
+                    if os.path.isdir(os.path.join(candidate, 'IGVC_track_generator')):
+                        workspace_root = candidate
+                    else:
+                        # installed path: /root/ros2_ws/install/.../share/pkg → 6 levels up = ros2_ws/src/...
+                        candidate2 = os.path.normpath(os.path.join(real_share, '..', '..', '..', '..', '..', '..'))
+                        if os.path.isdir(os.path.join(candidate2, 'IGVC_track_generator')):
+                            workspace_root = candidate2
+                except Exception:
+                    pass
+            if workspace_root is None:
+                cwd_candidate = os.getcwd()
+                if os.path.isdir(os.path.join(cwd_candidate, 'IGVC_track_generator')):
+                    workspace_root = cwd_candidate
+            if workspace_root is not None:
                 field_usd_path = os.path.join(workspace_root, 'IGVC_track_generator', 'field.usd')
-            except Exception:
+            else:
                 field_usd_path = None
 
         if field_usd_path is None or not os.path.exists(field_usd_path):
@@ -387,8 +414,28 @@ class SimulationInterface(Node):
             True if robot spawned successfully, False otherwise.
         """
         if robot_usd_path is None:
-            pkg_share = get_package_share_directory('igvc_simulation_interface')
-            workspace_root = os.path.normpath(os.path.join(pkg_share, '..', '..', '..','..'))
+            workspace_root = None
+            env_root = os.environ.get('IGVC_WORKSPACE_ROOT', '')
+            if env_root and os.path.isdir(os.path.join(env_root, 'isaac')):
+                workspace_root = env_root
+            if workspace_root is None:
+                try:
+                    pkg_share = get_package_share_directory('igvc_simulation_interface')
+                    real_share = os.path.realpath(pkg_share)
+                    for levels in (('..', '..', '..', '..'), ('..', '..', '..', '..', '..', '..')):
+                        candidate = os.path.normpath(os.path.join(real_share, *levels))
+                        if os.path.isdir(os.path.join(candidate, 'isaac')):
+                            workspace_root = candidate
+                            break
+                except Exception:
+                    pass
+            if workspace_root is None:
+                cwd_candidate = os.getcwd()
+                if os.path.isdir(os.path.join(cwd_candidate, 'isaac')):
+                    workspace_root = cwd_candidate
+            if workspace_root is None:
+                self.get_logger().error('Could not resolve workspace root to find robot USD')
+                return False
             robot_usd_path = os.path.join(workspace_root, 'isaac', 'assets', 'test_igvc_drivebase2.usd')
             print(f"Using default robot USD path: {robot_usd_path}")
 

@@ -21,6 +21,10 @@ def _resolve_workspace_root() -> str:
     candidates.append(os.getcwd())
 
     here = os.path.dirname(__file__)
+    # Follow symlink: --symlink-install makes __file__ a symlink inside the
+    # install tree; os.path.realpath resolves it back to the source tree.
+    real_here = os.path.dirname(os.path.realpath(__file__))
+    candidates.append(os.path.abspath(os.path.join(real_here, '..', '..', '..')))
     candidates.append(os.path.abspath(os.path.join(here, '..', '..', '..')))
     candidates.append(os.path.abspath(os.path.join(here, '..', '..', '..', '..', '..')))
 

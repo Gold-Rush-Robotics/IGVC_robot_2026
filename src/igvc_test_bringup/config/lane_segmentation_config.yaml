@@ -116,3 +116,18 @@ lane_segmentation_node:
     # ── Debug ───────────────────────────────────────────────────────
     publish_overlay: true
     lane_marker_topic: "/lane_segmentation/lanes"
+
+    # ── Depth-based obstacle masking ─────────────────────────────────
+    # After YOLOPv2 inference, pixels whose 3-D base_link height lands in the
+    # obstacle band are zeroed out of both the drivable-area and lane-line masks.
+    # This prevents the model from hallucinating lane lines over barrels / cones.
+    #
+    # Tune obstacle_z_min_m upward if ground reflections still trigger false mask.
+    # Tune obstacle_dilation_px upward if silhouette halo edges remain visible.
+    obstacle_mask_enabled:    true
+    obstacle_z_min_m:         0.15    # base_link Z above this → obstacle (not ground)
+    obstacle_z_max_m:         2.5     # above this → sky/ceiling, ignore
+    obstacle_depth_min_m:     0.3     # ignore very-close depth noise
+    obstacle_depth_max_m:     8.0     # ignore distant background objects
+    obstacle_dilation_px:     30      # expand mask to cover halo / shadow edges
+    camera_height_fallback_m: 0.45    # approximate camera mount height (fallback only)

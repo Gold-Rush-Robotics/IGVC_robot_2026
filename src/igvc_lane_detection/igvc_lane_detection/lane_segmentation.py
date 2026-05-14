@@ -142,6 +142,15 @@ class LaneSegmentationNode(Node):
         self.model_blur_sigma       = float(p('model_blur_sigma', 0.0))
         self.da_morph_kernel_px     = int(p('da_morph_kernel_px', 0))
 
+        # ── Depth-based obstacle masking ─────────────────────────────
+        self.obstacle_mask_enabled      = bool(p('obstacle_mask_enabled', False))
+        self.obstacle_z_min_m           = float(p('obstacle_z_min_m', 0.15))
+        self.obstacle_z_max_m           = float(p('obstacle_z_max_m', 2.5))
+        self.obstacle_depth_min_m       = float(p('obstacle_depth_min_m', 0.3))
+        self.obstacle_depth_max_m       = float(p('obstacle_depth_max_m', 8.0))
+        self.obstacle_dilation_px       = int(p('obstacle_dilation_px', 25))
+        self.camera_height_fallback_m   = float(p('camera_height_fallback_m', 0.45))
+
         if not self.model_weights:
             raise RuntimeError(
                 "Parameter 'model_weights' must be set to the path of "
@@ -508,6 +517,21 @@ class LaneSegmentationNode(Node):
                     f'falling back to pinhole projection for cam[{cam_idx}]',
                     throttle_duration_sec=2.0)
 
+        # ── Depth-based obstacle masking ──
+        # Zeros out pixels where 3-D base_link height lands in the obstacle
+        # band — suppresses YOLOPv2 hallucinations over barrel/cone geometry.
+        if self.obstacle_mask_enabled and cam_idx in self.K:
+            obs_mask = self._build_obstacle_mask(depth, cam_tf, cam_idx)
+            if obs_mask is not None:
+                # Resize obs_mask to match seg-head resolution if needed
+                if obs_mask.shape != da_mask.shape:
+                    obs_mask = cv2.resize(
+                        obs_mask.astype(np.uint8),
+                        (da_mask.shape[1], da_mask.shape[0]),
+                        interpolation=cv2.INTER_NEAREST).astype(bool)
+                da_mask[obs_mask] = 0
+                ll_mask[obs_mask] = 0
+
         # ── Project masks into base_link ──
         free_pts = self._project_mask_points(
             da_mask, depth, cam_idx, cam_tf,
@@ -569,6 +593,82 @@ class LaneSegmentationNode(Node):
     # ═══════════════════════════════════════════════════════════════════
     # Mask → base_link projection
     # ═══════════════════════════════════════════════════════════════════
+
+    def _build_obstacle_mask(self, depth: np.ndarray, cam_tf, cam_idx: int) -> Optional[np.ndarray]:
+        """Return a bool mask (same H×W as depth) where pixels are occupied by obstacles.
+
+        Uses the ZED depth to project every pixel into base_link 3-D space.  Any
+        pixel whose base_link Z height lands between ``obstacle_z_min_m`` and
+        ``obstacle_z_max_m`` is flagged as an obstacle and masked out of the
+        segmentation heads, preventing YOLOPv2 from hallucinating lane lines over
+        barrel / cone geometry.
+
+        The computation is fully vectorised — no Python pixel loops.
+        """
+        K = self.K.get(cam_idx)
+        if K is None:
+            return None
+
+        dh, dw = depth.shape[:2]
+        fx, fy = K[0, 0], K[1, 1]
+        cx, cy = K[0, 2], K[1, 2]
+
+        # Scale intrinsics if depth image is a different resolution from the
+        # camera_info resolution (rare with ZED, but guard anyway).
+        # K is delivered at rgb resolution; depth may differ.
+        # We just use the ratio to the K resolution we received.
+        # (ZED delivers depth at the same resolution as colour, so this is
+        #  typically a no-op, but keeps the code correct in general.)
+        rgb_h = K[1, 2] * 2.0  # approximate from principal point
+        rgb_w = K[0, 2] * 2.0
+        if rgb_h > 0 and rgb_w > 0:
+            sx = dw / rgb_w
+            sy = dh / rgb_h
+            fx, fy = fx * sx, fy * sy
+            cx, cy = cx * sx, cy * sy
+
+        # Build pixel coordinate grids
+        us = np.arange(dw, dtype=np.float32)
+        vs = np.arange(dh, dtype=np.float32)
+        ug, vg = np.meshgrid(us, vs)  # (dh, dw)
+
+        d = depth.astype(np.float32)
+
+        # Valid depth gate
+        valid = np.isfinite(d) & (d > self.obstacle_depth_min_m) & (d < self.obstacle_depth_max_m)
+
+        # Camera-frame 3-D coords
+        xc = (ug - cx) * d / fx
+        yc = (vg - cy) * d / fy
+        zc = d  # z forward in camera optical frame
+
+        if cam_tf is not None:
+            t = cam_tf.transform.translation
+            r = cam_tf.transform.rotation
+            R = np.array([
+                [1 - 2*(r.y*r.y + r.z*r.z),   2*(r.x*r.y - r.z*r.w),   2*(r.x*r.z + r.y*r.w)],
+                [2*(r.x*r.y + r.z*r.w),   1 - 2*(r.x*r.x + r.z*r.z),   2*(r.y*r.z - r.x*r.w)],
+                [2*(r.x*r.z - r.y*r.w),   2*(r.y*r.z + r.x*r.w),   1 - 2*(r.x*r.x + r.y*r.y)],
+            ], dtype=np.float64)
+            # Stack into (3, N), transform, then reshape back
+            pts = np.stack([xc.ravel(), yc.ravel(), zc.ravel()], axis=0)  # (3, N)
+            pts_base = R @ pts  # (3, N)
+            bz = pts_base[2].reshape(dh, dw).astype(np.float32) + float(t.z)
+        else:
+            # Approximate: camera points straight forward, height from param
+            # bz ≈ camera_height - Y_camera_frame (Y down in optical frame)
+            bz = (self.camera_height_fallback_m - yc).astype(np.float32)
+
+        # Obstacle: height in [z_min, z_max] with valid depth
+        obs = valid & (bz > self.obstacle_z_min_m) & (bz < self.obstacle_z_max_m)
+
+        # Dilate to cover silhouette / shadow halo edges
+        if self.obstacle_dilation_px > 1:
+            k = self.obstacle_dilation_px | 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            obs = cv2.dilate(obs.astype(np.uint8), kernel).astype(bool)
+
+        return obs
 
     def _apply_mask_roi(self, mask: np.ndarray) -> np.ndarray:
         """Zero-out chassis + out-of-ROI regions of a binary mask."""

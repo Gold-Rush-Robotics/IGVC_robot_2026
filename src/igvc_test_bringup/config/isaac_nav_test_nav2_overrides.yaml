@@ -1,0 +1,16 @@
+# ── Nav2-only overrides for the GT nav test ───────────────────────────────────
+# Removes the ZED pointcloud obstacle_layer from both costmaps.
+# Setting obstacle_layer.enabled=false is not enough: the plugin can still
+# create TF message filters for its observation sources.  Overriding plugins
+# prevents the layer from being instantiated at all.
+# This file is passed exclusively as extra_params_file to nav2 nodes via
+# navigation_no_docking.launch.py — it must NOT be passed to any other node.
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      plugins: ["lane_layer", "inflation_layer"]
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      plugins: ["lane_layer", "inflation_layer"]
