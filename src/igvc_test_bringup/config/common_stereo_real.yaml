@@ -154,7 +154,7 @@
             publish_cam_path: false
 
         gnss_fusion:
-            gnss_fusion_enabled: true
+            enable_gnss: true
             gnss_fix_topic: '/fix'
             gnss_zero_altitude: false
             h_covariance_mul: 1.0
@@ -162,7 +162,7 @@
             publish_utm_tf: false
             broadcast_utm_transform_as_parent_frame: false
             enable_reinitialization: false
-            enable_rolling_calibration: false
+            enable_rolling_calibration: true
             enable_translation_uncertainty_target: false
             gnss_vio_reinit_threshold: 5.0
             target_translation_uncertainty: 0.1

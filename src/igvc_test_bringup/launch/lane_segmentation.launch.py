@@ -152,6 +152,6 @@ def generate_launch_description() -> LaunchDescription:
         lane_segmentation_node,
         localization_node,
         # static_map_to_odom,
-        # navigator_node,
-        # nav2_launch,
+        navigator_node,
+        nav2_launch,
     ])
