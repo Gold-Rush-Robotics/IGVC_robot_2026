@@ -42,6 +42,7 @@ setup(
             'odom_tf_bridge_node = igvc_lane_detection.odom_tf_bridge:main',
             'multi_camera_lane_detection_node = igvc_lane_detection.multi_camera_lane_detection:main',
             'lane_segmentation_node = igvc_lane_detection.lane_segmentation:main',
+            'constant_cmd_vel_node = igvc_lane_detection.constant_cmd_vel:main',
         ],
     },
 )

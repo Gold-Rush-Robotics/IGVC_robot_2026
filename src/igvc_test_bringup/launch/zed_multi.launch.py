@@ -5,7 +5,7 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, TextSubstitution
 
@@ -173,8 +173,10 @@ def launch_setup(context, *args, **kwargs):
             'camera_id': camera_id,
             'use_sim_time': use_sim_time,
             'sim_mode': sim_mode,
+            'enable_ipc': 'false',
             'publish_tf': publish_tf,
             'publish_map_tf': publish_map_tf,
+            'enable_gnss': 'true',
             'ros_params_override_path': camera_params_path,
         }
 
@@ -185,10 +187,16 @@ def launch_setup(context, *args, **kwargs):
         if sim_port:
             launch_arguments['sim_port'] = sim_port
 
+        startup_delay_sec = float(idx) * 3.0
         actions.append(
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(zed_camera_launch),
-                launch_arguments=launch_arguments.items(),
+            TimerAction(
+                period=startup_delay_sec,
+                actions=[
+                    IncludeLaunchDescription(
+                        PythonLaunchDescriptionSource(zed_camera_launch),
+                        launch_arguments=launch_arguments.items(),
+                    )
+                ],
             )
         )
 
