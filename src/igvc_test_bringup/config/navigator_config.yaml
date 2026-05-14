@@ -8,7 +8,7 @@ igvc_navigator:
     progress_checker_id: "progress_checker"
 
     # Local lane path extraction and update discipline.
-    max_costmap_age_sec: 0.1
+    max_costmap_age_sec: 1.0
     max_odom_age_sec: 0.1
     max_odom_costmap_skew_sec: 0.1
     path_lookahead_m: 4.0

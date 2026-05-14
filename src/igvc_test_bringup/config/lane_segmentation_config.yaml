@@ -73,7 +73,9 @@ lane_segmentation_node:
     # Keep the synchronizer latest-only so YOLO does not chew through
     # a backlog of old RGB+depth pairs when the camera out-runs inference.
     sync_queue_size: 1
-    max_frame_age_sec: 0.1
+    # Jetson real-world pipeline latency is typically ~0.20-0.30s under load.
+    # Keep latest-only queueing but allow those frames through.
+    max_frame_age_sec: 0.35
 
     # ── YOLOPv2 segmentation model ──────────────────────────────────
     # model_weights is intentionally empty — the launch file fills it
@@ -91,20 +93,20 @@ lane_segmentation_node:
     #   - Blur suppresses high-frequency rendering artefacts that trigger
     #     false drivable-area and lane-line positives
     model_preprocess:  true
-    model_clahe_clip:  4.0          # higher clip → stronger local contrast
+    model_clahe_clip:  2.0
     model_clahe_tile:  [8, 8]
-    model_blur_ksize:  [9, 9]       # 9×9 Gaussian (was 5×5 default)
-    model_blur_sigma:  2.0          # explicit sigma so blur is well-defined
+    model_blur_ksize:  [5, 5]
+    model_blur_sigma:  0.0
 
     # ── Post-processing cleanup (drivable-area mask) ─────────────────
     # Morphological open (erode then dilate) removes isolated speckles
     # that appear in sim but not on real roads.
-    da_morph_kernel_px:   15        # kernel size for morph open on DA mask
+    da_morph_kernel_px:   7
     min_da_component_px:  3000      # drop DA blobs smaller than this (px)
 
     # Mask → point-cloud rasterisation
-    da_subsample_px: 6             # drivable-area stride (cheap, dense)
-    ll_subsample_px: 2             # lane-line stride (sparse, precise)
+    da_subsample_px: 8
+    ll_subsample_px: 3
     # Lowered from 150 → 20 px: with the side cameras now contributing
     # paint, a lot of lane evidence arrives as thin 30-80 px slivers
     # (dashed markings, far-field lines, oblique angles on the 90°
@@ -124,7 +126,7 @@ lane_segmentation_node:
     #
     # Tune obstacle_z_min_m upward if ground reflections still trigger false mask.
     # Tune obstacle_dilation_px upward if silhouette halo edges remain visible.
-    obstacle_mask_enabled:    true
+    obstacle_mask_enabled:    false
     obstacle_z_min_m:         0.15    # base_link Z above this → obstacle (not ground)
     obstacle_z_max_m:         2.5     # above this → sky/ceiling, ignore
     obstacle_depth_min_m:     0.3     # ignore very-close depth noise
