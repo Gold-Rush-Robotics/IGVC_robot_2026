@@ -2,6 +2,7 @@ import time
 import rclpy
 import os
 import tempfile
+import math
 
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
@@ -18,7 +19,12 @@ from simulation_interfaces.srv import (
 from geometry_msgs.msg import PoseStamped, Quaternion, Point
 
 # Container path root (detected from workspace structure)
-CONTAINER_DEVENV_ROOT = '/workspace/DevEnv'
+# The container path to the IGVC workspace root. Prefer env var so it can
+# be overridden without a rebuild; fall back to the legacy path.
+CONTAINER_DEVENV_ROOT = os.environ.get(
+    'IGVC_WORKSPACE_ROOT',
+    os.environ.get('CONTAINER_DEVENV_ROOT', '/root/ros2_ws/src/IGVC_robot_2026')
+)
 
 # Service names
 GET_FEATURES_SERVICE = "/get_simulator_features"
@@ -39,6 +45,16 @@ class SimulationInterface(Node):
     def __init__(self):
         super().__init__('simulation_interface_node')
         self.get_logger().info("Simulation Interface Node has been started.")
+
+        # Optional launch-time overrides for field/robot assets and spawn pose.
+        self.declare_parameter('field_usd_path', '')
+        self.declare_parameter('robot_usd_path', '')
+        self.declare_parameter('robot_entity_name', 'igvc_robot')
+        self.declare_parameter('robot_spawn_x', 8.128949212924178)
+        self.declare_parameter('robot_spawn_y', 16.63174225312982)
+        self.declare_parameter('robot_spawn_z', 0.0820257550378943)
+        self.declare_parameter('robot_spawn_yaw_rad', -math.pi)
+        self.declare_parameter('auto_play', True)
 
         # Create service clients
         self.get_features_client = self.create_client(GetSimulatorFeatures, GET_FEATURES_SERVICE)
@@ -125,7 +141,7 @@ class SimulationInterface(Node):
             return False
 
         req = LoadWorld.Request()
-        req.world_resource.uri = uri
+        req.uri = uri
         future = self.load_world_client.call_async(req)
         rclpy.spin_until_future_complete(self, future)
         if future.result() and future.result().result.result == Result.RESULT_OK:
@@ -144,7 +160,7 @@ class SimulationInterface(Node):
 
         req = SpawnEntity.Request()
         req.name = name
-        req.entity_resource.uri = uri
+        req.uri = uri
         req.allow_renaming = True
         req.initial_pose = initial_pose
         future = self.spawn_entity_client.call_async(req)
@@ -291,19 +307,35 @@ class SimulationInterface(Node):
             True if world loaded successfully, False otherwise.
         """
         if field_usd_path is None:
-            # Try to locate field1.usd in workspace
-            try:
-                pkg_share = get_package_share_directory('igvc_simulation_interface')
-                workspace_root = os.path.normpath(os.path.join(pkg_share, '..', '..', '..'))
-                field_usd_path = os.path.join(workspace_root, 'isaac', 'assets', 'field1.usd')
-            except Exception:
+            # Try to locate IGVC_track_generator/field.usd in workspace.
+            # Priority: env var → realpath of pkg_share (follows --symlink-install) → cwd
+            workspace_root = None
+            env_root = os.environ.get('IGVC_WORKSPACE_ROOT', '')
+            if env_root and os.path.isdir(os.path.join(env_root, 'IGVC_track_generator')):
+                workspace_root = env_root
+            if workspace_root is None:
+                try:
+                    pkg_share = get_package_share_directory('igvc_simulation_interface')
+                    # realpath resolves --symlink-install symlinks back to the source tree
+                    real_share = os.path.realpath(pkg_share)
+                    candidate = os.path.normpath(os.path.join(real_share, '..', '..', '..', '..'))
+                    if os.path.isdir(os.path.join(candidate, 'IGVC_track_generator')):
+                        workspace_root = candidate
+                    else:
+                        # installed path: /root/ros2_ws/install/.../share/pkg → 6 levels up = ros2_ws/src/...
+                        candidate2 = os.path.normpath(os.path.join(real_share, '..', '..', '..', '..', '..', '..'))
+                        if os.path.isdir(os.path.join(candidate2, 'IGVC_track_generator')):
+                            workspace_root = candidate2
+                except Exception:
+                    pass
+            if workspace_root is None:
+                cwd_candidate = os.getcwd()
+                if os.path.isdir(os.path.join(cwd_candidate, 'IGVC_track_generator')):
+                    workspace_root = cwd_candidate
+            if workspace_root is not None:
+                field_usd_path = os.path.join(workspace_root, 'IGVC_track_generator', 'field.usd')
+            else:
                 field_usd_path = None
-
-            if field_usd_path is None or not os.path.exists(field_usd_path):
-                # Try current working directory as fallback
-                alt = os.path.join(os.getcwd(), 'isaac', 'assets', 'field2.usd')
-                if os.path.exists(alt):
-                    field_usd_path = alt
 
         if field_usd_path is None or not os.path.exists(field_usd_path):
             self.get_logger().error(f'Field USD not found at {field_usd_path}')
@@ -377,19 +409,35 @@ class SimulationInterface(Node):
             entity_name: Name for the spawned robot entity.
             initial_pose: Optional initial pose. Defaults to origin.
             robot_usd_path: Optional custom USD path. If None, uses
-                            isaac/assets/test_igvc_drivebase..usd.
+                            isaac/assets/test_igvc_drivebase.usd.
         Returns:
             True if robot spawned successfully, False otherwise.
         """
         if robot_usd_path is None:
-            robot_usd_path = os.path.join(
-                CONTAINER_DEVENV_ROOT,
-                'jazzy_ws',
-                'IGVC_robot_2026',
-                'isaac',
-                'assets',
-                'test_igvc_drivebase..usd'
-            )
+            workspace_root = None
+            env_root = os.environ.get('IGVC_WORKSPACE_ROOT', '')
+            if env_root and os.path.isdir(os.path.join(env_root, 'isaac')):
+                workspace_root = env_root
+            if workspace_root is None:
+                try:
+                    pkg_share = get_package_share_directory('igvc_simulation_interface')
+                    real_share = os.path.realpath(pkg_share)
+                    for levels in (('..', '..', '..', '..'), ('..', '..', '..', '..', '..', '..')):
+                        candidate = os.path.normpath(os.path.join(real_share, *levels))
+                        if os.path.isdir(os.path.join(candidate, 'isaac')):
+                            workspace_root = candidate
+                            break
+                except Exception:
+                    pass
+            if workspace_root is None:
+                cwd_candidate = os.getcwd()
+                if os.path.isdir(os.path.join(cwd_candidate, 'isaac')):
+                    workspace_root = cwd_candidate
+            if workspace_root is None:
+                self.get_logger().error('Could not resolve workspace root to find robot USD')
+                return False
+            robot_usd_path = os.path.join(workspace_root, 'isaac', 'assets', 'test_igvc_drivebase2.usd')
+            print(f"Using default robot USD path: {robot_usd_path}")
 
         if not os.path.exists(robot_usd_path):
             self.get_logger().error(f'Robot USD not found at {robot_usd_path}')
@@ -413,25 +461,44 @@ def main():
     sim = SimulationInterface()
 
     try:
+        field_usd_path = str(sim.get_parameter('field_usd_path').value).strip() or None
+        robot_usd_path = str(sim.get_parameter('robot_usd_path').value).strip() or None
+        robot_entity_name = str(sim.get_parameter('robot_entity_name').value).strip() or 'igvc_robot'
+        spawn_x = float(sim.get_parameter('robot_spawn_x').value)
+        spawn_y = float(sim.get_parameter('robot_spawn_y').value)
+        spawn_z = float(sim.get_parameter('robot_spawn_z').value)
+        spawn_yaw = float(sim.get_parameter('robot_spawn_yaw_rad').value)
+        auto_play = bool(sim.get_parameter('auto_play').value)
+
         # Load field USD
-        sim.get_logger().info("Loading field1.usd...")
-        if not sim.load_field_usd():
+        sim.get_logger().info("Loading field USD...")
+        if not sim.load_field_usd(field_usd_path):
             sim.get_logger().error("Failed to load field USD")
             return 1
         time.sleep(1.0)
 
         # Spawn robot from USD
         robot_pose = PoseStamped()
-        robot_pose.pose.position = Point(x=8.128949212924178,y=16.63174225312982,z=0.0820257550378943)
-        robot_pose.pose.orientation = Quaternion(w=0.0,x=0.0,y=0.0,z=-1.0)
+        robot_pose.pose.position = Point(x=spawn_x, y=spawn_y, z=spawn_z)
+        robot_pose.pose.orientation = Quaternion(
+            w=math.cos(spawn_yaw / 2.0),
+            x=0.0,
+            y=0.0,
+            z=math.sin(spawn_yaw / 2.0),
+        )
         sim.get_logger().info("Spawning robot from USD...")
-        if not sim.spawn_robot_from_usd(initial_pose=robot_pose):
+        if not sim.spawn_robot_from_usd(
+            entity_name=robot_entity_name,
+            initial_pose=robot_pose,
+            robot_usd_path=robot_usd_path,
+        ):
             sim.get_logger().error("Failed to spawn robot")
             return 1
 
         # Start simulation
-        sim.get_logger().info("Starting simulation...")
-        sim.set_simulation_state(SimulationState.STATE_PLAYING)
+        if auto_play:
+            sim.get_logger().info("Starting simulation...")
+            sim.set_simulation_state(SimulationState.STATE_PLAYING)
 
         sim.get_logger().info("Field and robot spawned successfully!")
 

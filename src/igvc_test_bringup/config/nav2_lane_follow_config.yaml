@@ -237,7 +237,7 @@ local_costmap:
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
-        enabled: true
+        enabled: false
         tf_filter_tolerance: 1.0
         footprint_clearing_enabled: true
         observation_sources: "front_pointcloud left_pointcloud right_pointcloud lidar_scan"
