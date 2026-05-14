@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
@@ -9,6 +10,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     bringup = FindPackageShare('igvc_test_bringup')
+    ublox_gps_pkg = FindPackageShare('ublox_gps')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     gps_enabled = LaunchConfiguration('gps_enabled')
@@ -61,6 +63,15 @@ def generate_launch_description() -> LaunchDescription:
             'use_sim_time': use_sim_time,
         }.items(),
     )
+
+    # zed_f9p_launch = IncludeLaunchDescription(
+    #     PythonLaunchDescriptionSource(
+    #         PathJoinSubstitution(
+    #             [ublox_gps_pkg, 'launch', 'ublox_gps_node_zedf9p-launch.py']
+    #         )
+    #     ),
+    #     condition=IfCondition(gps_enabled),
+    # )
 
     odom_tf_bridge_node = Node(
         package="igvc_lane_detection",
@@ -127,7 +138,8 @@ def generate_launch_description() -> LaunchDescription:
         teleop,
         # lane_follower,
         lane_segmentation,
+        gps_node,
         odom_tf_bridge_node,
-        # gps_node,
+        # zed_f9p_launch,
         twist_stamper_node,
     ])

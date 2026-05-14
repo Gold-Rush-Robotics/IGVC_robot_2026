@@ -29,7 +29,7 @@
             camera_flip: false
             self_calib: true
             serial_number: 0
-            grab_resolution: 'HD720'
+            grab_resolution: 'HD1080'
             grab_frame_rate: 30
             grab_compute_capping_fps: 30.0
             pub_resolution: 'CUSTOM'
@@ -89,7 +89,7 @@
             # Outdoors we want to keep the horizon/sky-line: distant features
             # are critical for stable VIO rotation. ROI now only restricts the
             # close-range obstacle pipelines, not tracking or full-frame depth.
-            automatic_roi: true
+            automatic_roi: false
             depth_far_threshold_meters: 2.5
             image_height_ratio_cutoff: 0.5
             apply_to_depth: false
@@ -154,7 +154,7 @@
             publish_cam_path: false
 
         gnss_fusion:
-            gnss_fusion_enabled: false
+            gnss_fusion_enabled: true
             gnss_fix_topic: '/fix'
             gnss_zero_altitude: false
             h_covariance_mul: 1.0
