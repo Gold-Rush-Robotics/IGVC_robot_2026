@@ -27,7 +27,12 @@ def _is_front_camera(camera_name: str) -> bool:
     return camera_name.strip().lower() == 'front_zed_camera_x'
 
 
-def _camera_params_path(base_params_path: str, camera_name: str, area_memory_path: str) -> str:
+def _camera_params_path(
+    base_params_path: str,
+    camera_name: str,
+    area_memory_path: str,
+    enable_front_gnss: bool,
+) -> str:
     with open(base_params_path, 'r', encoding='utf-8') as params_file:
         params = yaml.safe_load(params_file)
 
@@ -35,8 +40,8 @@ def _camera_params_path(base_params_path: str, camera_name: str, area_memory_pat
     pos_tracking = ros_parameters.get('pos_tracking', {})
     gnss_fusion = ros_parameters.get('gnss_fusion', {})
 
-    # Keep GNSS fusion active only for the front camera.
-    gnss_fusion['gnss_fusion_enabled'] = _is_front_camera(camera_name)
+    # Keep GNSS fusion active only for the front camera when explicitly enabled.
+    gnss_fusion['gnss_fusion_enabled'] = enable_front_gnss and _is_front_camera(camera_name)
 
     if pos_tracking.get('area_memory', False):
         os.makedirs(area_memory_path, exist_ok=True)
@@ -71,6 +76,7 @@ def launch_setup(context, *args, **kwargs):
     sim_mode = LaunchConfiguration('sim_mode').perform(context)
     sim_address = LaunchConfiguration('sim_address').perform(context)
     disable_tf = LaunchConfiguration('disable_tf').perform(context).lower() == 'true'
+    enable_front_gnss = LaunchConfiguration('enable_front_gnss').perform(context).lower() == 'true'
     ros_params_override_path = LaunchConfiguration('ros_params_override_path').perform(context)
     area_memory_path = LaunchConfiguration('area_memory_path').perform(context)
 
@@ -153,7 +159,7 @@ def launch_setup(context, *args, **kwargs):
         serial_number = cam_serials[idx] if len(cam_serials) == num_cams else '0'
         camera_id = cam_ids[idx] if len(cam_ids) == num_cams else '-1'
         sim_port = sim_ports[idx] if len(sim_ports) == num_cams else ''
-        enable_gnss = 'true' if _is_front_camera(camera_name) else 'false'
+        enable_gnss = 'true' if (enable_front_gnss and _is_front_camera(camera_name)) else 'false'
 
         publish_tf = 'false'
         publish_map_tf = 'false'
@@ -171,6 +177,7 @@ def launch_setup(context, *args, **kwargs):
             ros_params_override_path,
             camera_name,
             area_memory_path,
+            enable_front_gnss,
         )
 
         launch_arguments = {
@@ -262,6 +269,11 @@ def generate_launch_description():
                 'disable_tf',
                 default_value='true',
                 description='Disable ZED odom/map TF publishing for all cameras.',
+            ),
+            DeclareLaunchArgument(
+                'enable_front_gnss',
+                default_value='false',
+                description='Enable GNSS ingestion/fusion only for front_zed_camera_x when true.',
             ),
             DeclareLaunchArgument(
                 'ros_params_override_path',
