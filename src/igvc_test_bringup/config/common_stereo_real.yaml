@@ -100,7 +100,7 @@
             publish_roi_mask: false
 
         depth:
-            depth_mode: 'NEURAL'
+            depth_mode: 'NEURAL_LIGHT'
             depth_stabilization: 30
             openni_depth_mode: false
             point_cloud_freq: 10.0
