@@ -27,7 +27,7 @@ services:
       - gid=1000
     command: >-
       /bin/bash -lc "
-      cp -f /root/ros2_ws/src/IGVC_robot_2026/src/igvc_test_bringup/config/common_stereo.yaml
+      cp -f /root/ros2_ws/src/IGVC_robot_2026/src/igvc_test_bringup/config/common_stereo_sim.yaml
       /root/ros2_ws/src/zed-ros2-wrapper/zed_wrapper/config/common_stereo.yaml
       && source /opt/ros/jazzy/setup.bash
       && colcon build --symlink-install --packages-select igvc_test_bringup --paths /root/ros2_ws/src/IGVC_robot_2026/src/*
@@ -35,55 +35,55 @@ services:
       && ros2 launch igvc_test_bringup simulation_launch.launch.yaml
       "
 
-  igvc_humble_fused_drive:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.humble-fused-drive
-    image: igvc-humble-fused-drive:latest
-    container_name: igvc_humble_fused_drive
-    stdin_open: true
-    tty: true
-    privileged: true
-    network_mode: host
-    runtime: nvidia
-    gpus: all
-    working_dir: /root/ros2_ws
-    volumes:
-      - .:/root/ros2_ws/src/IGVC_robot_2026
-      - igvc_humble_build:/root/ros2_ws/build
-      - igvc_humble_install:/root/ros2_ws/install
-      - igvc_humble_log:/root/ros2_ws/log
-      - /tmp:/tmp
-      - /dev:/dev
-      - /dev/shm:/dev/shm
-      - /tmp/.X11-unix:/tmp/.X11-unix
-    environment:
-      - DISPLAY=${DISPLAY}
-      - QT_X11_NO_MITSHM=1
-      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-      - ROS_LOCALHOST_ONLY=0
-      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
-      - FASTDDS_DEFAULT_PROFILES_FILE=/root/ros2_ws/src/IGVC_robot_2026/src/igvc_test_bringup/config/fastdds_udp.xml
-      - FASTRTPS_DEFAULT_PROFILES_FILE=/root/ros2_ws/src/IGVC_robot_2026/src/igvc_test_bringup/config/fastdds_udp.xml
-      - ROS_DISTRO=humble
-      - YOLOPV2_WEIGHTS=/root/ros2_ws/src/IGVC_robot_2026/models/yolopv2.pt
-    command:
-      - /bin/bash
-      - -lc
-      - |
-        set -e
-        source /opt/ros/humble/setup.bash
-        colcon build --symlink-install \
-          --base-paths /root/ros2_ws/src/IGVC_robot_2026/src \
-          --packages-select \
-            zed_description \
-            igvc_test_description \
-            grr_hardware \
-            igvc_lane_detection \
-            igvc_test_bringup
-        source /root/ros2_ws/install/setup.bash
-        ros2 launch igvc_test_bringup igvc_fused_drive.launch.py hardware_interface:=IsaacDriveHardware use_sim_time:=true
+  # igvc_humble_fused_drive:
+  #   build:
+  #     context: .
+  #     dockerfile: docker/Dockerfile.humble-fused-drive
+  #   image: igvc-humble-fused-drive:latest
+  #   container_name: igvc_humble_fused_drive
+  #   stdin_open: true
+  #   tty: true
+  #   privileged: true
+  #   network_mode: host
+  #   runtime: nvidia
+  #   gpus: all
+  #   working_dir: /root/ros2_ws
+  #   volumes:
+  #     - .:/root/ros2_ws/src/IGVC_robot_2026
+  #     - igvc_humble_build:/root/ros2_ws/build
+  #     - igvc_humble_install:/root/ros2_ws/install
+  #     - igvc_humble_log:/root/ros2_ws/log
+  #     - /tmp:/tmp
+  #     - /dev:/dev
+  #     - /dev/shm:/dev/shm
+  #     - /tmp/.X11-unix:/tmp/.X11-unix
+  #   environment:
+  #     - DISPLAY=${DISPLAY}
+  #     - QT_X11_NO_MITSHM=1
+  #     - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+  #     - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+  #     - ROS_LOCALHOST_ONLY=0
+  #     - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+  #     - FASTDDS_DEFAULT_PROFILES_FILE=/root/ros2_ws/src/IGVC_robot_2026/src/igvc_test_bringup/config/fastdds_udp.xml
+  #     - FASTRTPS_DEFAULT_PROFILES_FILE=/root/ros2_ws/src/IGVC_robot_2026/src/igvc_test_bringup/config/fastdds_udp.xml
+  #     - ROS_DISTRO=humble
+  #     - YOLOPV2_WEIGHTS=/root/ros2_ws/src/IGVC_robot_2026/models/yolopv2.pt
+  #   command:
+  #     - /bin/bash
+  #     - -lc
+  #     - |
+  #       set -e
+  #       source /opt/ros/humble/setup.bash
+  #       colcon build --symlink-install \
+  #         --base-paths /root/ros2_ws/src/IGVC_robot_2026/src \
+  #         --packages-select \
+  #           zed_description \
+  #           igvc_test_description \
+  #           grr_hardware \
+  #           igvc_lane_detection \
+  #           igvc_test_bringup
+  #       source /root/ros2_ws/install/setup.bash
+  #       ros2 launch igvc_test_bringup igvc_fused_drive.launch.py hardware_interface:=IsaacDriveHardware use_sim_time:=true
 
 volumes:
   igvc_humble_build:

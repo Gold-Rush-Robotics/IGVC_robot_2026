@@ -1,0 +1,41 @@
+track_ground_truth_node:
+  ros__parameters:
+    track_file: ""
+    track_image_file: ""
+    track_image_pixels_per_meter: 52.5
+    frame_id: "odom"
+    publish_hz: 5.0
+    resolution: 0.1
+    width_m: 40.0
+    height_m: 40.0
+    lane_half_width_m: 0.25
+    fallback_circle_radius_m: 8.0
+    fallback_circle_points: 200
+    occupancy_topic: "/lane_ground_truth"
+    midpoint_path_topic: "/lane_ground_truth_midpoint_path"
+
+lane_eval_node:
+  ros__parameters:
+    ground_truth_topic: "/lane_ground_truth"
+    predicted_topic: "/lane_map"
+    max_stamp_skew_sec: 0.1
+    occupied_threshold: 50
+    report_csv_path: ""
+
+midpoint_twist_test_node:
+  ros__parameters:
+    path_topic: "/lane_ground_truth_midpoint_path"
+    odom_topic: "/front_zed_camera_x/zed_node/odom"
+    output_topic: "/midpoint_cmd_vel"
+    publish_hz: 10.0
+    lookahead_points: 15
+    linear_speed_mps: 0.6
+    angular_gain: 1.5
+    max_angular_speed: 1.0
+    max_odom_age_sec: 0.1
+    deadman_timeout_sec: 0.3
+
+lane_compare_ui_node:
+  ros__parameters:
+    ground_truth_topic: "/lane_ground_truth"
+    predicted_topic: "/lane_map"

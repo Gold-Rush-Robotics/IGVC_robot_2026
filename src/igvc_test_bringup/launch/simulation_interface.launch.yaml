@@ -1,5 +1,41 @@
 launch:
 
+- arg:
+    name: use_sim_time
+    default: "true"
+
+- arg:
+    name: field_usd_path
+    default: ""
+
+- arg:
+    name: robot_usd_path
+    default: ""
+
+- arg:
+    name: robot_entity_name
+    default: "igvc_robot"
+
+- arg:
+    name: robot_spawn_x
+    default: "8.128949212924178"
+
+- arg:
+    name: robot_spawn_y
+    default: "16.63174225312982"
+
+- arg:
+    name: robot_spawn_z
+    default: "0.0820257550378943"
+
+- arg:
+    name: robot_spawn_yaw_rad
+    default: "-3.141592653589793"
+
+- arg:
+    name: auto_play
+    default: "true"
+
 - node:
     pkg: igvc_simulation_interface
     exec: simulation_interface
@@ -7,4 +43,20 @@ launch:
     output: screen
     param:
       - name: use_sim_time
-        value:  true
+        value:  $(var use_sim_time)
+      - name: field_usd_path
+        value: $(var field_usd_path)
+      - name: robot_usd_path
+        value: $(var robot_usd_path)
+      - name: robot_entity_name
+        value: $(var robot_entity_name)
+      - name: robot_spawn_x
+        value: $(var robot_spawn_x)
+      - name: robot_spawn_y
+        value: $(var robot_spawn_y)
+      - name: robot_spawn_z
+        value: $(var robot_spawn_z)
+      - name: robot_spawn_yaw_rad
+        value: $(var robot_spawn_yaw_rad)
+      - name: auto_play
+        value: $(var auto_play)

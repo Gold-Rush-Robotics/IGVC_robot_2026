@@ -85,6 +85,23 @@ lane_segmentation_node:
     model_half:    true
     model_img_size: 640
 
+    # ── Preprocessor (CLAHE + Gaussian blur, applied before letterbox) ──
+    # Aggressive values tuned for Isaac Sim domain gap:
+    #   - CLAHE boosts contrast on the flat sim lighting / textureless ground
+    #   - Blur suppresses high-frequency rendering artefacts that trigger
+    #     false drivable-area and lane-line positives
+    model_preprocess:  true
+    model_clahe_clip:  4.0          # higher clip → stronger local contrast
+    model_clahe_tile:  [8, 8]
+    model_blur_ksize:  [9, 9]       # 9×9 Gaussian (was 5×5 default)
+    model_blur_sigma:  2.0          # explicit sigma so blur is well-defined
+
+    # ── Post-processing cleanup (drivable-area mask) ─────────────────
+    # Morphological open (erode then dilate) removes isolated speckles
+    # that appear in sim but not on real roads.
+    da_morph_kernel_px:   15        # kernel size for morph open on DA mask
+    min_da_component_px:  3000      # drop DA blobs smaller than this (px)
+
     # Mask → point-cloud rasterisation
     da_subsample_px: 6             # drivable-area stride (cheap, dense)
     ll_subsample_px: 2             # lane-line stride (sparse, precise)
