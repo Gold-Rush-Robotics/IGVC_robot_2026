@@ -129,9 +129,18 @@ class LaneSegmentationNode(Node):
         self.da_subsample_px        = max(1, int(p('da_subsample_px', 6)))
         self.ll_subsample_px        = max(1, int(p('ll_subsample_px', 2)))
         self.min_lane_component_px  = int(p('min_lane_component_px', 150))
+        self.min_da_component_px    = int(p('min_da_component_px', 0))
         self.max_points_per_frame   = int(p('max_points_per_frame', 4000))
         self.publish_mask_overlay   = p('publish_mask_overlay',     True)
         self.lane_marker_topic      = p('lane_marker_topic',        '/lane_segmentation/lanes')
+
+        # ── Preprocessor / mask cleanup (tunable for sim domain gap) ─
+        self.model_preprocess       = bool(p('model_preprocess', True))
+        self.model_clahe_clip       = float(p('model_clahe_clip', 2.0))
+        self.model_clahe_tile       = [int(x) for x in p('model_clahe_tile', [8, 8])]
+        self.model_blur_ksize       = [int(x) for x in p('model_blur_ksize', [5, 5])]
+        self.model_blur_sigma       = float(p('model_blur_sigma', 0.0))
+        self.da_morph_kernel_px     = int(p('da_morph_kernel_px', 0))
 
         if not self.model_weights:
             raise RuntimeError(
@@ -149,6 +158,11 @@ class LaneSegmentationNode(Node):
             device=self.model_device,
             half=self.model_half,
             img_size=self.model_img_size,
+            preprocess=self.model_preprocess,
+            clahe_clip=self.model_clahe_clip,
+            clahe_tile=tuple(self.model_clahe_tile),
+            blur_ksize=tuple(self.model_blur_ksize),
+            blur_sigma=self.model_blur_sigma,
         )
         self.model.load()
         if self.model.fallback_warning:
@@ -459,6 +473,24 @@ class LaneSegmentationNode(Node):
                 f'mask ({da_area}px); discarding as free-space bleed.',
                 throttle_duration_sec=5.0)
             ll_mask = np.zeros_like(ll_mask)
+
+        # ── Morphological cleanup of drivable-area mask (removes sim noise) ──
+        if self.da_morph_kernel_px > 1:
+            k = self.da_morph_kernel_px | 1  # ensure odd
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (k, k))
+            da_mask = cv2.morphologyEx(
+                da_mask.astype(np.uint8), cv2.MORPH_OPEN, kernel)
+
+        # ── Minimum component size filter on drivable-area mask ──
+        if self.min_da_component_px > 0 and np.any(da_mask):
+            n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                da_mask.astype(np.uint8), connectivity=8)
+            clean = np.zeros_like(da_mask)
+            for lbl in range(1, n_labels):
+                if stats[lbl, cv2.CC_STAT_AREA] >= self.min_da_component_px:
+                    clean[labels == lbl] = 1
+            da_mask = clean
 
         # ── Apply ROI + chassis mask to both seg outputs ──
         da_mask = self._apply_mask_roi(da_mask)
