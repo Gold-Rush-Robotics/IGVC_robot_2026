@@ -48,19 +48,17 @@ lane_segmentation_node:
     keep_last_grid_on_miss: true
 
     # ── Lane-line correlation / map alignment ───────────────────────
-    enable_line_correlation: true
-    line_correlation_max_age_sec: 0.5
-    line_correlation_match_distance_m: 0.35
-    line_correlation_match_angle_rad: 0.35
-    line_correlation_min_overlap_ratio: 0.25
-    line_correlation_new_line_min_length_m: 0.6
-    line_correlation_min_points: 4
-    line_correlation_nudge_alpha: 0.15
-    line_correlation_reject_between_parallel_lines: true
-    line_correlation_debug: false
+    # Pose deduplication: skip persistent map write if the robot hasn't moved
+    # enough since the last write (prevents lane cells stacking on top of each
+    # other when YOLO frames are slower than the robot motion).
+    min_pose_change_m:   0.05
+    min_pose_change_rad: 0.02
 
-    # ── Persistent (fixed-frame) lane map ───────────────────────────
-    persistent_map_frame:      "map"
+    # ── Persistent (fixed-frame) lane map ─────────────────────────────
+    # Use odom frame (not map) so TF lookup goes directly to ZED odom
+    # (~100 Hz) instead of through the EKF (30 Hz) — fixes the root cause
+    # of lanes stacking at the same world position.
+    persistent_map_frame:      "odom"
     persistent_pose_source:    "odom"
     odom_topic:                "/front_zed_camera_x/zed_node/odom"
     persistent_map_size_m:    40.0
@@ -87,6 +85,23 @@ lane_segmentation_node:
     model_half:    true
     model_img_size: 640
 
+    # ── Preprocessor (CLAHE + Gaussian blur, applied before letterbox) ──
+    # Aggressive values tuned for Isaac Sim domain gap:
+    #   - CLAHE boosts contrast on the flat sim lighting / textureless ground
+    #   - Blur suppresses high-frequency rendering artefacts that trigger
+    #     false drivable-area and lane-line positives
+    model_preprocess:  true
+    model_clahe_clip:  4.0          # higher clip → stronger local contrast
+    model_clahe_tile:  [8, 8]
+    model_blur_ksize:  [9, 9]       # 9×9 Gaussian (was 5×5 default)
+    model_blur_sigma:  2.0          # explicit sigma so blur is well-defined
+
+    # ── Post-processing cleanup (drivable-area mask) ─────────────────
+    # Morphological open (erode then dilate) removes isolated speckles
+    # that appear in sim but not on real roads.
+    da_morph_kernel_px:   15        # kernel size for morph open on DA mask
+    min_da_component_px:  3000      # drop DA blobs smaller than this (px)
+
     # Mask → point-cloud rasterisation
     da_subsample_px: 6             # drivable-area stride (cheap, dense)
     ll_subsample_px: 2             # lane-line stride (sparse, precise)
@@ -101,3 +116,18 @@ lane_segmentation_node:
     # ── Debug ───────────────────────────────────────────────────────
     publish_overlay: true
     lane_marker_topic: "/lane_segmentation/lanes"
+
+    # ── Depth-based obstacle masking ─────────────────────────────────
+    # After YOLOPv2 inference, pixels whose 3-D base_link height lands in the
+    # obstacle band are zeroed out of both the drivable-area and lane-line masks.
+    # This prevents the model from hallucinating lane lines over barrels / cones.
+    #
+    # Tune obstacle_z_min_m upward if ground reflections still trigger false mask.
+    # Tune obstacle_dilation_px upward if silhouette halo edges remain visible.
+    obstacle_mask_enabled:    true
+    obstacle_z_min_m:         0.15    # base_link Z above this → obstacle (not ground)
+    obstacle_z_max_m:         2.5     # above this → sky/ceiling, ignore
+    obstacle_depth_min_m:     0.3     # ignore very-close depth noise
+    obstacle_depth_max_m:     8.0     # ignore distant background objects
+    obstacle_dilation_px:     30      # expand mask to cover halo / shadow edges
+    camera_height_fallback_m: 0.45    # approximate camera mount height (fallback only)

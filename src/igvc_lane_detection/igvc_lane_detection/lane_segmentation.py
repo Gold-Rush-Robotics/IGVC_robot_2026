@@ -86,7 +86,7 @@ class LaneSegmentationNode(Node):
             float(p('fusion_timeout_sec', 0.1)), self.max_time_offset_sec)
         self.keep_last_grid_on_miss = p('keep_last_grid_on_miss',   True)
         self.occupancy_grid_frame   = p('occupancy_grid_frame',    self.base_frame)
-        self.sync_queue_size        = max(1, int(p('sync_queue_size', 2)))
+        self.sync_queue_size        = max(1, int(p('sync_queue_size', 1)))
         self.sync_slop_sec          = float(p('sync_slop_sec', 0.1))
         self.max_frame_age_sec      = float(p('max_frame_age_sec', 0.5))
 
@@ -117,17 +117,9 @@ class LaneSegmentationNode(Node):
         self.persist_pose_source  = p('persistent_pose_source',      'tf')
         self.odom_topic           = p('odom_topic',                  '/odom')
 
-        # ── Lane-line correlation / map-alignment gate ───────────────
-        self.enable_line_correlation = bool(p('enable_line_correlation', True))
-        self.line_corr_max_age_sec = float(p('line_correlation_max_age_sec', 0.5))
-        self.line_corr_match_dist_m = float(p('line_correlation_match_distance_m', 0.35))
-        self.line_corr_match_angle_rad = float(p('line_correlation_match_angle_rad', 0.35))
-        self.line_corr_min_overlap = float(p('line_correlation_min_overlap_ratio', 0.25))
-        self.line_corr_new_min_length_m = float(p('line_correlation_new_line_min_length_m', 0.6))
-        self.line_corr_min_points = int(p('line_correlation_min_points', 4))
-        self.line_corr_nudge_alpha = float(p('line_correlation_nudge_alpha', 0.15))
-        self.line_corr_reject_between = bool(p('line_correlation_reject_between_parallel_lines', True))
-        self.line_corr_debug = bool(p('line_correlation_debug', False))
+        # ── Pose deduplication — skip persistent write if not moved ────
+        self.min_pose_change_m   = float(p('min_pose_change_m',   0.05))
+        self.min_pose_change_rad = float(p('min_pose_change_rad', 0.02))
 
         # ── Segmentation-specific parameters ─────────────────────────
         self.model_weights          = p('model_weights',            '')
@@ -137,9 +129,27 @@ class LaneSegmentationNode(Node):
         self.da_subsample_px        = max(1, int(p('da_subsample_px', 6)))
         self.ll_subsample_px        = max(1, int(p('ll_subsample_px', 2)))
         self.min_lane_component_px  = int(p('min_lane_component_px', 150))
+        self.min_da_component_px    = int(p('min_da_component_px', 0))
         self.max_points_per_frame   = int(p('max_points_per_frame', 4000))
         self.publish_mask_overlay   = p('publish_mask_overlay',     True)
         self.lane_marker_topic      = p('lane_marker_topic',        '/lane_segmentation/lanes')
+
+        # ── Preprocessor / mask cleanup (tunable for sim domain gap) ─
+        self.model_preprocess       = bool(p('model_preprocess', True))
+        self.model_clahe_clip       = float(p('model_clahe_clip', 2.0))
+        self.model_clahe_tile       = [int(x) for x in p('model_clahe_tile', [8, 8])]
+        self.model_blur_ksize       = [int(x) for x in p('model_blur_ksize', [5, 5])]
+        self.model_blur_sigma       = float(p('model_blur_sigma', 0.0))
+        self.da_morph_kernel_px     = int(p('da_morph_kernel_px', 0))
+
+        # ── Depth-based obstacle masking ─────────────────────────────
+        self.obstacle_mask_enabled      = bool(p('obstacle_mask_enabled', False))
+        self.obstacle_z_min_m           = float(p('obstacle_z_min_m', 0.15))
+        self.obstacle_z_max_m           = float(p('obstacle_z_max_m', 2.5))
+        self.obstacle_depth_min_m       = float(p('obstacle_depth_min_m', 0.3))
+        self.obstacle_depth_max_m       = float(p('obstacle_depth_max_m', 8.0))
+        self.obstacle_dilation_px       = int(p('obstacle_dilation_px', 25))
+        self.camera_height_fallback_m   = float(p('camera_height_fallback_m', 0.45))
 
         if not self.model_weights:
             raise RuntimeError(
@@ -157,6 +167,11 @@ class LaneSegmentationNode(Node):
             device=self.model_device,
             half=self.model_half,
             img_size=self.model_img_size,
+            preprocess=self.model_preprocess,
+            clahe_clip=self.model_clahe_clip,
+            clahe_tile=tuple(self.model_clahe_tile),
+            blur_ksize=tuple(self.model_blur_ksize),
+            blur_sigma=self.model_blur_sigma,
         )
         self.model.load()
         if self.model.fallback_warning:
@@ -218,8 +233,7 @@ class LaneSegmentationNode(Node):
         self._last_persistent_stamp = None
         self._cam_state: dict = {}
         self._latest_odom: Optional[Odometry] = None
-        self._line_tracks: dict = {}
-        self._next_line_track_id = 0
+        self._last_persist_pose: Optional[Tuple] = None
 
         self.tf_buffer   = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -337,6 +351,18 @@ class LaneSegmentationNode(Node):
             return
 
         tx, ty, _tz, yaw, _orientation = pose
+
+        # Dedup: skip write if robot hasn't moved enough since last update.
+        # Prevents lane cells stacking on top of each other when YOLO frames
+        # share the same effective pose (e.g. slow inference, stationary robot).
+        if self._last_persist_pose is not None:
+            lx, ly, lyaw = self._last_persist_pose
+            dist = np.hypot(tx - lx, ty - ly)
+            dang = abs(((yaw - lyaw + np.pi) % (2.0 * np.pi)) - np.pi)
+            if dist < self.min_pose_change_m and dang < self.min_pose_change_rad:
+                return
+        self._last_persist_pose = (tx, ty, yaw)
+
         cos_y, sin_y = np.cos(yaw), np.sin(yaw)
         n = self._pN
 
@@ -407,6 +433,7 @@ class LaneSegmentationNode(Node):
 
     def _on_images(self, rgb_msg: Image, depth_msg: Image, cam_idx: int) -> None:
         self._got_frame = True
+
         process_time = self.get_clock().now()
         process_stamp = process_time.to_msg()
 
@@ -418,20 +445,6 @@ class LaneSegmentationNode(Node):
                 f'Dropping stale synced frame from cam[{cam_idx}] '
                 f'(age={frame_age:.2f}s > {self.max_frame_age_sec:.2f}s). '
                 'YOLO/input is behind camera rate.',
-                throttle_duration_sec=2.0)
-            return
-
-        if not self._within_time_budget(rgb_msg.header.stamp, depth_msg.header.stamp):
-            self.get_logger().warn(
-                f'Dropping cam[{cam_idx}] RGB/depth pair: stamp delta exceeds '
-                f'{self.max_time_offset_sec:.3f}s.',
-                throttle_duration_sec=2.0)
-            return
-
-        if self._stamp_age_sec(rgb_msg.header.stamp) > self.max_time_offset_sec:
-            self.get_logger().warn(
-                f'Dropping cam[{cam_idx}] frame: camera stamp is older than '
-                f'{self.max_time_offset_sec:.3f}s.',
                 throttle_duration_sec=2.0)
             return
 
@@ -470,6 +483,24 @@ class LaneSegmentationNode(Node):
                 throttle_duration_sec=5.0)
             ll_mask = np.zeros_like(ll_mask)
 
+        # ── Morphological cleanup of drivable-area mask (removes sim noise) ──
+        if self.da_morph_kernel_px > 1:
+            k = self.da_morph_kernel_px | 1  # ensure odd
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (k, k))
+            da_mask = cv2.morphologyEx(
+                da_mask.astype(np.uint8), cv2.MORPH_OPEN, kernel)
+
+        # ── Minimum component size filter on drivable-area mask ──
+        if self.min_da_component_px > 0 and np.any(da_mask):
+            n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                da_mask.astype(np.uint8), connectivity=8)
+            clean = np.zeros_like(da_mask)
+            for lbl in range(1, n_labels):
+                if stats[lbl, cv2.CC_STAT_AREA] >= self.min_da_component_px:
+                    clean[labels == lbl] = 1
+            da_mask = clean
+
         # ── Apply ROI + chassis mask to both seg outputs ──
         da_mask = self._apply_mask_roi(da_mask)
         ll_mask = self._apply_mask_roi(ll_mask)
@@ -486,16 +517,27 @@ class LaneSegmentationNode(Node):
                     f'falling back to pinhole projection for cam[{cam_idx}]',
                     throttle_duration_sec=2.0)
 
+        # ── Depth-based obstacle masking ──
+        # Zeros out pixels where 3-D base_link height lands in the obstacle
+        # band — suppresses YOLOPv2 hallucinations over barrel/cone geometry.
+        if self.obstacle_mask_enabled and cam_idx in self.K:
+            obs_mask = self._build_obstacle_mask(depth, cam_tf, cam_idx)
+            if obs_mask is not None:
+                # Resize obs_mask to match seg-head resolution if needed
+                if obs_mask.shape != da_mask.shape:
+                    obs_mask = cv2.resize(
+                        obs_mask.astype(np.uint8),
+                        (da_mask.shape[1], da_mask.shape[0]),
+                        interpolation=cv2.INTER_NEAREST).astype(bool)
+                da_mask[obs_mask] = 0
+                ll_mask[obs_mask] = 0
+
         # ── Project masks into base_link ──
         free_pts = self._project_mask_points(
             da_mask, depth, cam_idx, cam_tf,
             stride=self.da_subsample_px)
         lane_pts, lane_components = self._project_lane_mask(
             ll_mask, depth, cam_idx, cam_tf)
-
-        lane_components = self._correlate_lane_components(
-            lane_components, rgb_msg.header.stamp)
-        lane_pts = [pt for comp in lane_components for pt in comp]
 
         # ── Publish overlay ──
         if self.publish_overlay and cam_idx in self.overlay_pubs:
@@ -514,13 +556,9 @@ class LaneSegmentationNode(Node):
             self.latest_grid = self._build_grid(
                 fused_free, fused_lane, process_stamp)
             self.grid_pub.publish(self.latest_grid)
-            self._update_persistent_map(fused_lane, None)
+            self._update_persistent_map(fused_lane, rgb_msg.header.stamp)
         elif self.keep_last_grid_on_miss:
-            if self._within_time_budget(self.latest_grid.header.stamp, rgb_msg.header.stamp):
-                self.grid_pub.publish(self.latest_grid)
-            else:
-                self.latest_grid = self._empty_grid(rgb_msg.header.stamp)
-                self.grid_pub.publish(self.latest_grid)
+            self.grid_pub.publish(self.latest_grid)
         else:
             self.latest_grid = self._empty_grid(process_stamp)
             self.grid_pub.publish(self.latest_grid)
@@ -543,15 +581,6 @@ class LaneSegmentationNode(Node):
                 active.append(state)
         return active
 
-    def _within_time_budget(self, a, b) -> bool:
-        dt = abs((Time.from_msg(a) - Time.from_msg(b)).nanoseconds / 1e9)
-        return dt <= self.max_time_offset_sec
-
-    def _stamp_age_sec(self, stamp) -> float:
-        stamp_t = Time.from_msg(stamp)
-        if stamp_t.nanoseconds == 0:
-            return 0.0
-        return abs((self.get_clock().now() - stamp_t).nanoseconds / 1e9)
 
     def _fuse_points(self, stamp) -> Tuple[List, List]:
         free_pts: List[Tuple[float, float]] = []
@@ -562,278 +591,84 @@ class LaneSegmentationNode(Node):
         return free_pts, lane_pts
 
     # ═══════════════════════════════════════════════════════════════════
-    # Lane-line correlation
-    # ═══════════════════════════════════════════════════════════════════
-
-    def _correlate_lane_components(
-        self,
-        components: Sequence[Sequence[Tuple[float, float]]],
-        stamp,
-    ) -> List[List[Tuple[float, float]]]:
-        if not self.enable_line_correlation or not components:
-            return [list(comp) for comp in components]
-
-        tf = lookup_tf(self.tf_buffer, self.persist_frame, self.base_frame, stamp)
-        if tf is None:
-            self.get_logger().debug(
-                'Line correlation skipped: no stamped TF to persistent frame.',
-                throttle_duration_sec=2.0)
-            return [list(comp) for comp in components]
-
-        self._prune_line_tracks(stamp)
-
-        accepted: List[List[Tuple[float, float]]] = []
-        for comp in components:
-            desc = self._fit_component_line(comp, tf)
-            if desc is None:
-                self._debug_line_corr('reject: too few or incoherent points')
-                continue
-
-            best_track, match = self._best_line_track_match(desc)
-            persistent_score = self._persistent_hit_score(desc['world_points'])
-            matched = (
-                best_track is not None
-                and match is not None
-                and match['distance'] <= self.line_corr_match_dist_m
-                and match['angle'] <= self.line_corr_match_angle_rad
-                and match['overlap'] >= self.line_corr_min_overlap
-            )
-
-            if matched:
-                world_points = self._nudge_world_points_to_track(
-                    desc['world_points'], best_track)
-                base_points = self._world_points_to_base(world_points, tf)
-                self._update_line_track(best_track['id'], world_points, stamp)
-                accepted.append(base_points)
-                self._debug_line_corr(
-                    f"match track={best_track['id']} dist={match['distance']:.2f} "
-                    f"angle={match['angle']:.2f} overlap={match['overlap']:.2f} "
-                    f"map={persistent_score:.2f}")
-                continue
-
-            if desc['length'] < self.line_corr_new_min_length_m:
-                self._debug_line_corr(f"reject: short new line len={desc['length']:.2f}")
-                continue
-
-            if self._is_between_parallel_tracks(desc) and persistent_score < 0.25:
-                self._debug_line_corr('reject: between stable parallel tracks')
-                continue
-
-            track_id = self._create_line_track(desc['world_points'], stamp)
-            accepted.append(list(comp))
-            self._debug_line_corr(
-                f"new track={track_id} len={desc['length']:.2f} map={persistent_score:.2f}")
-
-        return accepted
-
-    def _fit_component_line(self, comp, tf):
-        if len(comp) < self.line_corr_min_points:
-            return None
-
-        base_points = np.asarray(comp, dtype=np.float32)
-        if base_points.ndim != 2 or base_points.shape[1] != 2:
-            return None
-
-        world_points = self._base_points_to_world(base_points, tf)
-        return self._line_descriptor(world_points)
-
-    def _base_points_to_world(self, base_points: np.ndarray, tf) -> np.ndarray:
-        q = tf.transform.rotation
-        yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
-        cos_y, sin_y = np.cos(yaw), np.sin(yaw)
-        tx = tf.transform.translation.x
-        ty = tf.transform.translation.y
-
-        fwd = base_points[:, 0]
-        lat = base_points[:, 1]
-        world = np.empty_like(base_points, dtype=np.float32)
-        world[:, 0] = tx + cos_y * fwd - sin_y * lat
-        world[:, 1] = ty + sin_y * fwd + cos_y * lat
-        return world
-
-    def _world_points_to_base(self, world_points: np.ndarray, tf) -> List[Tuple[float, float]]:
-        q = tf.transform.rotation
-        yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
-        cos_y, sin_y = np.cos(yaw), np.sin(yaw)
-        tx = tf.transform.translation.x
-        ty = tf.transform.translation.y
-
-        dx = world_points[:, 0] - tx
-        dy = world_points[:, 1] - ty
-        fwd = cos_y * dx + sin_y * dy
-        lat = -sin_y * dx + cos_y * dy
-        return [(float(x), float(y)) for x, y in zip(fwd.tolist(), lat.tolist())]
-
-    def _line_descriptor(self, world_points: np.ndarray):
-        if world_points.shape[0] < self.line_corr_min_points:
-            return None
-
-        centroid = np.mean(world_points, axis=0)
-        centered = world_points - centroid
-        try:
-            _, singular_values, vh = np.linalg.svd(centered, full_matrices=False)
-        except np.linalg.LinAlgError:
-            return None
-
-        direction = vh[0].astype(np.float32)
-        norm = float(np.linalg.norm(direction))
-        if norm < 1e-6:
-            return None
-        direction /= norm
-
-        projections = centered @ direction
-        p_min = float(np.min(projections))
-        p_max = float(np.max(projections))
-        length = p_max - p_min
-        if length < 1e-3:
-            return None
-
-        normal = np.array([-direction[1], direction[0]], dtype=np.float32)
-        lateral_scatter = float(np.std(centered @ normal))
-        longitudinal_scatter = float(np.std(projections))
-        if lateral_scatter > max(0.15, self.line_corr_match_dist_m * 1.5):
-            return None
-
-        return {
-            'world_points': world_points,
-            'centroid': centroid.astype(np.float32),
-            'direction': direction,
-            'normal': normal,
-            'p_min': p_min,
-            'p_max': p_max,
-            'length': float(length),
-            'lateral_scatter': lateral_scatter,
-            'longitudinal_scatter': longitudinal_scatter,
-        }
-
-    def _best_line_track_match(self, desc):
-        best_track = None
-        best_match = None
-        best_score = None
-        for track in self._line_tracks.values():
-            match = self._line_match(desc, track)
-            score = match['distance'] + match['angle'] - match['overlap']
-            if best_score is None or score < best_score:
-                best_score = score
-                best_track = track
-                best_match = match
-        return best_track, best_match
-
-    def _line_match(self, desc, track):
-        direction = desc['direction']
-        track_direction = track['direction']
-        dot = float(np.clip(abs(np.dot(direction, track_direction)), 0.0, 1.0))
-        angle = float(np.arccos(dot))
-
-        delta = desc['centroid'] - track['centroid']
-        distance = float(abs(np.dot(delta, track['normal'])))
-
-        projections = (desc['world_points'] - track['centroid']) @ track_direction
-        new_min = float(np.min(projections))
-        new_max = float(np.max(projections))
-        overlap = max(0.0, min(new_max, track['p_max']) - max(new_min, track['p_min']))
-        denom = max(0.05, min(new_max - new_min, track['p_max'] - track['p_min']))
-        overlap_ratio = float(np.clip(overlap / denom, 0.0, 1.0))
-        return {'distance': distance, 'angle': angle, 'overlap': overlap_ratio}
-
-    def _nudge_world_points_to_track(self, world_points: np.ndarray, track) -> np.ndarray:
-        alpha = float(np.clip(self.line_corr_nudge_alpha, 0.0, 1.0))
-        if alpha <= 0.0:
-            return world_points
-
-        projections = (world_points - track['centroid']) @ track['direction']
-        closest = track['centroid'] + projections[:, None] * track['direction']
-        return ((1.0 - alpha) * world_points + alpha * closest).astype(np.float32)
-
-    def _persistent_hit_score(self, world_points: np.ndarray) -> float:
-        if world_points.size == 0:
-            return 0.0
-
-        radius_cells = max(1, int(np.ceil(self.line_corr_match_dist_m / self.persist_res)))
-        scores = []
-        for wx, wy in world_points[::max(1, len(world_points) // 20)]:
-            col, row = self._world_to_pgrid(float(wx), float(wy))
-            row_lo = max(0, row - radius_cells)
-            row_hi = min(self._pN, row + radius_cells + 1)
-            col_lo = max(0, col - radius_cells)
-            col_hi = min(self._pN, col + radius_cells + 1)
-            if row_lo >= row_hi or col_lo >= col_hi:
-                continue
-            scores.append(float(np.max(self._phits[row_lo:row_hi, col_lo:col_hi])))
-        if not scores:
-            return 0.0
-        return float(np.clip(np.mean(scores) / max(self.persist_threshold, 1e-6), 0.0, 1.0))
-
-    def _is_between_parallel_tracks(self, desc) -> bool:
-        if not self.line_corr_reject_between or len(self._line_tracks) < 2:
-            return False
-
-        parallel = []
-        for track in self._line_tracks.values():
-            match = self._line_match(desc, track)
-            if match['angle'] <= self.line_corr_match_angle_rad:
-                signed_distance = float(np.dot(track['centroid'] - desc['centroid'], desc['normal']))
-                parallel.append((signed_distance, match['distance']))
-
-        if len(parallel) < 2:
-            return False
-
-        left = [p for p in parallel if p[0] > self.line_corr_match_dist_m]
-        right = [p for p in parallel if p[0] < -self.line_corr_match_dist_m]
-        if not left or not right:
-            return False
-
-        nearest_left = min(abs(p[0]) for p in left)
-        nearest_right = min(abs(p[0]) for p in right)
-        return nearest_left < 2.0 and nearest_right < 2.0
-
-    def _create_line_track(self, world_points: np.ndarray, stamp) -> int:
-        desc = self._line_descriptor(world_points)
-        if desc is None:
-            return -1
-        track_id = self._next_line_track_id
-        self._next_line_track_id += 1
-        self._line_tracks[track_id] = {
-            'id': track_id,
-            'stamp': stamp,
-            'confidence': 1.0,
-            **{key: value for key, value in desc.items() if key != 'world_points'},
-            'world_points': world_points,
-        }
-        return track_id
-
-    def _update_line_track(self, track_id: int, world_points: np.ndarray, stamp) -> None:
-        if track_id not in self._line_tracks:
-            self._create_line_track(world_points, stamp)
-            return
-        desc = self._line_descriptor(world_points)
-        if desc is None:
-            return
-        confidence = min(10.0, self._line_tracks[track_id].get('confidence', 1.0) + 1.0)
-        self._line_tracks[track_id].update({
-            'stamp': stamp,
-            'confidence': confidence,
-            **{key: value for key, value in desc.items() if key != 'world_points'},
-            'world_points': world_points,
-        })
-
-    def _prune_line_tracks(self, stamp) -> None:
-        now_t = Time.from_msg(stamp)
-        stale = []
-        for track_id, track in self._line_tracks.items():
-            age = abs((now_t - Time.from_msg(track['stamp'])).nanoseconds / 1e9)
-            if age > self.line_corr_max_age_sec:
-                stale.append(track_id)
-        for track_id in stale:
-            del self._line_tracks[track_id]
-
-    def _debug_line_corr(self, msg: str) -> None:
-        if self.line_corr_debug:
-            self.get_logger().info(f'line_correlation: {msg}', throttle_duration_sec=1.0)
-
-    # ═══════════════════════════════════════════════════════════════════
     # Mask → base_link projection
     # ═══════════════════════════════════════════════════════════════════
+
+    def _build_obstacle_mask(self, depth: np.ndarray, cam_tf, cam_idx: int) -> Optional[np.ndarray]:
+        """Return a bool mask (same H×W as depth) where pixels are occupied by obstacles.
+
+        Uses the ZED depth to project every pixel into base_link 3-D space.  Any
+        pixel whose base_link Z height lands between ``obstacle_z_min_m`` and
+        ``obstacle_z_max_m`` is flagged as an obstacle and masked out of the
+        segmentation heads, preventing YOLOPv2 from hallucinating lane lines over
+        barrel / cone geometry.
+
+        The computation is fully vectorised — no Python pixel loops.
+        """
+        K = self.K.get(cam_idx)
+        if K is None:
+            return None
+
+        dh, dw = depth.shape[:2]
+        fx, fy = K[0, 0], K[1, 1]
+        cx, cy = K[0, 2], K[1, 2]
+
+        # Scale intrinsics if depth image is a different resolution from the
+        # camera_info resolution (rare with ZED, but guard anyway).
+        # K is delivered at rgb resolution; depth may differ.
+        # We just use the ratio to the K resolution we received.
+        # (ZED delivers depth at the same resolution as colour, so this is
+        #  typically a no-op, but keeps the code correct in general.)
+        rgb_h = K[1, 2] * 2.0  # approximate from principal point
+        rgb_w = K[0, 2] * 2.0
+        if rgb_h > 0 and rgb_w > 0:
+            sx = dw / rgb_w
+            sy = dh / rgb_h
+            fx, fy = fx * sx, fy * sy
+            cx, cy = cx * sx, cy * sy
+
+        # Build pixel coordinate grids
+        us = np.arange(dw, dtype=np.float32)
+        vs = np.arange(dh, dtype=np.float32)
+        ug, vg = np.meshgrid(us, vs)  # (dh, dw)
+
+        d = depth.astype(np.float32)
+
+        # Valid depth gate
+        valid = np.isfinite(d) & (d > self.obstacle_depth_min_m) & (d < self.obstacle_depth_max_m)
+
+        # Camera-frame 3-D coords
+        xc = (ug - cx) * d / fx
+        yc = (vg - cy) * d / fy
+        zc = d  # z forward in camera optical frame
+
+        if cam_tf is not None:
+            t = cam_tf.transform.translation
+            r = cam_tf.transform.rotation
+            R = np.array([
+                [1 - 2*(r.y*r.y + r.z*r.z),   2*(r.x*r.y - r.z*r.w),   2*(r.x*r.z + r.y*r.w)],
+                [2*(r.x*r.y + r.z*r.w),   1 - 2*(r.x*r.x + r.z*r.z),   2*(r.y*r.z - r.x*r.w)],
+                [2*(r.x*r.z - r.y*r.w),   2*(r.y*r.z + r.x*r.w),   1 - 2*(r.x*r.x + r.y*r.y)],
+            ], dtype=np.float64)
+            # Stack into (3, N), transform, then reshape back
+            pts = np.stack([xc.ravel(), yc.ravel(), zc.ravel()], axis=0)  # (3, N)
+            pts_base = R @ pts  # (3, N)
+            bz = pts_base[2].reshape(dh, dw).astype(np.float32) + float(t.z)
+        else:
+            # Approximate: camera points straight forward, height from param
+            # bz ≈ camera_height - Y_camera_frame (Y down in optical frame)
+            bz = (self.camera_height_fallback_m - yc).astype(np.float32)
+
+        # Obstacle: height in [z_min, z_max] with valid depth
+        obs = valid & (bz > self.obstacle_z_min_m) & (bz < self.obstacle_z_max_m)
+
+        # Dilate to cover silhouette / shadow halo edges
+        if self.obstacle_dilation_px > 1:
+            k = self.obstacle_dilation_px | 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            obs = cv2.dilate(obs.astype(np.uint8), kernel).astype(bool)
+
+        return obs
 
     def _apply_mask_roi(self, mask: np.ndarray) -> np.ndarray:
         """Zero-out chassis + out-of-ROI regions of a binary mask."""
@@ -1176,8 +1011,6 @@ class LaneSegmentationNode(Node):
     # ═══════════════════════════════════════════════════════════════════
 
     def _republish_grid(self) -> None:
-        if self._stamp_age_sec(self.latest_grid.header.stamp) > self.max_time_offset_sec:
-            return
         self.grid_pub.publish(self.latest_grid)
 
     def _watchdog(self) -> None:

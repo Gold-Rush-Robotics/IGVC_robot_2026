@@ -7,10 +7,12 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
-# uncomment the following section in order to fill in
-# further dependencies manually.
-# find_package(<dependency> REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 
+# Install Python modules
+ament_python_install_package(igvc_test_bringup)
+
+# Install launch and config directories
 install(
   DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
