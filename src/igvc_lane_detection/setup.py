@@ -45,6 +45,7 @@ setup(
             'track_ground_truth_node = igvc_lane_detection.track_ground_truth_node:main',
             'lane_eval_node = igvc_lane_detection.lane_eval_node:main',
             'midpoint_twist_test_node = igvc_lane_detection.midpoint_twist_test_node:main',
+            'gt_nav_bridge_node = igvc_lane_detection.gt_nav_bridge_node:main',
         ],
     },
 )

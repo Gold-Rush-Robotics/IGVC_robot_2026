@@ -149,8 +149,11 @@ def _track_points_from_image(image_path: str, pixels_per_meter: float) -> List[T
 
     points_m: List[Tuple[float, float]] = []
     for x, y in center_px:
-        wx = float((x - cx) / ppm)
-        wy = float((cy - y) / ppm)
+        # X is negated to match USD floor placement (pygame_to_usd_xy negates X).
+        wx = float(-(x - cx) / ppm)
+        # JSON uses y-down (Pygame/image convention, matching USD floor placement).
+        # Do NOT flip y here so the centreline matches track_points.json exactly.
+        wy = float((y - cy) / ppm)
         points_m.append((wx, wy))
     return points_m
 
@@ -186,6 +189,25 @@ class TrackGroundTruthNode(Node):
         track_image_file = str(self.get_parameter('track_image_file').value)
         self._track_image_file = track_image_file
         image_ppm = float(self.get_parameter('track_image_pixels_per_meter').value)
+
+        # Prefer pixels_per_meter from the track JSON when available, so the
+        # image-derived lane polygon scales consistently with centerline_m
+        # (which uses the same ppm). The parameter is only a fallback.
+        if track_file:
+            try:
+                _ppm_payload = json.loads(Path(track_file).read_text(encoding='utf-8'))
+                _json_ppm = _ppm_payload.get('pixels_per_meter')
+                if _json_ppm is not None and float(_json_ppm) > 0.0:
+                    if abs(float(_json_ppm) - image_ppm) > 1e-3:
+                        self.get_logger().info(
+                            f'Overriding track_image_pixels_per_meter '
+                            f'({image_ppm:.3f}) with JSON pixels_per_meter '
+                            f'({float(_json_ppm):.3f}).')
+                    image_ppm = float(_json_ppm)
+            except Exception as exc:
+                self.get_logger().warn(
+                    f'Could not read pixels_per_meter from track_file: {exc}')
+
         pts = _load_track_points(track_file) if track_file else []
         if pts:
             self.get_logger().info(
@@ -223,6 +245,7 @@ class TrackGroundTruthNode(Node):
         # Read robot_start_pose from JSON track file to offset grid so start = (0,0) in odom
         self._origin_offset_x = 0.0
         self._origin_offset_y = 0.0
+        self._origin_yaw = 0.0
         if track_file:
             try:
                 payload = json.loads(Path(track_file).read_text(encoding='utf-8'))
@@ -230,8 +253,11 @@ class TrackGroundTruthNode(Node):
                 pos = pose.get('position_m', {})
                 self._origin_offset_x = float(pos.get('x', 0.0))
                 self._origin_offset_y = float(pos.get('y', 0.0))
+                self._origin_yaw = float(pose.get('yaw_rad', 0.0))
                 self.get_logger().info(
-                    f'Grid origin offset to robot start: ({self._origin_offset_x:.3f}, {self._origin_offset_y:.3f})')
+                    f'Grid origin offset to robot start: '
+                    f'({self._origin_offset_x:.3f}, {self._origin_offset_y:.3f}), '
+                    f'yaw {self._origin_yaw:.3f} rad')
             except Exception as exc:
                 self.get_logger().warn(f'Could not read robot_start_pose for grid offset: {exc}')
 
@@ -270,14 +296,24 @@ class TrackGroundTruthNode(Node):
             p1x, p1y = p2x, p2y
         return inside
 
+    def _track_to_map(self, x: float, y: float) -> Tuple[float, float]:
+        # Odom/map frame is world-axis aligned with the spawn point at (0, 0).
+        # Only translate by -origin_offset; Isaac Sim's odom inherits world axes
+        # from the spawn pose, so the map must NOT be rotated by start yaw.
+        return (
+            float(x) - self._origin_offset_x,
+            float(y) - self._origin_offset_y,
+        )
+
     def _build_midpoint_path(self, points: Sequence[Tuple[float, float]]) -> NavPath:
         msg = NavPath()
         msg.header.frame_id = self._frame_id
         for x, y in points:
+            map_x, map_y = self._track_to_map(x, y)
             pose = PoseStamped()
             pose.header.frame_id = self._frame_id
-            pose.pose.position.x = float(x) - self._origin_offset_x
-            pose.pose.position.y = float(y) - self._origin_offset_y
+            pose.pose.position.x = map_x
+            pose.pose.position.y = map_y
             pose.pose.orientation.w = 1.0
             msg.poses.append(pose)
         return msg
@@ -285,15 +321,19 @@ class TrackGroundTruthNode(Node):
     def _build_ground_truth_grid(self, points: Sequence[Tuple[float, float]], lane_polygon=None) -> OccupancyGrid:
         w = max(1, int(round(self._w_m / self._res)))
         h = max(1, int(round(self._h_m / self._res)))
-        # Shift origin so robot start position maps to (0, 0) in the odom frame
-        ox = -self._w_m / 2.0 - self._origin_offset_x
-        oy = -self._h_m / 2.0 - self._origin_offset_y
+        # Grid is published in the odom/map frame, centered on the robot start.
+        # Track coords are shifted by origin_offset so robot_start_pose becomes
+        # (0, 0) in the grid. No rotation — odom inherits world axes.
+        ox = -self._w_m / 2.0
+        oy = -self._h_m / 2.0
 
         img = np.full((h, w), -1, dtype=np.int8)
 
         def world_to_cell(x: float, y: float) -> Tuple[int, int]:
-            cx = int((x - ox) / self._res)
-            cy = int((y - oy) / self._res)
+            # Convert track coords → start-aligned map, then map → cell index.
+            map_x, map_y = self._track_to_map(x, y)
+            cx = int((map_x - ox) / self._res)
+            cy = int((map_y - oy) / self._res)
             return cx, cy
 
         # If we have lane boundary polygon from image, use it to fill the actual lane area
@@ -316,13 +356,22 @@ class TrackGroundTruthNode(Node):
                     cy_img = img_h / 2.0
                     ppm = float(image_ppm)
 
-                    wx = (pxs.astype(np.float64) - cx_img) / ppm
-                    wy = (cy_img - pys.astype(np.float64)) / ppm
-                    cxs = ((wx - ox) / self._res).astype(int)
-                    cys = ((wy - oy) / self._res).astype(int)
+                    # X is negated to match USD floor placement (pygame_to_usd_xy negates X).
+                    wx = -(pxs.astype(np.float64) - cx_img) / ppm
+                    # y-down to match JSON / USD convention — no flip.
+                    wy = (pys.astype(np.float64) - cy_img) / ppm
+                    # Convert track coords → start-translated map (no rotation).
+                    map_wx = wx - self._origin_offset_x
+                    map_wy = wy - self._origin_offset_y
+                    cxs = ((map_wx - ox) / self._res).astype(int)
+                    cys = ((map_wy - oy) / self._res).astype(int)
 
                     in_bounds = (cxs >= 0) & (cxs < w) & (cys >= 0) & (cys < h)
-                    img[cys[in_bounds], cxs[in_bounds]] = 100
+                    # Corridor cells are FREE (0). Lane-line / outside cells
+                    # remain unknown (-1). Nav2 lethal_cost_threshold >= 90
+                    # on /lane_map stays out of the corridor; navigator
+                    # _extract_centreline looks for data == 0 (free cells).
+                    img[cys[in_bounds], cxs[in_bounds]] = 0
 
                 msg = OccupancyGrid()
                 msg.header.frame_id = self._frame_id
@@ -356,7 +405,7 @@ class TrackGroundTruthNode(Node):
                             xx = cx + dx
                             yy = cy + dy
                             if 0 <= xx < w and 0 <= yy < h:
-                                img[yy, xx] = 100
+                                img[yy, xx] = 0
 
         msg = OccupancyGrid()
         msg.header.frame_id = self._frame_id

@@ -199,6 +199,7 @@ class IGVCNavigatorNode(Node):
         self._loc_status    = 'sim' if not self._gps_enabled else 'initializing'
         self._last_goal_send_time = None
         self._last_sent_path: Optional[Path] = None
+        self._last_lane_path_reason = 'not evaluated yet'
         # Backoff: don't re-send a new goal immediately after an ABORT.
         self._abort_backoff_until = None
         self._consecutive_aborts = 0
@@ -381,9 +382,10 @@ class IGVCNavigatorNode(Node):
             return
 
         if self._uses_follow_path():
-            if not self._path_is_valid(lane_path):
+            invalid_reason = self._path_invalid_reason(lane_path)
+            if invalid_reason is not None:
                 self.get_logger().warn(
-                    'No valid lane path visible — holding current course.',
+                    f'No valid lane path visible ({invalid_reason}) — holding current course.',
                     throttle_duration_sec=2.0)
                 return
             if not self._path_changed_enough(lane_path):
@@ -613,21 +615,49 @@ class IGVCNavigatorNode(Node):
 
     def _lane_path_from_costmap(self) -> Path:
         """Build a controller-facing lane path from the latest costmap."""
-        if self._grid is None or self._stamp_age_sec(self._grid.header.stamp) > self._max_costmap_age:
+        if self._grid is None:
+            self._last_lane_path_reason = 'no /lane_costmap received'
             return self._build_path([], self.get_clock().now().to_msg())
-        if self._odom_stamp is None or self._stamp_age_sec(self._odom_stamp) > self._max_odom_age:
+
+        grid_age = self._stamp_age_sec(self._grid.header.stamp)
+        if grid_age > self._max_costmap_age:
+            self._last_lane_path_reason = (
+                f'/lane_costmap stale: age {grid_age:.3f}s > {self._max_costmap_age:.3f}s')
+            return self._build_path([], self.get_clock().now().to_msg())
+
+        if self._odom_stamp is None:
+            self._last_lane_path_reason = 'no /odom received'
             self.get_logger().warn(
                 f'No fresh stamped odom within {self._max_odom_age:.3f}s; suppressing lane path.',
                 throttle_duration_sec=2.0)
             return self._build_path([], self._grid.header.stamp)
-        if self._stamp_delta_sec(self._grid.header.stamp, self._odom_stamp) > self._max_odom_costmap_skew:
+
+        odom_age = self._stamp_age_sec(self._odom_stamp)
+        if odom_age > self._max_odom_age:
+            self._last_lane_path_reason = (
+                f'/odom stale: age {odom_age:.3f}s > {self._max_odom_age:.3f}s')
+            self.get_logger().warn(
+                f'No fresh stamped odom within {self._max_odom_age:.3f}s; suppressing lane path.',
+                throttle_duration_sec=2.0)
+            return self._build_path([], self._grid.header.stamp)
+
+        stamp_skew = self._stamp_delta_sec(self._grid.header.stamp, self._odom_stamp)
+        if stamp_skew > self._max_odom_costmap_skew:
+            self._last_lane_path_reason = (
+                f'costmap/odom stamp skew {stamp_skew:.3f}s > {self._max_odom_costmap_skew:.3f}s')
             self.get_logger().warn(
                 'Lane costmap and odom stamps differ by more than '
                 f'{self._max_odom_costmap_skew:.3f}s; suppressing lane path.',
                 throttle_duration_sec=2.0)
             return self._build_path([], self._grid.header.stamp)
+
+        raw_pts = self._extract_centreline()
+        if not raw_pts:
+            self._last_lane_path_reason = 'centreline extraction found no connected free band ahead'
+        else:
+            self._last_lane_path_reason = f'centreline has {len(raw_pts)} raw point(s)'
         return self._build_path(
-            self._condition_path_points(self._extract_centreline()),
+            self._condition_path_points(raw_pts),
             self._grid.header.stamp)
 
     def _build_path(self, pts: list[tuple[float, float]], stamp=None) -> Path:
@@ -732,28 +762,42 @@ class IGVCNavigatorNode(Node):
             for a, b in zip(path.poses[:-1], path.poses[1:])
         )
 
-    def _path_is_valid(self, path: Path) -> bool:
-        """Validate that a path is plausible enough to send to Nav2."""
+    def _path_invalid_reason(self, path: Path) -> Optional[str]:
+        """Return None when path is valid, otherwise explain the rejection."""
         if path.header.frame_id != self._base_frame:
-            return False
-        if len(path.poses) < self._min_follow_path_poses:
-            return False
-        if self._path_length(path) < self._min_follow_path_length_m:
-            return False
+            return f'frame {path.header.frame_id!r} != base frame {self._base_frame!r}'
+
+        pose_count = len(path.poses)
+        if pose_count < self._min_follow_path_poses:
+            return (
+                f'{self._last_lane_path_reason}; poses {pose_count} < '
+                f'{self._min_follow_path_poses}')
+
+        path_length = self._path_length(path)
+        if path_length < self._min_follow_path_length_m:
+            return (
+                f'{self._last_lane_path_reason}; length {path_length:.2f}m < '
+                f'{self._min_follow_path_length_m:.2f}m')
 
         prev_x = path.poses[0].pose.position.x
         prev_y = path.poses[0].pose.position.y
-        for pose in path.poses:
+        for index, pose in enumerate(path.poses):
             x = pose.pose.position.x
             y = pose.pose.position.y
             if not math.isfinite(x) or not math.isfinite(y):
-                return False
+                return f'pose {index} has non-finite coordinate ({x}, {y})'
             if x + self._grid_res < prev_x:
-                return False
+                return f'pose {index} moves backward: x {x:.2f} after {prev_x:.2f}'
             if abs(y - prev_y) > self._max_path_lateral_jump_m:
-                return False
+                return (
+                    f'pose {index} lateral jump {abs(y - prev_y):.2f}m > '
+                    f'{self._max_path_lateral_jump_m:.2f}m')
             prev_x, prev_y = x, y
-        return True
+        return None
+
+    def _path_is_valid(self, path: Path) -> bool:
+        """Validate that a path is plausible enough to send to Nav2."""
+        return self._path_invalid_reason(path) is None
 
     def _path_changed_enough(self, path: Path) -> bool:
         """Return true when a path differs enough to resend FollowPath."""
@@ -827,7 +871,9 @@ class IGVCNavigatorNode(Node):
         goal.path = path
         goal.controller_id = self._controller_id
         goal.goal_checker_id = self._goal_checker_id
-        goal.progress_checker_id = self._progress_checker_id
+        # Humble FollowPath goal has no progress_checker_id field.
+        if hasattr(goal, 'progress_checker_id'):
+            goal.progress_checker_id = self._progress_checker_id
 
         self._goal_pending = True
         self._last_goal_send_time = send_time
