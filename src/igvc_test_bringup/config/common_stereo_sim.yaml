@@ -82,6 +82,7 @@
             depth_confidence: 50         # Permissive in sim; environment is clean
             depth_texture_conf: 100
             remove_saturated_areas: true
+            publish_depth_confidence: true
 
         pos_tracking:
             pos_tracking_enabled: false  # Isaac Sim supplies ground-truth pose via TF

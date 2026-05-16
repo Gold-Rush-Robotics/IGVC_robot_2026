@@ -73,8 +73,8 @@ def generate_launch_description() -> LaunchDescription:
             {'odom_frame_id': 'odom'},
             {'base_frame_id': 'base_link'},
             {'publish_rate_hz': 100.0},
-            {'use_original_timestamp': False},
-            {'warn_odom_age_sec': 0.5},
+            {'use_original_timestamp': True},   # use sensor timestamp to avoid TF desync
+            {'warn_odom_age_sec': 0.2},           # tightened from 0.5 — stale odometry threshold
         ],
     )
     gps_node = Node(

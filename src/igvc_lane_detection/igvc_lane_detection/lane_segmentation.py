@@ -141,6 +141,12 @@ class LaneSegmentationNode(Node):
         self.model_blur_ksize       = [int(x) for x in p('model_blur_ksize', [5, 5])]
         self.model_blur_sigma       = float(p('model_blur_sigma', 0.0))
         self.da_morph_kernel_px     = int(p('da_morph_kernel_px', 0))
+        # Pre-allocate morph kernel once — avoids heap allocation inside the 30 Hz inference callback
+        _k = self.da_morph_kernel_px | 1  # ensure odd
+        self._da_morph_kernel = (
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_k, _k))
+            if self.da_morph_kernel_px > 1 else None
+        )
 
         # ── Depth-based obstacle masking ─────────────────────────────
         self.obstacle_mask_enabled      = bool(p('obstacle_mask_enabled', False))
@@ -484,12 +490,9 @@ class LaneSegmentationNode(Node):
             ll_mask = np.zeros_like(ll_mask)
 
         # ── Morphological cleanup of drivable-area mask (removes sim noise) ──
-        if self.da_morph_kernel_px > 1:
-            k = self.da_morph_kernel_px | 1  # ensure odd
-            kernel = cv2.getStructuringElement(
-                cv2.MORPH_ELLIPSE, (k, k))
+        if self._da_morph_kernel is not None:
             da_mask = cv2.morphologyEx(
-                da_mask.astype(np.uint8), cv2.MORPH_OPEN, kernel)
+                da_mask.astype(np.uint8), cv2.MORPH_OPEN, self._da_morph_kernel)
 
         # ── Minimum component size filter on drivable-area mask ──
         if self.min_da_component_px > 0 and np.any(da_mask):
@@ -1025,7 +1028,10 @@ def main(args=None):
     rclpy.init(args=args)
     node = LaneSegmentationNode()
     try:
-        rclpy.spin(node)
+        from rclpy.executors import EventsExecutor
+        executor = EventsExecutor()
+        executor.add_node(node)
+        executor.spin()
     finally:
         node.destroy_node()
         rclpy.shutdown()

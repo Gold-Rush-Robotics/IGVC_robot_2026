@@ -86,7 +86,7 @@ class MultiCameraLaneDetector(Node):
         # ==================== SUBSCRIBERS (synchronized per camera) ====================
         self.sync_subs = {}
         for cam in camera_names:
-            qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST)
+            qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST)  # depth=1: no DDS-level frame buffering
 
             rgb_sub = message_filters.Subscriber(self, Image, self.rgb_topics[cam], qos_profile=qos)
             depth_sub = message_filters.Subscriber(self, Image, self.depth_topics[cam], qos_profile=qos)
@@ -94,8 +94,8 @@ class MultiCameraLaneDetector(Node):
 
             ts = message_filters.ApproximateTimeSynchronizer(
                 [rgb_sub, depth_sub, info_sub],
-                queue_size=15,
-                slop=0.15
+                queue_size=5,   # reduced from 15 — less buffering, lower latency
+                slop=0.05       # tightened from 0.15 — stricter sync window
             )
             ts.registerCallback(self.per_camera_callback, cam)
             self.get_logger().info(
@@ -108,7 +108,7 @@ class MultiCameraLaneDetector(Node):
         self.debug_pub = self.create_publisher(Image, self.get_parameter('debug_stitched_topic').value, 10)
 
         # Timer to fuse data from all cameras, publish PC2 + markers + debug stitched image
-        self.fusion_timer = self.create_timer(0.1, self.fusion_callback)  # 10 Hz
+        self.fusion_timer = self.create_timer(0.05, self.fusion_callback)  # 20 Hz — raised from 10 Hz
 
         self.get_logger().info('Multi-camera lane detection node started with full TODO implementation. '
                                'Waiting for synchronized RGB + Depth + Info from all 3 cameras...')

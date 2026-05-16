@@ -67,7 +67,7 @@ lane_segmentation_node:
     persistent_hit_weight:     4.0
     persistent_threshold:     15.0
     persistent_max_value:    200.0
-    persistent_publish_hz:     2.0
+    persistent_publish_hz:     10.0  # raised from 2.0 — was discarding 14 frames between publishes
     persistent_clear_radius_m: 0.8
 
     # Keep the synchronizer latest-only so YOLO does not chew through
