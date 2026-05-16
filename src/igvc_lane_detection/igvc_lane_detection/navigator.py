@@ -280,8 +280,8 @@ class IGVCNavigatorNode(Node):
             ('min_follow_path_length_m', 1.5),
             ('path_sample_spacing_m', 0.10),
             ('path_smooth_window', 5),
-            ('path_change_tolerance_m', 0.25),
-            ('path_change_tolerance_rad', 0.25),
+            ('path_change_tolerance_m', 0.10),   # tightened from 0.25 — reduces stale-path tracking on turns
+            ('path_change_tolerance_rad', 0.10),  # tightened from 0.25
             ('max_path_lateral_jump_m', 0.5),
             ('max_costmap_age_sec', 0.1),
             ('max_odom_age_sec', 0.1),

@@ -9,7 +9,7 @@
 
   <buildtool_depend>ament_python</buildtool_depend>
 
-  <exec_depend>controller_manager</exec_depend>
+  <!-- <exec_depend>controller_manager</exec_depend>
   <exec_depend>grr_hardware</exec_depend>
   <exec_depend>igvc_lane_detection</exec_depend>
   <exec_depend>igvc_simulation_interface</exec_depend>
@@ -19,7 +19,7 @@
   <exec_depend>rclpy</exec_depend>
   <exec_depend>simulation_interfaces</exec_depend>
   <exec_depend>twist_stamper</exec_depend>
-  <exec_depend>xacro</exec_depend>
+  <exec_depend>xacro</exec_depend> -->
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

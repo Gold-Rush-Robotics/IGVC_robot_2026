@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import rclpy
 from geometry_msgs.msg import Pose
 from nav_msgs.msg import Odometry
@@ -36,6 +38,7 @@ class OdomTfBridgeNode(Node):
         self._latest_pose = Pose()
         self._latest_pose.orientation.w = 1.0
         self._latest_stamp = None
+        self._pose_lock = threading.Lock()
 
         self._tf_broadcaster = TransformBroadcaster(self)
         odom_qos = QoSProfile(
@@ -55,8 +58,9 @@ class OdomTfBridgeNode(Node):
                 f'Ignoring unstamped/stale odom older than {self._max_odom_age_sec:.3f}s.',
                 throttle_duration_sec=2.0)
             return
-        self._latest_pose = msg.pose.pose
-        self._latest_stamp = msg.header.stamp
+        with self._pose_lock:
+            self._latest_pose = msg.pose.pose
+            self._latest_stamp = msg.header.stamp
         self._warn_if_stale(msg.header.stamp)
 
     def _stamp_age_sec(self, stamp) -> float:
@@ -66,21 +70,24 @@ class OdomTfBridgeNode(Node):
         return abs((self.get_clock().now() - stamp_t).nanoseconds / 1e9)
 
     def _publish_tf(self) -> None:
-        if self._latest_stamp is None:
-            return
-        if self._stamp_age_sec(self._latest_stamp) > self._max_odom_age_sec:
-            return
+        with self._pose_lock:
+            if self._latest_stamp is None:
+                return
+            if self._stamp_age_sec(self._latest_stamp) > self._max_odom_age_sec:
+                return
+            pose = self._latest_pose
+            stamp = self._latest_stamp
         tf = TransformStamped()
         if self._use_original_timestamp:
-            tf.header.stamp = self._latest_stamp
+            tf.header.stamp = stamp
         else:
             tf.header.stamp = self.get_clock().now().to_msg()
         tf.header.frame_id = self._odom_frame
         tf.child_frame_id = self._base_frame
-        tf.transform.translation.x = self._latest_pose.position.x
-        tf.transform.translation.y = self._latest_pose.position.y
-        tf.transform.translation.z = self._latest_pose.position.z
-        tf.transform.rotation = self._latest_pose.orientation
+        tf.transform.translation.x = pose.position.x
+        tf.transform.translation.y = pose.position.y
+        tf.transform.translation.z = pose.position.z
+        tf.transform.rotation = pose.orientation
         self._tf_broadcaster.sendTransform(tf)
 
     def _warn_if_stale(self, stamp) -> None:
@@ -96,8 +103,15 @@ class OdomTfBridgeNode(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    rclpy.spin(OdomTfBridgeNode())
-    rclpy.shutdown()
+    node = OdomTfBridgeNode()
+    try:
+        from rclpy.executors import EventsExecutor
+        executor = EventsExecutor()
+        executor.add_node(node)
+        executor.spin()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

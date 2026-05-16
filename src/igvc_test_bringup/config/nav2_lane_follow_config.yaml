@@ -28,7 +28,7 @@ waypoint_follower:
 
 planner_server:
   ros__parameters:
-    expected_planner_frequency: 5.0
+    expected_planner_frequency: 10.0  # raised from 5.0 — matches 20 Hz controller 2:1 instead of 4:1
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_smac_planner/SmacPlanner2D"
@@ -226,7 +226,7 @@ local_costmap:
       global_frame: odom
       robot_base_frame: base_link
       update_frequency: 10.0
-      publish_frequency: 5.0
+      publish_frequency: 10.0  # raised from 5.0 — now publishes every update instead of discarding half
       transform_tolerance: 1.0
       rolling_window: true
       width: 12
@@ -323,8 +323,8 @@ global_costmap:
     ros__parameters:
       global_frame: map
       robot_base_frame: base_link
-      update_frequency: 2.0
-      publish_frequency: 1.0
+      update_frequency: 5.0   # raised from 2.0 — 500ms global map staleness → 200ms
+      publish_frequency: 5.0  # raised from 1.0 — was discarding 4 of every 5 updates
       transform_tolerance: 1.0
       rolling_window: true
       width: 30

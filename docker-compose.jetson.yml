@@ -28,10 +28,8 @@ x-ros-common: &ros-common
   network_mode: host        # Share ROS graph with host and other containers
   restart: unless-stopped
   environment: &ros-env
-    RMW_IMPLEMENTATION: rmw_fastrtps_cpp
-    FASTDDS_BUILTIN_TRANSPORTS: UDPv4
-    FASTDDS_DEFAULT_PROFILES_FILE: /root/ros2_ws/src/IGVC_robot_2026/src/igvc_test_bringup/config/fastdds_udp.xml
-    FASTRTPS_DEFAULT_PROFILES_FILE: /root/ros2_ws/src/IGVC_robot_2026/src/igvc_test_bringup/config/fastdds_udp.xml
+    RMW_IMPLEMENTATION: rmw_zenoh_cpp
+    ZENOH_ROUTER_CONFIG_URI: /root/ros2_ws/src/IGVC_robot_2026/src/igvc_test_bringup/config/zenoh_config.json5
     ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
     ROS_LOCALHOST_ONLY: "0"
 
