@@ -10,15 +10,15 @@
     <xacro:robot_body />
 
     <xacro:zed_camera_x parent="chassis_link" prefix="left">
-        <origin xyz="0.4 0.2 0.194" rpy="0 ${3.14/18} ${3.14*95/180}"/>
+        <origin xyz="0.361 0.18 0.248" rpy="0 ${3.14/18} ${3.14*95/180}"/>
     </xacro:zed_camera_x>
 
     <xacro:zed_camera_x parent="chassis_link" prefix="front">
-        <origin xyz="0.45 0 0.194" rpy="0 0 0"/>
+        <origin xyz="0.405 0 0.246" rpy="0 0 0"/>
     </xacro:zed_camera_x>
 
     <xacro:zed_camera_x parent="chassis_link" prefix="right">
-        <origin xyz="0.4 -0.2 0.194" rpy="0 ${3.14/18} -${3.14*95/180}"/>
+        <origin xyz="0.359 -0.195 0.251" rpy="0 ${3.14/18} -${3.14*95/180}"/>
     </xacro:zed_camera_x>
 
     <xacro:rplidar_c1 parent="chassis_link" prefix="top">
@@ -26,7 +26,7 @@
     </xacro:rplidar_c1>
 
     <xacro:gps_antenna parent="chassis_link" prefix="front">
-        <origin xyz="0.2 -0.15 0.16" rpy="0 0 0"/>
+        <origin xyz="0.177 -0.133 0.218" rpy="0 0 0"/>
     </xacro:gps_antenna>
 
 
