@@ -29,7 +29,7 @@
             camera_flip: false
             self_calib: true
             serial_number: 0
-            grab_resolution: 'HD720'
+            grab_resolution: 'HD1080'
             grab_frame_rate: 30
             grab_compute_capping_fps: 30.0
             pub_resolution: 'CUSTOM'
@@ -89,7 +89,7 @@
             # Outdoors we want to keep the horizon/sky-line: distant features
             # are critical for stable VIO rotation. ROI now only restricts the
             # close-range obstacle pipelines, not tracking or full-frame depth.
-            automatic_roi: true
+            automatic_roi: false
             depth_far_threshold_meters: 2.5
             image_height_ratio_cutoff: 0.5
             apply_to_depth: false
@@ -100,7 +100,7 @@
             publish_roi_mask: false
 
         depth:
-            depth_mode: 'NEURAL_PLUS'
+            depth_mode: 'NEURAL_LIGHT'
             depth_stabilization: 30
             openni_depth_mode: false
             point_cloud_freq: 10.0
@@ -111,7 +111,7 @@
             min_depth: 0.30
             # Extended outdoor range — VIO/GEN_3 uses depth-tagged features to
             # anchor rotation; capping at 15 m caused noticeable yaw drift.
-            max_depth: 40.0
+            max_depth: 9.0
             publish_depth_map: true
             publish_depth_info: false
             publish_point_cloud: true
@@ -154,7 +154,7 @@
             publish_cam_path: false
 
         gnss_fusion:
-            gnss_fusion_enabled: false
+            enable_gnss: true
             gnss_fix_topic: '/fix'
             gnss_zero_altitude: false
             h_covariance_mul: 1.0
@@ -162,7 +162,7 @@
             publish_utm_tf: false
             broadcast_utm_transform_as_parent_frame: false
             enable_reinitialization: false
-            enable_rolling_calibration: false
+            enable_rolling_calibration: true
             enable_translation_uncertainty_target: false
             gnss_vio_reinit_threshold: 5.0
             target_translation_uncertainty: 0.1

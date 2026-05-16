@@ -23,6 +23,7 @@ def generate_launch_description() -> LaunchDescription:
             'sim_mode': 'false',
             'sim_address': '',
             'disable_tf': LaunchConfiguration('disable_tf'),
+            'enable_front_gnss': LaunchConfiguration('enable_front_gnss'),
             'area_memory_path': LaunchConfiguration('area_memory_path'),
             'ros_params_override_path': PathJoinSubstitution(
                 [bringup, 'config', 'common_stereo_real.yaml']
@@ -55,6 +56,11 @@ def generate_launch_description() -> LaunchDescription:
             'disable_tf',
             default_value='true',
             description='Let robot_localization own odom->base_link TF by default.',
+        ),
+        DeclareLaunchArgument(
+            'enable_front_gnss',
+            default_value='false',
+            description='Enable GNSS ingestion/fusion only for front_zed_camera_x when true.',
         ),
         DeclareLaunchArgument(
             'area_memory_path',
