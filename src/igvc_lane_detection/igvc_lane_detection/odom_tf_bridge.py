@@ -105,8 +105,16 @@ def main(args=None) -> None:
     rclpy.init(args=args)
     node = OdomTfBridgeNode()
     try:
-        from rclpy.executors import EventsExecutor
-        executor = EventsExecutor()
+        try:
+            from rclpy.experimental import EventsExecutor
+            executor = EventsExecutor()
+        except ImportError:
+            from rclpy.executors import SingleThreadedExecutor
+            node.get_logger().warn(
+                'EventsExecutor is not available in this rclpy install; '
+                'falling back to SingleThreadedExecutor.')
+            executor = SingleThreadedExecutor()
+
         executor.add_node(node)
         executor.spin()
     finally:
