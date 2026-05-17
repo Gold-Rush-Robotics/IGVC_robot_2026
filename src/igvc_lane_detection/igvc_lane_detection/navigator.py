@@ -54,7 +54,7 @@ Parameters
 Subscriptions
     /gps/fix              NavSatFix       (GPS mode only)
     /lane_costmap         OccupancyGrid
-    /odom                 Odometry
+    /front_zed_camera_x/zed_node/odom                 Odometry
     /localization_status  std_msgs/String  from igvc_localization
 
 Publications
@@ -153,6 +153,7 @@ class IGVCNavigatorNode(Node):
         self._declare_params()
         self._gps_enabled     = self._p('gps_enabled',        True)
         self._gps_topic       = self._p('gps_topic',          '/gps/fix')
+        self._odom_topic      = self._p('odom_topic',         '/front_zed_camera_x/zed_node/odom')
         self._origin_lat      = self._p('origin_lat',          0.0)
         self._origin_lon      = self._p('origin_lon',          0.0)
         self._origin_set      = (self._origin_lat != 0.0 or self._origin_lon != 0.0)
@@ -179,7 +180,10 @@ class IGVCNavigatorNode(Node):
         self._path_smooth_window = self._p('path_smooth_window', 5)
         self._path_change_tolerance_m = self._p('path_change_tolerance_m', 0.25)
         self._path_change_tolerance_rad = self._p('path_change_tolerance_rad', 0.25)
-        self._max_path_lateral_jump_m = self._p('max_path_lateral_jump_m', 0.5)
+        self._max_path_lateral_jump_m = self._p('max_path_lateral_jump_m', 0.35)
+        self._centreline_gap_tolerance_m = self._p('centreline_gap_tolerance_m', 0.25)
+        self._fallback_path_length_m = self._p('fallback_path_length_m', 2.0)
+        self._allow_straight_fallback = self._p('allow_straight_fallback', False)
         self._max_odom_age = self._p('max_odom_age_sec', self._max_costmap_age)
         self._max_odom_costmap_skew = self._p(
             'max_odom_costmap_skew_sec', self._max_costmap_age)
@@ -227,12 +231,17 @@ class IGVCNavigatorNode(Node):
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST, depth=5)
+        odom_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1)
 
         # ── Subscriptions ─────────────────────────────────────────────────
         self.create_subscription(OccupancyGrid, '/lane_costmap',
                                  self._on_grid, map_qos)
-        self.create_subscription(Odometry, '/odom',
-                                 self._on_odom, 10)
+        self.create_subscription(Odometry, self._odom_topic,
+                     self._on_odom, odom_qos)
         self.create_subscription(String, '/localization_status',
                                  self._on_loc_status, 10)
 
@@ -257,6 +266,7 @@ class IGVCNavigatorNode(Node):
         for name, default in [
             ('gps_enabled',       True),
             ('gps_topic',         '/gps/fix'),
+            ('odom_topic',        '/front_zed_camera_x/zed_node/odom'),
             ('origin_lat',         0.0),
             ('origin_lon',         0.0),
             ('map_frame',         'map'),
@@ -282,10 +292,13 @@ class IGVCNavigatorNode(Node):
             ('path_smooth_window', 5),
             ('path_change_tolerance_m', 0.10),   # tightened from 0.25 — reduces stale-path tracking on turns
             ('path_change_tolerance_rad', 0.10),  # tightened from 0.25
-            ('max_path_lateral_jump_m', 0.5),
-            ('max_costmap_age_sec', 0.1),
-            ('max_odom_age_sec', 0.1),
-            ('max_odom_costmap_skew_sec', 0.1),
+            ('max_path_lateral_jump_m', 0.35),
+            ('centreline_gap_tolerance_m', 0.25),
+            ('fallback_path_length_m', 2.0),
+            ('allow_straight_fallback', False),
+            ('max_costmap_age_sec', 2.0),
+            ('max_odom_age_sec', 0.75),
+            ('max_odom_costmap_skew_sec', 1.5),
         ]:
             self.declare_parameter(name, default)
 
@@ -388,14 +401,16 @@ class IGVCNavigatorNode(Node):
                     f'No valid lane path visible ({invalid_reason}) — holding current course.',
                     throttle_duration_sec=2.0)
                 return
-            if not self._path_changed_enough(lane_path):
+
+            goal_active = self._goal_handle is not None
+            if goal_active and not self._path_changed_enough(lane_path):
                 return
             if self._last_goal_send_time is not None and (
                 (now - self._last_goal_send_time).nanoseconds / 1e9
                 < self._replan_min_dt
             ):
                 return
-            self._send_path_goal(lane_path)
+            self._send_path_goal(lane_path, force=not goal_active)
             return
 
         # Check arrival at active waypoint
@@ -539,6 +554,8 @@ class IGVCNavigatorNode(Node):
         lane_half_m        = 1.2
         lane_half_cols     = max(4, int(round(lane_half_m / res)))
         max_lateral_jump_m = 0.5
+        max_gap_rows = max(0, int(round(self._centreline_gap_tolerance_m / res)))
+        gap_rows = 0
 
         pts: list[tuple[float, float]] = []
         prev_lat: Optional[float] = None
@@ -562,9 +579,9 @@ class IGVCNavigatorNode(Node):
                 if not entered_band:
                     # Still in the blind close-range zone — keep searching.
                     continue
-                # Row is entirely unknown/blocked after we've already seen
-                # the drivable band — stop extending the centreline rather
-                # than guessing past the sensed region.
+                gap_rows += 1
+                if gap_rows <= max_gap_rows:
+                    continue
                 break
 
             # Window around the target column — this is the key fix.
@@ -578,7 +595,10 @@ class IGVCNavigatorNode(Node):
             if not window_free.any():
                 if not entered_band:
                     continue
-                break  # corridor closed off around the robot's heading
+                gap_rows += 1
+                if gap_rows <= max_gap_rows:
+                    continue
+                break
 
             diff   = np.diff(window_free.astype(np.int8))
             starts = np.where(diff ==  1)[0] + 1
@@ -597,8 +617,12 @@ class IGVCNavigatorNode(Node):
             if picked is None:
                 if not entered_band:
                     continue
+                gap_rows += 1
+                if gap_rows <= max_gap_rows:
+                    continue
                 break
             entered_band = True
+            gap_rows = 0
             s, e = picked
             centre_col = lo + 0.5 * (s + e - 1)
             lateral = orig_y + centre_col * res
@@ -654,11 +678,26 @@ class IGVCNavigatorNode(Node):
         raw_pts = self._extract_centreline()
         if not raw_pts:
             self._last_lane_path_reason = 'centreline extraction found no connected free band ahead'
+            if self._allow_straight_fallback:
+                return self._straight_ahead_path(self._grid.header.stamp)
+            return self._build_path([], self._grid.header.stamp)
+        if len(raw_pts) < self._min_follow_path_poses:
+            self._last_lane_path_reason = f'centreline has {len(raw_pts)} raw point(s)'
+            if self._allow_straight_fallback:
+                return self._straight_ahead_path(self._grid.header.stamp)
+            return self._build_path([], self._grid.header.stamp)
         else:
             self._last_lane_path_reason = f'centreline has {len(raw_pts)} raw point(s)'
         return self._build_path(
             self._condition_path_points(raw_pts),
             self._grid.header.stamp)
+
+    def _straight_ahead_path(self, stamp=None) -> Path:
+        length = max(self._min_follow_path_length_m, self._fallback_path_length_m)
+        spacing = max(0.10, self._path_sample_spacing_m)
+        count = max(self._min_follow_path_poses, int(math.ceil(length / spacing)) + 1)
+        pts = [(i * length / float(count - 1), 0.0) for i in range(count)]
+        return self._build_path(pts, stamp)
 
     def _build_path(self, pts: list[tuple[float, float]], stamp=None) -> Path:
         path = Path()
@@ -845,14 +884,14 @@ class IGVCNavigatorNode(Node):
 
     # ── Nav2 interaction ──────────────────────────────────────────────────
 
-    def _send_path_goal(self, path: Path) -> bool:
+    def _send_path_goal(self, path: Path, force: bool = False) -> bool:
         """Dispatch a Nav2 FollowPath goal for the current lane path."""
         if not self._path_is_valid(path):
             self.get_logger().warn(
                 'Refusing to send invalid FollowPath goal.',
                 throttle_duration_sec=2.0)
             return False
-        if not self._path_changed_enough(path):
+        if not force and not self._path_changed_enough(path):
             return False
         if not self._path_nav.server_is_ready():
             self.get_logger().warn(
@@ -896,8 +935,8 @@ class IGVCNavigatorNode(Node):
             return
 
         if not handle.accepted:
-            self._consecutive_aborts = min(self._consecutive_aborts + 1, 6)
-            backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 4.0)
+            self._consecutive_aborts = min(self._consecutive_aborts + 1, 4)
+            backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 2.0)
             self._abort_backoff_until = (
                 self.get_clock().now() + Duration(seconds=backoff_s))
             self.get_logger().warn(
@@ -945,8 +984,8 @@ class IGVCNavigatorNode(Node):
             # Back off on rejection the same way we do on abort, otherwise
             # the _update timer immediately retries and spams the action
             # server at 10 Hz.
-            self._consecutive_aborts = min(self._consecutive_aborts + 1, 6)
-            backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 4.0)
+            self._consecutive_aborts = min(self._consecutive_aborts + 1, 4)
+            backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 2.0)
             self._abort_backoff_until = (
                 self.get_clock().now() + Duration(seconds=backoff_s))
             self.get_logger().warn(
@@ -978,12 +1017,15 @@ class IGVCNavigatorNode(Node):
             self.get_logger().info('Nav2 goal succeeded.')
             self._consecutive_aborts = 0
             self._abort_backoff_until = None
+            if self._uses_follow_path():
+                self._last_sent_path = None
         elif status == GoalStatus.STATUS_CANCELED:
             pass  # expected when we replan
         else:
             # ABORTED or similar — apply exponential backoff before retrying.
-            self._consecutive_aborts = min(self._consecutive_aborts + 1, 6)
-            backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 4.0)
+            self._last_sent_path = None
+            self._consecutive_aborts = min(self._consecutive_aborts + 1, 4)
+            backoff_s = min(2.0 ** self._consecutive_aborts * 0.25, 2.0)
             self._abort_backoff_until = (
                 self.get_clock().now() + Duration(seconds=backoff_s))
             self.get_logger().warn(
@@ -1047,8 +1089,24 @@ class IGVCNavigatorNode(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    rclpy.spin(IGVCNavigatorNode())
-    rclpy.shutdown()
+    node = IGVCNavigatorNode()
+
+    try:
+        try:
+            from rclpy.experimental import EventsExecutor
+            executor = EventsExecutor()
+        except ImportError:
+            from rclpy.executors import SingleThreadedExecutor
+            node.get_logger().warn(
+                'EventsExecutor is not available in this rclpy install; '
+                'falling back to SingleThreadedExecutor.')
+            executor = SingleThreadedExecutor()
+
+        executor.add_node(node)
+        executor.spin()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

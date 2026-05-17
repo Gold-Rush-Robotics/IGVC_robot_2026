@@ -88,7 +88,7 @@ class LaneSegmentationNode(Node):
         self.occupancy_grid_frame   = p('occupancy_grid_frame',    self.base_frame)
         self.sync_queue_size        = max(1, int(p('sync_queue_size', 1)))
         self.sync_slop_sec          = float(p('sync_slop_sec', 0.1))
-        self.max_frame_age_sec      = float(p('max_frame_age_sec', 0.5))
+        self.max_frame_age_sec      = float(p('max_frame_age_sec', 1.2))
 
         self.chassis_mask_frac      = p('chassis_mask_frac',        0.15)
         # Trapezoidal ROI is off by default — the offline bag-replay
@@ -384,11 +384,12 @@ class LaneSegmentationNode(Node):
                     self.persist_max)
 
     def _publish_persistent_map(self) -> None:
-        if self._last_persistent_stamp is None:
-            return
+        stamp = self._last_persistent_stamp
+        if stamp is None:
+            stamp = self.get_clock().now().to_msg()
         n = self._pN
         g = OccupancyGrid()
-        g.header.stamp              = self._last_persistent_stamp
+        g.header.stamp              = stamp
         g.header.frame_id           = self.persist_frame
         g.info.resolution           = self.persist_res
         g.info.width                = n
@@ -398,7 +399,7 @@ class LaneSegmentationNode(Node):
         g.info.origin.orientation.w = 1.0
 
         data = np.where(self._phits >= self.persist_threshold, 100, -1).astype(np.int8)
-        self._clear_persistent_robot_footprint(data, self._last_persistent_stamp)
+        self._clear_persistent_robot_footprint(data, stamp)
         g.data = data.flatten().tolist()
         self.persist_pub.publish(g)
 
@@ -907,6 +908,27 @@ class LaneSegmentationNode(Node):
             if cell is not None:
                 data[cell] = 100
 
+        # ── Corridor fill from lane boundaries ──────────────────────────────
+        # Use reliably-detected lane lines to infer the drivable corridor.
+        # For each row that has lane cells, find the innermost lane-boundary
+        # column on each side of the robot centreline and fill unknown (-1)
+        # cells between them with free (0).  This compensates for sparse
+        # depth-projection of the drivable-area YOLO head.
+        center_col = w_g // 2  # column index for lateral=0 (robot centreline)
+        half_fill  = max(4, int(round(1.2 / res)))  # 1.2 m half-width in cells
+        lane_rows  = np.where(np.any(data == 100, axis=1))[0]
+        for row in lane_rows:
+            lane_in_row = np.where(data[row] == 100)[0]
+            right_side  = lane_in_row[lane_in_row < center_col]   # cols left of centre (right lane line in image)
+            left_side   = lane_in_row[lane_in_row > center_col]   # cols right of centre (left lane line in image)
+            lo = int(right_side.max()) + 1 if len(right_side) > 0 else max(0, center_col - half_fill)
+            hi = int(left_side.min())      if len(left_side)  > 0 else min(w_g, center_col + half_fill)
+            if lo >= hi:
+                continue
+            seg = data[row, lo:hi]
+            data[row, lo:hi] = np.where(seg == np.int8(-1), np.int8(0), seg)
+        # ────────────────────────────────────────────────────────────────────
+
         g.data = data.flatten().tolist()
         return g
 
@@ -1028,8 +1050,16 @@ def main(args=None):
     rclpy.init(args=args)
     node = LaneSegmentationNode()
     try:
-        from rclpy.executors import EventsExecutor
-        executor = EventsExecutor()
+        try:
+            from rclpy.experimental import EventsExecutor
+            executor = EventsExecutor()
+        except ImportError:
+            from rclpy.executors import SingleThreadedExecutor
+            node.get_logger().warn(
+                'EventsExecutor is not available in this rclpy install; '
+                'falling back to SingleThreadedExecutor.')
+            executor = SingleThreadedExecutor()
+
         executor.add_node(node)
         executor.spin()
     finally:
