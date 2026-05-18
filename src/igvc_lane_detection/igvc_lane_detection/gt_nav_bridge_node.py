@@ -55,6 +55,8 @@ class GTNavBridgeNode(Node):
         self.declare_parameter('local_costmap_height_m', 6.0)
         self.declare_parameter('local_costmap_resolution_m', 0.1)
         self.declare_parameter('local_costmap_publish_hz', 5.0)
+        self.declare_parameter('local_costmap_back_nogo_buffer_m', 0.3)
+        self.declare_parameter('lane_boundary_thickness_cells', 1)
 
         self._track_file: str = str(self.get_parameter('track_file').value)
         self._gt_topic: str = str(self.get_parameter('ground_truth_topic').value)
@@ -68,6 +70,12 @@ class GTNavBridgeNode(Node):
             self.get_parameter('local_costmap_resolution_m').value)
         self._local_publish_hz: float = float(
             self.get_parameter('local_costmap_publish_hz').value)
+        self._local_back_nogo_buffer_m: float = max(
+            0.0,
+            float(self.get_parameter('local_costmap_back_nogo_buffer_m').value),
+        )
+        self._lane_boundary_thickness_cells: int = max(
+            0, int(self.get_parameter('lane_boundary_thickness_cells').value))
 
         # Load obstacle list from JSON once at startup.
         self._obstacles: List[Tuple[float, float, float]] = []  # (x_m, y_m, r_m) raw coords
@@ -213,6 +221,59 @@ class GTNavBridgeNode(Node):
 
         grid.data = data.ravel().tolist()
 
+    def _stamp_lane_boundaries(self, grid: OccupancyGrid) -> None:
+        """Stamp lane boundaries as lethal cells where FREE meets UNKNOWN.
+
+        This creates explicit black lane lines in RViz and gives downstream
+        planners/controllers a crisp no-go edge at corridor borders.
+        """
+        thickness = self._lane_boundary_thickness_cells
+        if thickness <= 0:
+            return
+
+        w = int(grid.info.width)
+        h = int(grid.info.height)
+        if w <= 0 or h <= 0:
+            return
+
+        data = np.array(grid.data, dtype=np.int8).reshape((h, w))
+        free = data == 0
+        unknown = data < 0
+
+        # A boundary cell is FREE and touches UNKNOWN (8-neighborhood).
+        up = np.pad(unknown[:-1, :], ((1, 0), (0, 0)), constant_values=True)
+        down = np.pad(unknown[1:, :], ((0, 1), (0, 0)), constant_values=True)
+        left = np.pad(unknown[:, :-1], ((0, 0), (1, 0)), constant_values=True)
+        right = np.pad(unknown[:, 1:], ((0, 0), (0, 1)), constant_values=True)
+        up_left = np.pad(unknown[:-1, :-1], ((1, 0), (1, 0)), constant_values=True)
+        up_right = np.pad(unknown[:-1, 1:], ((1, 0), (0, 1)), constant_values=True)
+        down_left = np.pad(unknown[1:, :-1], ((0, 1), (1, 0)), constant_values=True)
+        down_right = np.pad(unknown[1:, 1:], ((0, 1), (0, 1)), constant_values=True)
+        boundary = free & (
+            up | down | left | right |
+            up_left | up_right | down_left | down_right
+        )
+
+        # Optional extra thickness grown inward through FREE cells.
+        mask = boundary.copy()
+        for _ in range(1, thickness):
+            m_up = np.pad(mask[:-1, :], ((1, 0), (0, 0)), constant_values=False)
+            m_down = np.pad(mask[1:, :], ((0, 1), (0, 0)), constant_values=False)
+            m_left = np.pad(mask[:, :-1], ((0, 0), (1, 0)), constant_values=False)
+            m_right = np.pad(mask[:, 1:], ((0, 0), (0, 1)), constant_values=False)
+            m_up_left = np.pad(mask[:-1, :-1], ((1, 0), (1, 0)), constant_values=False)
+            m_up_right = np.pad(mask[:-1, 1:], ((1, 0), (0, 1)), constant_values=False)
+            m_down_left = np.pad(mask[1:, :-1], ((0, 1), (1, 0)), constant_values=False)
+            m_down_right = np.pad(mask[1:, 1:], ((0, 1), (0, 1)), constant_values=False)
+            grown = (
+                m_up | m_down | m_left | m_right |
+                m_up_left | m_up_right | m_down_left | m_down_right
+            )
+            mask = mask | (free & grown)
+
+        data[mask] = 100
+        grid.data = data.ravel().tolist()
+
     # ──────────────────────────────────────────────────────────────────────────
 
     def _on_grid(self, msg: OccupancyGrid) -> None:
@@ -220,6 +281,7 @@ class GTNavBridgeNode(Node):
         # Deep-copy so we don't mutate the received message.
         merged = deepcopy(msg)
         self._stamp_obstacles(merged)
+        self._stamp_lane_boundaries(merged)
         merged.header.stamp = self.get_clock().now().to_msg()
         self._latest_map = merged
         self._lane_map_pub.publish(merged)
@@ -277,6 +339,14 @@ class GTNavBridgeNode(Node):
             (src_rows >= 0) & (src_rows < fixed_h)
         )
         local_data[valid] = fixed_data[src_rows[valid], src_cols[valid]]
+
+        # Add a small lethal strip at the back edge of the local crop.
+        # This acts as a no-go buffer for the unobserved space immediately
+        # behind the costmap window in test mode.
+        back_buf_cells = int(math.ceil(self._local_back_nogo_buffer_m / self._local_res))
+        if back_buf_cells > 0:
+            back_buf_cells = min(back_buf_cells, local_h)
+            local_data[:back_buf_cells, :] = 100
 
         local = OccupancyGrid()
         local.header.stamp = self.get_clock().now().to_msg()

@@ -139,6 +139,30 @@ def test_extract_centreline_follows_smooth_curve():
     assert max(errors) <= 0.08
 
 
+def test_extract_centreline_ignores_gt_obstacle_stamps():
+    """GT obstacles are lethal cells but should not become lane boundaries."""
+    grid = make_corridor_costmap(centerline=0.0, lane_width_m=2.4)
+    data = list(grid.data)
+    width = grid.info.width
+    res = grid.info.resolution
+    center_col = int(round((0.0 - grid.info.origin.position.y) / res))
+    obstacle_row = int(round(1.8 / res))
+    obstacle_radius_cells = int(round(0.35 / res))
+    for row in range(obstacle_row - obstacle_radius_cells, obstacle_row + obstacle_radius_cells + 1):
+        for col in range(center_col - obstacle_radius_cells, center_col + obstacle_radius_cells + 1):
+            if 0 <= row < grid.info.height and 0 <= col < grid.info.width:
+                if (row - obstacle_row) ** 2 + (col - center_col) ** 2 <= obstacle_radius_cells ** 2:
+                    data[row * width + col] = 100
+    grid.data = data
+    node = make_navigator(grid)
+
+    points = node._extract_centreline()
+
+    assert points
+    assert points[-1][0] >= 3.5
+    assert max(abs(lateral) for _, lateral in points) <= 0.04
+
+
 def test_extract_centreline_stops_at_blocked_gap_after_entering_lane():
     """The navigator should stop extending paths through sensed gaps."""
     grid = make_corridor_costmap(centerline=0.0, lane_width_m=2.4)

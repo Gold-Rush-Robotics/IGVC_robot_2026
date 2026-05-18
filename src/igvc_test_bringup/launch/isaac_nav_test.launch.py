@@ -313,6 +313,11 @@ def generate_launch_description() -> LaunchDescription:
                 'gps_enabled': False,
                 'force_identity_map_to_odom': True,
                 'follow_path_enabled': follow_path_enabled,
+                # Drive Nav2 with rolling NavigateToPose goals along the
+                # pre-known track centerline.  SmacPlanner2D handles routing
+                # around obstacles via the global /lane_map costmap.
+                'nav_strategy': 'centerline_waypoints',
+                'centerline_source_json': track_file,
                 # navigator_config.yaml is shared with non-sim flows and has
                 # strict 0.1 s freshness gates. In this Isaac nav-test stack,
                 # /lane_costmap is published at 5 Hz (0.2 s), so relax gates
@@ -341,7 +346,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         DeclareLaunchArgument(
             'nav_mode',
-            default_value='follow_path',
+            default_value='navigate_to_pose',
             choices=['follow_path', 'navigate_to_pose'],
             description=(
                 'follow_path: send local centreline path directly to '

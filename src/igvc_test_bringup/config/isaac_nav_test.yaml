@@ -43,13 +43,15 @@ gt_nav_bridge_node:
     track_file: ""
     ground_truth_topic: "/lane_ground_truth"
     # Obstacles in the JSON have their footprint radius already.
-    # This adds a safety margin so nav2 InflationLayer doesn't need to be
-    # inflated as aggressively — 0.0 = rely purely on InflationLayer.
-    obstacle_inflate_radius_m: 0.0
+    # Add a hard safety margin so the global planner routes around them
+    # before the robot is close enough for its footprint to become occupied.
+    obstacle_inflate_radius_m: 0.30
     local_costmap_width_m: 6.0
     local_costmap_height_m: 6.0
     local_costmap_resolution_m: 0.1
     local_costmap_publish_hz: 5.0
+    local_costmap_back_nogo_buffer_m: 0.3
+    lane_boundary_thickness_cells: 1
 
 # ── Navigator ─────────────────────────────────────────────────────────────────
 igvc_navigator:
@@ -73,7 +75,7 @@ igvc_navigator:
 
     # Local lane path extraction parameters
     path_lookahead_m: 4.0
-    replan_min_dt_sec: 0.5
+    replan_min_dt_sec: 0.8
     min_follow_path_poses: 5
     min_follow_path_length_m: 1.5
     path_sample_spacing_m: 0.10
@@ -84,4 +86,20 @@ igvc_navigator:
 
     # Rolling NavigateToPose fallback carrot parameters
     waypoint_horizon_m: 1.8
-    replan_dist_m: 0.6
+    replan_dist_m: 1.5
+    allow_straight_fallback: true
+
+    # ── Centerline-waypoint strategy (overrides local lane extraction) ──
+    # Set by launch file. Drives Nav2 via NavigateToPose goals along the
+    # pre-known JSON centerline; SmacPlanner2D routes around obstacles.
+    nav_strategy: "centerline_waypoints"
+    centerline_lookahead_m: 6.0
+    centerline_advance_m: 0.6
+    centerline_loop: true
+    centerline_direction: "auto"
+    centerline_search_window_m: 8.0
+    centerline_reacquire_dist_m: 3.0
+    centerline_max_goal_dist_m: 12.0
+    # NavigateToPose tolerance — should comfortably exceed centerline_advance_m
+    # so the rolling goal is replaced before the robot 'arrives' at it.
+    goal_tolerance_m: 1.5
