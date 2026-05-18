@@ -4,5 +4,6 @@
     ],
     "python.analysis.extraPaths": [
         "/opt/ros/jazzy/lib/python3.12/site-packages"
-    ]
+    ],
+    "cmake.sourceDirectory": "/home/govind/IGVC_robot_2026/src/grr_hardware"
 }
