@@ -32,7 +32,7 @@ planner_server:
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_smac_planner::SmacPlanner2D"
-      tolerance: 0.5                   # goal tolerance (m) — generous for GPS accuracy
+      tolerance: 0.3                   # goal tolerance (m) — tighter for precise lane following
       downsample_costmap: true
       downsampling_factor: 1
       allow_unknown: false             # GT lane map uses unknown outside the corridor; stay inside the lines
@@ -164,16 +164,17 @@ collision_monitor:
 
     SlowZone:
       type: "polygon"
-      # Nav2 collision_monitor declares polygon points as a string and parses
-      # the nested point list internally.
       points: "[[1.0, 0.5], [1.0, -0.5], [0.0, -0.5], [0.0, 0.5]]"
       action_type: "slowdown"
-      enabled: false
+      slowdown_ratio: 0.5
+      min_points: 2
+      enabled: true
     StopZone:
       type: "polygon"
-      points: "[[1.0, 0.5], [1.0, -0.5], [0.0, -0.5], [0.0, 0.5]]"
-      action_type: "slowdown"
-      enabled: false
+      points: "[[0.55, 0.4], [0.55, -0.4], [0.0, -0.4], [0.0, 0.4]]"
+      action_type: "stop"
+      min_points: 2
+      enabled: true
 
     observation_sources: ["front_pointcloud"]
     front_pointcloud:
@@ -245,7 +246,7 @@ local_costmap:
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
-        enabled: false
+        enabled: true
         tf_filter_tolerance: 1.0
         footprint_clearing_enabled: true
         observation_sources: "front_pointcloud left_pointcloud right_pointcloud lidar_scan"

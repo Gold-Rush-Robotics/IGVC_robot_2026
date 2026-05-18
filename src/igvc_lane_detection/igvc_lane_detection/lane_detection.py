@@ -58,12 +58,12 @@ class LaneDetectionNode(Node):
         self.persist_frame      = p('persistent_map_frame',      'odom')
         self.persist_res        = p('persistent_map_resolution',  0.10)   # m/cell – coarser saves RAM
         self.persist_size_m     = p('persistent_map_size_m',     100.0)   # square side length
-        self.persist_decay      = p('persistent_map_decay',       0.998)  # multiplied each update
-        self.persist_hit_w      = p('persistent_hit_weight',      12.0)    # added per observed point
-        self.persist_threshold  = p('persistent_threshold',       15.0)   # publish as boundary
+        self.persist_decay      = p('persistent_map_decay',       0.990)  # multiplied each update — halves in ~35 s at 2 Hz
+        self.persist_hit_w      = p('persistent_hit_weight',       6.0)   # added per observed point
+        self.persist_threshold  = p('persistent_threshold',       20.0)   # publish as boundary (≥4 consistent hits)
         self.persist_max        = p('persistent_max_value',      200.0)   # clamp to prevent blowup
         self.persist_pub_hz     = p('persistent_publish_hz',       2.0)   # how often to publish map
-        self.persist_clear_radius = p('persistent_clear_radius_m', 0.8)
+        self.persist_clear_radius = p('persistent_clear_radius_m', 1.2)   # fully covers robot footprint
 
         self._init_persistent_map()
 
@@ -198,7 +198,10 @@ class LaneDetectionNode(Node):
         # Cells above threshold → lethal boundary (100); else unknown (-1)
         data = np.where(self._phits >= self.persist_threshold, 100, -1).astype(np.int8)
         self._clear_persistent_robot_footprint(data)
-        g.data = data.flatten().tolist()
+        # Remove single-cell noise islands (erosion) then bridge real lane
+        # gaps (dilation) before publishing.
+        data = self._morphological_clean(data)
+        g.data = data.ravel().tolist()
         self.persist_pub.publish(g)
 
     def _clear_persistent_robot_footprint(self, data):
@@ -224,6 +227,40 @@ class LaneDetectionNode(Node):
         rows, cols = np.ogrid[row_lo:row_hi, col_lo:col_hi]
         mask = (rows - row_c) ** 2 + (cols - col_c) ** 2 <= radius_cells ** 2
         data[row_lo:row_hi, col_lo:col_hi][mask] = 0
+
+    def _morphological_clean(self, data: np.ndarray) -> np.ndarray:
+        """
+        Apply a one-pass erosion then dilation to the lethal (100) cells:
+          - Erosion:  a cell must have ≥3 lethal cells in its 3×3 neighbourhood
+            (including itself) to survive → kills isolated single-cell noise.
+          - Dilation: any non-lethal cell adjacent to an eroded-lethal cell
+            is promoted to lethal → bridges small gaps in real lane lines.
+
+        Pure numpy — no scipy dependency.  Uses sliding_window_view
+        (numpy ≥ 1.20, available in all supported ROS 2 Humble/Jazzy envs).
+        """
+        lethal = (data == 100)
+        if not lethal.any():
+            return data
+
+        u8 = lethal.astype(np.uint8)
+
+        # --- Erosion ---
+        padded = np.pad(u8, 1, mode='constant', constant_values=0)
+        windows = np.lib.stride_tricks.sliding_window_view(padded, (3, 3))
+        neighbour_sum = windows.sum(axis=(-2, -1))          # includes centre
+        eroded = lethal & (neighbour_sum >= 3)
+
+        # --- Dilation of eroded mask ---
+        e_u8 = eroded.astype(np.uint8)
+        padded2 = np.pad(e_u8, 1, mode='constant', constant_values=0)
+        windows2 = np.lib.stride_tricks.sliding_window_view(padded2, (3, 3))
+        dilated = windows2.max(axis=(-2, -1)).astype(bool)
+
+        result = data.copy()
+        result[lethal & ~dilated] = -1    # noise removed → unknown
+        result[~lethal & dilated] = 100   # gap bridged  → lethal
+        return result
 
     # ═══════════════════════════════════════════════════════════════════════
     # Camera info
