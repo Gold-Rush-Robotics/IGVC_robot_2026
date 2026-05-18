@@ -64,6 +64,7 @@ Publications
 from __future__ import annotations
 
 import math
+import json
 from collections import deque
 from typing import Optional
 
@@ -123,11 +124,12 @@ def gps_to_map(lat: float, lon: float,
 # ── Small data class ──────────────────────────────────────────────────────────
 
 class _Waypoint:
-    __slots__ = ('x', 'y')
+    __slots__ = ('x', 'y', 'yaw')
 
     def __init__(self, x: float, y: float) -> None:
         self.x = x
         self.y = y
+        self.yaw: Optional[float] = None
 
     def dist_to(self, other: '_Waypoint') -> float:
         return math.hypot(self.x - other.x, self.y - other.y)
@@ -138,7 +140,11 @@ class _Waypoint:
         ps.header.stamp    = stamp
         ps.pose.position.x = self.x
         ps.pose.position.y = self.y
-        ps.pose.orientation.w = 1.0
+        if self.yaw is None:
+            ps.pose.orientation.w = 1.0
+        else:
+            ps.pose.orientation.z = math.sin(self.yaw / 2.0)
+            ps.pose.orientation.w = math.cos(self.yaw / 2.0)
         return ps
 
 
@@ -188,6 +194,24 @@ class IGVCNavigatorNode(Node):
         self._max_odom_costmap_skew = self._p(
             'max_odom_costmap_skew_sec', self._max_costmap_age)
 
+        # Centerline-waypoint strategy: rolling NavigateToPose goals along a
+        # pre-known centerline (from track_points.json).  Lets SmacPlanner2D
+        # plan around obstacles via /lane_map instead of relying on a fragile
+        # local centreline extraction at sharp curves.
+        self._nav_strategy = (self._p('nav_strategy', '') or '').strip().lower()
+        self._centerline_source_json = self._p('centerline_source_json', '')
+        self._centerline_lookahead_m = self._p('centerline_lookahead_m', 6.0)
+        self._centerline_advance_m   = self._p('centerline_advance_m',   0.6)
+        self._centerline_loop        = self._p('centerline_loop',        True)
+        self._centerline_direction_param = (
+            self._p('centerline_direction', 'auto') or 'auto').strip().lower()
+        self._centerline_search_window_m = self._p(
+            'centerline_search_window_m', 8.0)
+        self._centerline_reacquire_dist_m = self._p(
+            'centerline_reacquire_dist_m', 3.0)
+        self._centerline_max_goal_dist_m = self._p(
+            'centerline_max_goal_dist_m', 12.0)
+
         # ── Internal state ────────────────────────────────────────────────
         # GPS mode: queue of _Waypoint in map frame, consumed as robot arrives
         self._gps_queue: deque[_Waypoint] = deque()
@@ -213,6 +237,26 @@ class IGVCNavigatorNode(Node):
         self._robot_xy: Optional[tuple[float, float]] = None  # odom frame
         self._robot_yaw: Optional[float] = None
         self._odom_stamp = None
+
+        # Pre-known centerline (map frame), arc-length cache, and progress
+        # index.  Populated lazily on first use in centerline_waypoints mode.
+        self._centerline_xy: Optional[list[tuple[float, float]]] = None
+        self._centerline_s: Optional[list[float]] = None
+        self._centerline_total_s: float = 0.0
+        self._centerline_progress_idx: int = 0
+        self._centerline_direction_sign: int = 0
+        self._centerline_load_attempted: bool = False
+        self._centerline_unavailable_warned: bool = False
+        self._centerline_reacquire_warned: bool = False
+
+        # Resolve the active strategy now (param may have been explicitly
+        # set, otherwise infer from gps_enabled).
+        if not self._nav_strategy:
+            self._nav_strategy = 'gps' if self._gps_enabled else 'local_lane'
+        elif self._gps_enabled and self._nav_strategy != 'gps':
+            self.get_logger().warn(
+                f"nav_strategy='{self._nav_strategy}' overridden to 'gps' because gps_enabled=true")
+            self._nav_strategy = 'gps'
 
         # ── TF ────────────────────────────────────────────────────────────
         self._tf_buf      = Buffer()
@@ -299,6 +343,16 @@ class IGVCNavigatorNode(Node):
             ('max_costmap_age_sec', 2.0),
             ('max_odom_age_sec', 0.75),
             ('max_odom_costmap_skew_sec', 1.5),
+            # Centerline-waypoint navigation strategy
+            ('nav_strategy', ''),               # '' (auto) | 'local_lane' | 'centerline_waypoints' | 'gps'
+            ('centerline_source_json', ''),     # path to track_points.json
+            ('centerline_lookahead_m', 6.0),
+            ('centerline_advance_m', 0.6),
+            ('centerline_loop', True),
+            ('centerline_direction', 'auto'),  # 'auto' | 'forward' | 'reverse'
+            ('centerline_search_window_m', 8.0),
+            ('centerline_reacquire_dist_m', 3.0),
+            ('centerline_max_goal_dist_m', 12.0),
         ]:
             self.declare_parameter(name, default)
 
@@ -442,7 +496,7 @@ class IGVCNavigatorNode(Node):
 
         # Sim mode: re-issue goal when the lane carrot has moved enough
         if not self._gps_enabled:
-            new_wp = self._lane_carrot()
+            new_wp = self._rolling_carrot()
             if new_wp is not None and self._active_wp.dist_to(new_wp) > self._replan_dist:
                 if self._last_goal_send_time is None or (
                     (now - self._last_goal_send_time).nanoseconds / 1e9 >= self._replan_min_dt
@@ -454,25 +508,50 @@ class IGVCNavigatorNode(Node):
     def _next_waypoint(self) -> Optional[_Waypoint]:
         """
         GPS mode: pop the front of the GPS queue.
-        Sim mode: project a carrot along the lane centreline.
+        Centerline mode: rolling lookahead along the pre-known centerline.
+        Sim mode (local_lane): project a carrot along the lane centreline.
         Falls back to a straight-ahead carrot if the lane is not visible.
         """
-        if self._gps_enabled:
+        strategy = self._active_strategy()
+        if strategy == 'gps':
             if not self._gps_queue:
                 self.get_logger().info(
                     'GPS queue empty — waiting for fix.',
                     throttle_duration_sec=3.0)
                 return None
             return self._gps_queue.popleft()
-        else:
-            carrot = self._lane_carrot()
-            if carrot is None:
-                carrot = self._held_lane_carrot()
-                if carrot is None:
-                    self.get_logger().warn(
-                        'No lane visible — holding current course.',
-                        throttle_duration_sec=2.0)
-            return carrot
+
+        if strategy == 'centerline_waypoints':
+            wp = self._centerline_goal()
+            if wp is not None:
+                return wp
+            # Fall through to local_lane chain if centerline unavailable
+            if not self._centerline_unavailable_warned:
+                self.get_logger().warn(
+                    'centerline strategy unavailable — falling back to local lane carrot.')
+                self._centerline_unavailable_warned = True
+
+        return self._local_lane_carrot_chain()
+
+    def _local_lane_carrot_chain(self) -> Optional[_Waypoint]:
+        carrot = self._lane_carrot()
+        if carrot is None:
+            carrot = self._held_lane_carrot()
+        if carrot is None:
+            if getattr(self, '_allow_straight_fallback', False):
+                carrot = self._straight_ahead_carrot()
+        if carrot is None:
+            self.get_logger().warn(
+                'No lane visible — holding current course.',
+                throttle_duration_sec=2.0)
+        return carrot
+
+    def _active_strategy(self) -> str:
+        """Return the resolved navigation strategy name."""
+        s = getattr(self, '_nav_strategy', '') or ''
+        if s:
+            return s
+        return 'gps' if getattr(self, '_gps_enabled', False) else 'local_lane'
 
     def _lane_carrot(self) -> Optional[_Waypoint]:
         """
@@ -511,26 +590,418 @@ class IGVCNavigatorNode(Node):
 
     def _uses_follow_path(self) -> bool:
         """Return whether sim mode should drive Nav2 with FollowPath."""
+        if self._active_strategy() == 'centerline_waypoints':
+            return False
         return (not self._gps_enabled) and self._follow_path_enabled
+
+    def _rolling_carrot(self) -> Optional[_Waypoint]:
+        """Strategy-aware re-issue carrot used by _update to track motion."""
+        if self._active_strategy() == 'centerline_waypoints':
+            wp = self._centerline_goal()
+            if wp is not None:
+                return wp
+        return self._lane_carrot()
+
+    # ── Centerline-waypoint strategy ──────────────────────────────────────
+
+    def _load_centerline_from_json(self) -> bool:
+        """
+        Load the pre-known centerline from track_points.json, convert it to
+        the map frame (by subtracting robot_start_pose.position_m so that
+        the spawn becomes (0,0) — matching track_ground_truth_node), and
+        precompute arc-length and per-point yaw caches.
+
+        Returns True on success.  Logs ERROR and returns False on failure.
+        """
+        if self._centerline_load_attempted:
+            return self._centerline_xy is not None
+        self._centerline_load_attempted = True
+
+        path = (self._centerline_source_json or '').strip()
+        if not path:
+            self.get_logger().error(
+                "centerline strategy requested but 'centerline_source_json' is empty")
+            return False
+        try:
+            with open(path, 'r') as fh:
+                payload = json.load(fh)
+        except Exception as exc:
+            self.get_logger().error(
+                f'Failed to read centerline JSON {path!r}: {exc}')
+            return False
+
+        raw = payload.get('centerline_m')
+        if not raw or not isinstance(raw, list):
+            self.get_logger().error(
+                f"centerline JSON {path!r} is missing 'centerline_m' list")
+            return False
+
+        # Match track_ground_truth_node: shift so robot spawn maps to (0, 0).
+        start_pose = payload.get('robot_start_pose') or {}
+        start_pos  = start_pose.get('position_m') or {}
+        ox = float(start_pos.get('x', 0.0))
+        oy = float(start_pos.get('y', 0.0))
+
+        xy: list[tuple[float, float]] = []
+        for pt in raw:
+            try:
+                xy.append((float(pt['x']) - ox, float(pt['y']) - oy))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if len(xy) < 2:
+            self.get_logger().error(
+                f"centerline JSON {path!r} contains <2 usable points")
+            return False
+
+        # Drop a trailing duplicate point if the JSON closes the loop
+        # by repeating the first sample.
+        if math.hypot(xy[-1][0] - xy[0][0], xy[-1][1] - xy[0][1]) < 1e-6:
+            xy.pop()
+            if len(xy) < 2:
+                self.get_logger().error('centerline collapsed after dedup')
+                return False
+
+        # Arc length cache (cumulative)
+        s = [0.0]
+        for (x0, y0), (x1, y1) in zip(xy[:-1], xy[1:]):
+            s.append(s[-1] + math.hypot(x1 - x0, y1 - y0))
+        # Closing leg for loop wrap distance
+        if self._centerline_loop:
+            total = s[-1] + math.hypot(xy[0][0] - xy[-1][0], xy[0][1] - xy[-1][1])
+        else:
+            total = s[-1]
+
+        self._centerline_xy = xy
+        self._centerline_s = s
+        self._centerline_total_s = total
+        self._centerline_progress_idx = 0
+        self._centerline_direction_sign = 0
+        self.get_logger().info(
+            f'Loaded centerline: {len(xy)} points, total arc-length '
+            f'{total:.2f} m (loop={self._centerline_loop}) from {path}')
+        return True
+
+    @staticmethod
+    def _angle_diff(lhs: float, rhs: float) -> float:
+        return math.atan2(math.sin(lhs - rhs), math.cos(lhs - rhs))
+
+    def _centerline_heading_at(self, idx: int, direction: int) -> float:
+        xy = self._centerline_xy
+        assert xy is not None
+        n = len(xy)
+        direction = 1 if direction >= 0 else -1
+        nxt = idx + direction
+        if nxt >= n:
+            nxt = 0 if self._centerline_loop else idx
+        elif nxt < 0:
+            nxt = n - 1 if self._centerline_loop else idx
+        if nxt == idx:
+            prev = idx - direction
+            if prev >= n:
+                prev = 0 if self._centerline_loop else idx
+            elif prev < 0:
+                prev = n - 1 if self._centerline_loop else idx
+            return math.atan2(xy[idx][1] - xy[prev][1], xy[idx][0] - xy[prev][0])
+        return math.atan2(xy[nxt][1] - xy[idx][1], xy[nxt][0] - xy[idx][0])
+
+    def _resolve_centerline_direction(self, idx: int) -> int:
+        """
+        Choose centerline traversal direction, auto-matching robot yaw.
+
+        For an explicit ``forward``/``reverse`` config value the sign is
+        latched once.  In ``auto`` mode we re-evaluate every call against
+        the robot's current yaw so the robot can traverse the loop in
+        either direction (e.g. after a U-turn or when spawned facing
+        backwards), but apply hysteresis so small yaw noise around the
+        ±90° crossover cannot flip the direction cycle-to-cycle and pump
+        Nav2 between forward and backward goals.
+        """
+        setting = getattr(self, '_centerline_direction_param', 'auto')
+        if setting in ('reverse', 'backward', 'backwards', '-1'):
+            new_sign = -1
+        elif setting in ('forward', 'forwards', '1'):
+            new_sign = 1
+        elif self._robot_yaw is None:
+            # Hold whatever we already had (default to forward on first call).
+            return self._centerline_direction_sign or 1
+        else:
+            fwd = self._centerline_heading_at(idx, 1)
+            rev = self._centerline_heading_at(idx, -1)
+            fwd_err = abs(self._angle_diff(self._robot_yaw, fwd))
+            rev_err = abs(self._angle_diff(self._robot_yaw, rev))
+            cur = self._centerline_direction_sign
+            if cur == 0:
+                # First evaluation: take the closer alignment outright.
+                new_sign = -1 if rev_err < fwd_err else 1
+            else:
+                # Hysteresis: only flip when the *other* direction is
+                # better-aligned by a clear margin.  This stops yaw
+                # jitter around the 90° boundary from oscillating the
+                # traversal sign while the robot is roughly broadside
+                # to the centerline.
+                margin = math.radians(30.0)
+                cur_err = fwd_err if cur > 0 else rev_err
+                alt_err = rev_err if cur > 0 else fwd_err
+                if alt_err + margin < cur_err:
+                    new_sign = -cur
+                else:
+                    new_sign = cur
+
+        if new_sign != self._centerline_direction_sign:
+            label = 'forward' if new_sign > 0 else 'reverse'
+            self.get_logger().info(
+                f'Centerline traversal direction: {label} '
+                f'(param={setting!r})')
+            self._centerline_direction_sign = new_sign
+        return self._centerline_direction_sign
+
+    def _centerline_full_closest_index(self, x: float, y: float) -> tuple[int, float]:
+        """Return nearest centerline index and distance by scanning all samples."""
+        xy = self._centerline_xy
+        assert xy is not None
+        best_i = 0
+        best_d2 = float('inf')
+        for i, (px, py) in enumerate(xy):
+            d2 = (px - x) ** 2 + (py - y) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best_i = i
+        return best_i, math.sqrt(best_d2)
+
+    def _centerline_reacquire_index(self, x: float, y: float) -> tuple[int, float]:
+        """
+        Yaw-aware global reacquisition of centerline progress.
+
+        On U-turn / hairpin loops, two strands of the centerline run close
+        together near the apex.  Pure-Euclidean nearest then flips between
+        the two strands as the robot pose jitters, which makes the goal
+        bounce ~half-a-lookahead apart in opposite directions and locks
+        Nav2 into thrashing.
+
+        To disambiguate, we collect all centerline samples within a small
+        slack of the global minimum distance and prefer the one whose
+        forward tangent (in the committed traversal direction) is most
+        aligned with the robot's current yaw.  Falls back to plain nearest
+        when robot yaw or direction sign are not yet known.
+        """
+        xy = self._centerline_xy
+        assert xy is not None
+
+        dists_sq = [(px - x) ** 2 + (py - y) ** 2 for (px, py) in xy]
+        best_idx_global = min(range(len(xy)), key=dists_sq.__getitem__)
+        best_dist = math.sqrt(dists_sq[best_idx_global])
+
+        yaw = self._robot_yaw
+        direction = self._centerline_direction_sign
+        if yaw is None or direction == 0:
+            return best_idx_global, best_dist
+
+        # Slack: only consider candidates whose distance is within
+        # ~1.5 m of the absolute nearest (covers the typical lane
+        # half-width on the IGVC track, where the two strands of a
+        # horseshoe are within a couple of meters of each other).
+        slack = 1.5
+        threshold_sq = (best_dist + slack) ** 2
+
+        best_idx = best_idx_global
+        best_score = float('inf')
+        for i, d2 in enumerate(dists_sq):
+            if d2 > threshold_sq:
+                continue
+            tang = self._centerline_heading_at(i, direction)
+            yaw_err = abs(self._angle_diff(yaw, tang))
+            # Heavily prefer tangent alignment; mild distance penalty
+            # keeps absolute nearest winning when both strands match.
+            score = yaw_err + 0.5 * (math.sqrt(d2) - best_dist)
+            if score < best_score:
+                best_score = score
+                best_idx = i
+
+        return best_idx, math.sqrt(dists_sq[best_idx])
+
+    def _centerline_closest_index(self, x: float, y: float) -> int:
+        """
+        Return the centerline index closest to (x, y).
+
+        Always performs a yaw-aware global nearest scan.  The previous
+        rolling-window implementation could let ``_centerline_progress_idx``
+        drift across the loop wrap (idx N-1 → 0) — once stuck near the
+        loop seam, the ±window_m arc range no longer covered the robot's
+        true nearest strand, so the rolling search returned a bogus
+        ``best_i`` many meters away.  On some cycles this tripped the
+        >3 m drift reacquire and snapped progress back to the true
+        nearest; on other cycles it didn't (best within window happened
+        to be slightly under the reacquire threshold) and the goal was
+        computed from a stale ``cur_idx`` on the far side of the loop.
+        That alternation pumped Nav2 between two goals ~12 m apart on
+        opposite ends of the track and drove the robot into the lane
+        line.  An O(n) scan over a 1000-sample track at 10 Hz is
+        negligible and eliminates the wrap-drift class of bugs entirely.
+        """
+        xy = self._centerline_xy
+        s = self._centerline_s
+        assert xy is not None and s is not None  # checked by caller
+
+        # First-call bookkeeping: commit traversal direction from the
+        # robot's initial yaw the first time we ever see it.
+        if not getattr(self, '_centerline_seen_robot', False):
+            best_i, _ = self._centerline_full_closest_index(x, y)
+            self._centerline_progress_idx = best_i
+            self._centerline_seen_robot = True
+            self._resolve_centerline_direction(best_i)
+            return best_i
+
+        # Yaw-aware global nearest on every call.  Tie-breaking by
+        # tangent alignment keeps progress on the same strand of the
+        # loop the robot is actually traveling, so closed-loop seams
+        # and parallel U-turn strands cannot flip the progress index.
+        idx, _dist = self._centerline_reacquire_index(x, y)
+        self._centerline_progress_idx = idx
+        return idx
+
+    def _centerline_advance_index(
+        self,
+        start_idx: int,
+        advance_m: float,
+        direction: Optional[int] = None,
+    ) -> Optional[int]:
+        """
+        Walk along the centerline by ``advance_m`` and return the
+        resulting index.  Returns None past the end when not looping.
+        """
+        xy = self._centerline_xy
+        if xy is None:
+            return None
+        n = len(xy)
+        direction = direction if direction is not None else self._resolve_centerline_direction(start_idx)
+        direction = 1 if direction >= 0 else -1
+        target = max(0.0, float(advance_m))
+        i = start_idx
+        walked = 0.0
+        while True:
+            nxt = i + direction
+            if nxt >= n:
+                if self._centerline_loop:
+                    nxt = 0
+                else:
+                    return n - 1
+            elif nxt < 0:
+                if self._centerline_loop:
+                    nxt = n - 1
+                else:
+                    return 0
+            walked += math.hypot(xy[nxt][0] - xy[i][0], xy[nxt][1] - xy[i][1])
+            if walked >= target:
+                return nxt
+            i = nxt
+            if i == start_idx:
+                return start_idx  # safety stop after a full lap
+
+    def _centerline_goal(self) -> Optional[_Waypoint]:
+        """Return the NavigateToPose target along the pre-known centerline."""
+        if not self._load_centerline_from_json():
+            return None
+        robot = self._robot_in_map()
+        if robot is None:
+            return None
+        cur_idx = self._centerline_closest_index(robot[0], robot[1])
+        direction = self._resolve_centerline_direction(cur_idx)
+        goal_idx = self._centerline_goal_index_from(cur_idx, direction)
+        if goal_idx is None:
+            return None
+        goal_idx = self._validate_centerline_goal_index(
+            goal_idx, robot[0], robot[1], direction)
+        if goal_idx is None:
+            return None
+        xy = self._centerline_xy
+        gx, gy = xy[goal_idx]
+        # Yaw: heading from goal to the next sample in the chosen direction.
+        nxt = goal_idx + direction
+        if nxt >= len(xy):
+            nxt = 0 if self._centerline_loop else goal_idx
+        elif nxt < 0:
+            nxt = len(xy) - 1 if self._centerline_loop else goal_idx
+        if nxt == goal_idx:
+            prev = goal_idx - direction
+            if prev < 0:
+                prev = len(xy) - 1 if self._centerline_loop else 0
+            elif prev >= len(xy):
+                prev = 0 if self._centerline_loop else len(xy) - 1
+            yaw = math.atan2(gy - xy[prev][1], gx - xy[prev][0])
+        else:
+            yaw = math.atan2(xy[nxt][1] - gy, xy[nxt][0] - gx)
+        wp = _Waypoint(gx, gy)
+        wp.yaw = yaw
+        return wp
+
+    def _centerline_goal_index_from(self, cur_idx: int, direction: int) -> Optional[int]:
+        return self._centerline_advance_index(
+            cur_idx, self._centerline_lookahead_m, direction)
+
+    def _validate_centerline_goal_index(
+        self,
+        goal_idx: int,
+        robot_x: float,
+        robot_y: float,
+        direction: int,
+    ) -> Optional[int]:
+        """Reject impossible centerline goals that are far beyond lookahead."""
+        xy = self._centerline_xy
+        assert xy is not None
+        gx, gy = xy[goal_idx]
+        goal_dist = math.hypot(gx - robot_x, gy - robot_y)
+        max_dist = max(
+            float(getattr(self, '_centerline_max_goal_dist_m', 12.0)),
+            float(self._centerline_lookahead_m) + 2.0,
+        )
+        if goal_dist <= max_dist:
+            return goal_idx
+
+        nearest_i, nearest_dist = self._centerline_reacquire_index(robot_x, robot_y)
+        self._centerline_progress_idx = nearest_i
+        retry_idx = self._centerline_goal_index_from(nearest_i, direction)
+        if retry_idx is None:
+            return None
+        rx, ry = xy[retry_idx]
+        retry_dist = math.hypot(rx - robot_x, ry - robot_y)
+        if retry_dist <= max_dist:
+            self.get_logger().warn(
+                'Dropped stale centerline goal '
+                f'{goal_dist:.2f} m away; reacquired nearest centerline '
+                f'point {nearest_dist:.2f} m from robot.',
+                throttle_duration_sec=1.0)
+            return retry_idx
+
+        self.get_logger().warn(
+            'Suppressing centerline goal because computed target is '
+            f'{retry_dist:.2f} m away after reacquire (limit {max_dist:.2f} m).',
+            throttle_duration_sec=1.0)
+        return None
 
     # ── Centreline extraction ─────────────────────────────────────────────
 
     def _extract_centreline(self) -> list[tuple[float, float]]:
         """
-        Walk the lane costmap forward from the robot.  Each row's centreline
-        is the centroid of free cells in the *connected* free band straddling
-        the robot's lateral position (col 0 in base_link coords).
+        Derive the lane centreline from /lane_costmap.  Ground-truth mode
+        marks the drivable corridor as FREE (0) and stamps obstacles as
+        LETHAL (100), while the camera pipeline marks detected lane paint as
+        LETHAL.  Prefer the free corridor when it is available so simulated
+        obstacles do not get mistaken for lane lines.
 
-        The walk terminates as soon as one of the following happens:
-          * a row has no free cells (blocked — e.g. the closed end of a
-            U-turn);
-          * the next row's centroid jumps laterally by more than
-            ``max_lateral_jump_m`` compared with the previous row (the free
-            region ahead has "teleported" across a closure).
+        Algorithm:
+          1. Collect all lethal cells (cost == 100) within the lookahead.
+          2. Split into left side (lat > 0) and right side (lat < 0).
+          3. Fit a polynomial lat = f(fwd) to each side.
+          4. Sample (fwd, (left(fwd) + right(fwd)) / 2) along the horizon.
+             If only one side is detected, offset by half corridor width.
 
-        This prevents the carrot from leaping across a U-turn's closed end
-        into the return lane, which is what was causing the robot to drive
-        straight into the far line.
+        The previous row-by-row free-cell centroid approach failed when
+        the corridor between detected lane lines was not filled in as
+        free cells: lane_segmentation only fills free between detected
+        lane lines in rows where a lane is actually present in that
+        row, so on diagonal or sparse line segments most rows between
+        the robot and the visible lines stayed at -1 (unknown), causing
+        centreline extraction to find nothing and the robot to stall.
         """
         g = self._grid
         if g is None:
@@ -541,97 +1012,123 @@ class IGVCNavigatorNode(Node):
         orig_y = g.info.origin.position.y  # lateral offset of col 0 in base_link
 
         data = np.frombuffer(bytes(g.data), dtype=np.int8).reshape(H, W)
-        # Strictly-free cells only (cost == 0).  Treating unknown (-1) as
-        # drivable made the free band balloon out to the grid edge
-        # whenever one lane was missing from the costmap — the centroid
-        # then sat well outside the corridor and the carrot got sent
-        # across the opposing lane.
-        free_mask = (data == 0)
 
-        # Expected lane half-width, in cells.  We clamp the free band to a
-        # window of this size on either side of the previous centroid so a
-        # one-sided lane detection can't yank the carrot sideways.
-        lane_half_m        = 1.2
-        lane_half_cols     = max(4, int(round(lane_half_m / res)))
-        max_lateral_jump_m = 0.5
-        max_gap_rows = max(0, int(round(self._centreline_gap_tolerance_m / res)))
-        gap_rows = 0
+        # 1. Prefer FREE corridor boundaries when present.
+        #    GT mode:     corridor=FREE(0), outside=UNKNOWN(-1), obstacles=LETHAL(100).
+        #    Camera mode: lane lines=LETHAL(100), corridor mixed FREE/UNKNOWN.
+        #
+        #    Scan every row in the lookahead window; for each row use the
+        #    outermost free cells as the left/right corridor boundary.
+        #    Obstacle cells (100) punch holes in the free region but the
+        #    outermost free cells on each side still represent the corridor
+        #    edges correctly.  No per-row gap or lateral-jump filtering —
+        #    those checks fired prematurely on sharp bends where the corridor
+        #    shifts quickly in the base_link frame.  The polynomial fit and
+        #    the corridor_max_lat guard below handle outliers.
+        max_row = min(H, int(self._lookahead / res) + 1)
+        free_rows_all, free_cols_all = np.where(data[:max_row] == 0)
+        if free_rows_all.size >= 3:
+            syn_rows: list[int] = []
+            syn_cols: list[int] = []
+            for r in np.unique(free_rows_all):
+                c_in_row = free_cols_all[free_rows_all == r]
+                if c_in_row.size >= 2:
+                    syn_rows.extend([int(r), int(r)])
+                    syn_cols.extend([int(c_in_row.max()), int(c_in_row.min())])
+            if len(syn_rows) >= 3:
+                lane_rows = np.array(syn_rows, dtype=np.intp)
+                lane_cols = np.array(syn_cols, dtype=np.intp)
+            else:
+                lane_rows, lane_cols = np.where(data[:max_row] == 100)
+        else:
+            # No free corridor cells — camera pipeline: lane lines are LETHAL.
+            lane_rows, lane_cols = np.where(data[:max_row] == 100)
+        if lane_rows.size < 3:
+            return []
+
+        fwds = lane_rows.astype(float) * res
+        lats = orig_y + (lane_cols.astype(float) + 0.5) * res
+
+        # 2. Filter to plausible corridor extent (±2.0m). Anything beyond
+        #    is almost certainly stray detection or an adjacent corridor.
+        corridor_max_lat = 2.0
+        keep = np.abs(lats) <= corridor_max_lat
+        fwds = fwds[keep]
+        lats = lats[keep]
+        if fwds.size < 3:
+            return []
+
+        # 3. Split sides. ROS REP-103: +y is left of the robot, -y is right.
+        #    Small dead-band around 0 so a stray cell on the centreline
+        #    isn't force-classified.
+        left_mask  = lats >  0.10
+        right_mask = lats < -0.10
+
+        def _fit(mask: np.ndarray):
+            n = int(mask.sum())
+            if n < 3:
+                return None
+            # Degree 1 if few points, degree 2 otherwise (handles turns).
+            deg = 1 if n < 8 else 2
+            try:
+                return np.polyfit(fwds[mask], lats[mask], deg=deg)
+            except (np.linalg.LinAlgError, ValueError):
+                return None
+
+        left_poly  = _fit(left_mask)
+        right_poly = _fit(right_mask)
+
+        if left_poly is None and right_poly is None:
+            return []
+
+        # 4. Sample centreline over the range with actual lane evidence so
+        #    we don't extrapolate past the last visible lane segment.
+        if left_poly is not None and right_poly is not None:
+            fwd_max = float(min(fwds[left_mask].max(), fwds[right_mask].max()))
+        elif left_poly is not None:
+            fwd_max = float(fwds[left_mask].max())
+        else:
+            fwd_max = float(fwds[right_mask].max())
+        fwd_max = min(fwd_max, self._lookahead)
+
+        # Start a little ahead of the robot to avoid extrapolation near 0.
+        fwd_min = 0.4
+        if fwd_max <= fwd_min + 0.5:
+            return []
+
+        spacing = max(0.10, float(self._path_sample_spacing_m))
+        sample_count = max(2, int(math.ceil((fwd_max - fwd_min) / spacing)) + 1)
+        sample_fwds = np.linspace(fwd_min, fwd_max, sample_count)
+
+        half_corridor = 1.0  # m — offset from a single visible line
 
         pts: list[tuple[float, float]] = []
-        prev_lat: Optional[float] = None
-        started = False  # True once we've found the first row with free cells
+        for fwd in sample_fwds:
+            left_lat  = float(np.polyval(left_poly,  fwd)) if left_poly  is not None else None
+            right_lat = float(np.polyval(right_poly, fwd)) if right_poly is not None else None
 
-        # Column that corresponds to lateral = 0 (robot centreline).
-        centre_col0 = int(round(-orig_y / res))
-
-        # Close-range rows (roughly within ``min_detection_depth_m``) are
-        # always unknown because the depth camera can't see under its own
-        # nose.  Don't terminate on those — skip forward until we find the
-        # first row with any free cells, then start tracking the corridor.
-        entered_band = False
-
-        for row in range(H):
-            fwd = row * res
-            if fwd > self._lookahead:
-                break
-            row_free = free_mask[row]
-            if not row_free.any():
-                if not entered_band:
-                    # Still in the blind close-range zone — keep searching.
-                    continue
-                gap_rows += 1
-                if gap_rows <= max_gap_rows:
-                    continue
-                break
-
-            # Window around the target column — this is the key fix.
-            target_col = centre_col0 if prev_lat is None else int(round(
-                (prev_lat - orig_y) / res))
-            target_col = max(0, min(W - 1, target_col))
-            lo = max(0, target_col - lane_half_cols)
-            hi = min(W, target_col + lane_half_cols + 1)
-
-            window_free = row_free[lo:hi]
-            if not window_free.any():
-                if not entered_band:
-                    continue
-                gap_rows += 1
-                if gap_rows <= max_gap_rows:
-                    continue
-                break
-
-            diff   = np.diff(window_free.astype(np.int8))
-            starts = np.where(diff ==  1)[0] + 1
-            ends   = np.where(diff == -1)[0] + 1
-            if window_free[0]:
-                starts = np.r_[0, starts]
-            if window_free[-1]:
-                ends = np.r_[ends, hi - lo]
-
-            rel_target = target_col - lo
-            picked = None
-            for s, e in zip(starts, ends):
-                if s <= rel_target < e:
-                    picked = (s, e)
+            if left_lat is not None and right_lat is not None:
+                sep = left_lat - right_lat
+                if sep < 0.5:
+                    # Lines have crossed / collapsed — past corridor end.
                     break
-            if picked is None:
-                if not entered_band:
-                    continue
-                gap_rows += 1
-                if gap_rows <= max_gap_rows:
-                    continue
-                break
-            entered_band = True
-            gap_rows = 0
-            s, e = picked
-            centre_col = lo + 0.5 * (s + e - 1)
-            lateral = orig_y + centre_col * res
+                if sep > 4.0:
+                    # One fit is suspect; fall back to the denser side.
+                    if int(left_mask.sum()) >= int(right_mask.sum()):
+                        lat = left_lat - half_corridor
+                    else:
+                        lat = right_lat + half_corridor
+                else:
+                    lat = 0.5 * (left_lat + right_lat)
+            elif left_lat is not None:
+                lat = left_lat - half_corridor
+            else:
+                lat = right_lat + half_corridor  # type: ignore[operator]
 
-            if prev_lat is not None and abs(lateral - prev_lat) > max_lateral_jump_m:
-                break  # centroid jumped — likely stepped across a line
-            pts.append((fwd, lateral))
-            prev_lat = lateral
-            started = True
+            # Clamp — guards against polynomial extrapolation blow-up.
+            if abs(lat) > corridor_max_lat:
+                break
+            pts.append((float(fwd), float(lat)))
 
         return pts
 
@@ -676,21 +1173,27 @@ class IGVCNavigatorNode(Node):
             return self._build_path([], self._grid.header.stamp)
 
         raw_pts = self._extract_centreline()
+        # Use the odom stamp so Nav2 resolves base_link→odom TF at the moment
+        # that matches the robot pose used for costmap extraction.  Using the
+        # (possibly stale) costmap stamp, then overriding it to now() in
+        # _send_path_goal, was anchoring the path to the wrong robot pose on
+        # turns and causing the robot to track across lane lines.
+        path_stamp = self._odom_stamp
         if not raw_pts:
             self._last_lane_path_reason = 'centreline extraction found no connected free band ahead'
             if self._allow_straight_fallback:
-                return self._straight_ahead_path(self._grid.header.stamp)
-            return self._build_path([], self._grid.header.stamp)
+                return self._straight_ahead_path(path_stamp)
+            return self._build_path([], path_stamp)
         if len(raw_pts) < self._min_follow_path_poses:
             self._last_lane_path_reason = f'centreline has {len(raw_pts)} raw point(s)'
             if self._allow_straight_fallback:
-                return self._straight_ahead_path(self._grid.header.stamp)
-            return self._build_path([], self._grid.header.stamp)
+                return self._straight_ahead_path(path_stamp)
+            return self._build_path([], path_stamp)
         else:
             self._last_lane_path_reason = f'centreline has {len(raw_pts)} raw point(s)'
         return self._build_path(
             self._condition_path_points(raw_pts),
-            self._grid.header.stamp)
+            path_stamp)
 
     def _straight_ahead_path(self, stamp=None) -> Path:
         length = max(self._min_follow_path_length_m, self._fallback_path_length_m)
@@ -902,9 +1405,11 @@ class IGVCNavigatorNode(Node):
             self._cancel_goal()
 
         send_time = self.get_clock().now()
-        path.header.stamp = send_time.to_msg()
-        for pose in path.poses:
-            pose.header.stamp = path.header.stamp
+        # Do NOT override path.header.stamp here.  The stamp was set to
+        # self._odom_stamp in _lane_path_from_costmap so that Nav2 resolves
+        # base_link→odom at the correct robot pose.  Overriding it to now()
+        # was shifting the entire path by however far the robot moved between
+        # the odom capture time and the goal send time.
 
         goal = FollowPath.Goal()
         goal.path = path
