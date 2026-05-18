@@ -69,6 +69,7 @@ class LaneSegmentationNode(Node):
         super().__init__('lane_segmentation_node')
         self.bridge = CvBridge()
         self.K: dict = {}
+        self.camera_info_size: dict = {}
 
         # ── Parameters (shared with LaneDetectionNode) ────────────────
         def p(name, default):
@@ -120,6 +121,15 @@ class LaneSegmentationNode(Node):
         # ── Pose deduplication — skip persistent write if not moved ────
         self.min_pose_change_m   = float(p('min_pose_change_m',   0.05))
         self.min_pose_change_rad = float(p('min_pose_change_rad', 0.02))
+
+        # ── Yaw-rate gate ────────────────────────────────────────────
+        # During fast in-place turns the depth-projected lane points
+        # smear in the world frame (camera/odom sync error grows with
+        # angular velocity, and ZED depth at oblique angles is noisy).
+        # Skip persistent-map writes when |yaw_rate| exceeds this
+        # threshold — decay still applies so stale cells fade out.
+        self.max_yaw_rate_persist = float(
+            p('max_yaw_rate_for_persist_update_rad_s', 0.6))
 
         # ── Segmentation-specific parameters ─────────────────────────
         self.model_weights          = p('model_weights',            '')
@@ -352,6 +362,24 @@ class LaneSegmentationNode(Node):
             self._phits *= self.persist_decay
             return
 
+        # Yaw-rate gate: during fast in-place turns, depth-projected
+        # lane points smear in odom (camera/odom timing skew + oblique
+        # depth noise).  Apply decay only and skip the stamping pass so
+        # the persistent map fades stale evidence instead of stacking
+        # new bad evidence on top of it.
+        if (
+            self.max_yaw_rate_persist > 0.0
+            and self._latest_odom is not None
+        ):
+            yaw_rate = abs(self._latest_odom.twist.twist.angular.z)
+            if yaw_rate > self.max_yaw_rate_persist:
+                self._phits *= self.persist_decay
+                self.get_logger().debug(
+                    f'Skipping persistent-map write: |yaw_rate|='
+                    f'{yaw_rate:.2f} rad/s > '
+                    f'{self.max_yaw_rate_persist:.2f}')
+                return
+
         pose = self._persistent_pose(stamp)
         if pose is None:
             return
@@ -431,6 +459,7 @@ class LaneSegmentationNode(Node):
 
     def _on_info(self, msg: CameraInfo, idx: int) -> None:
         self.K[idx] = np.array(msg.k).reshape(3, 3)
+        self.camera_info_size[idx] = (int(msg.width), int(msg.height))
         self.get_logger().info(
             f'Camera[{idx}] intrinsics received.', once=True)
 
@@ -617,17 +646,13 @@ class LaneSegmentationNode(Node):
         fx, fy = K[0, 0], K[1, 1]
         cx, cy = K[0, 2], K[1, 2]
 
-        # Scale intrinsics if depth image is a different resolution from the
-        # camera_info resolution (rare with ZED, but guard anyway).
-        # K is delivered at rgb resolution; depth may differ.
-        # We just use the ratio to the K resolution we received.
-        # (ZED delivers depth at the same resolution as colour, so this is
-        #  typically a no-op, but keeps the code correct in general.)
-        rgb_h = K[1, 2] * 2.0  # approximate from principal point
-        rgb_w = K[0, 2] * 2.0
-        if rgb_h > 0 and rgb_w > 0:
-            sx = dw / rgb_w
-            sy = dh / rgb_h
+        # Scale intrinsics if depth image resolution differs from CameraInfo.
+        # Use the actual calibrated image size instead of approximating from
+        # principal point; this keeps obstacle-height projection stable.
+        info_size = self.camera_info_size.get(cam_idx)
+        if info_size is not None and info_size[0] > 0 and info_size[1] > 0:
+            sx = dw / float(info_size[0])
+            sy = dh / float(info_size[1])
             fx, fy = fx * sx, fy * sy
             cx, cy = cx * sx, cy * sy
 
