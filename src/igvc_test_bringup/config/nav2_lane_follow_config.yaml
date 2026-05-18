@@ -87,12 +87,12 @@ controller_server:
       # from the 5 Hz global replanning above.
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.90
-      desired_angular_vel: 1.0
+      desired_angular_vel: 1.5
       lookahead_dist: 1.2
       min_lookahead_dist: 0.6
       max_lookahead_dist: 2.4
       lookahead_time: 1.0
-      rotate_to_heading_angular_vel: 1.0
+      rotate_to_heading_angular_vel: 1.5
       transform_tolerance: 1.0
       use_velocity_scaled_lookahead_dist: false
       min_approach_linear_velocity: 0.2
@@ -131,7 +131,7 @@ collision_monitor:
     cmd_vel_out_topic: "/diff_drive_controller/cmd_vel_unstamped"
     state_topic: "collision_monitor_state"
     transform_tolerance: 1.0
-    source_timeout: 2.5
+    source_timeout: 1.5
     base_shift_correction: true
     stop_pub_timeout: 2.0
     polygons: ["SlowZone", "StopZone"]

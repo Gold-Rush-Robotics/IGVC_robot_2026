@@ -63,12 +63,18 @@ lane_segmentation_node:
     odom_topic:                "/front_zed_camera_x/zed_node/odom"
     persistent_map_size_m:    40.0
     persistent_map_resolution: 0.125
-    persistent_map_decay:      0.998
-    persistent_hit_weight:     4.0
-    persistent_threshold:     15.0
+    persistent_map_decay:      0.97
+    persistent_hit_weight:     3.0
+    persistent_threshold:     12.0
     persistent_max_value:    200.0
     persistent_publish_hz:     10.0  # raised from 2.0 — was discarding 14 frames between publishes
     persistent_clear_radius_m: 0.8
+
+    # Skip persistent-map writes when the robot is spinning faster
+    # than this (rad/s).  During tight in-place turns the depth-projected
+    # lane points smear in odom; pausing writes (decay still runs) lets
+    # the map self-correct as the robot settles.
+    max_yaw_rate_for_persist_update_rad_s: 0.6
 
     # Keep the synchronizer latest-only so YOLO does not chew through
     # a backlog of old RGB+depth pairs when the camera out-runs inference.
@@ -127,10 +133,10 @@ lane_segmentation_node:
     #
     # Tune obstacle_z_min_m upward if ground reflections still trigger false mask.
     # Tune obstacle_dilation_px upward if silhouette halo edges remain visible.
-    obstacle_mask_enabled:    false
-    obstacle_z_min_m:         0.15    # base_link Z above this → obstacle (not ground)
+    obstacle_mask_enabled:    true
+    obstacle_z_min_m:         0.20    # base_link Z above this → obstacle (not ground)
     obstacle_z_max_m:         2.5     # above this → sky/ceiling, ignore
     obstacle_depth_min_m:     0.3     # ignore very-close depth noise
-    obstacle_depth_max_m:     8.0     # ignore distant background objects
-    obstacle_dilation_px:     30      # expand mask to cover halo / shadow edges
+    obstacle_depth_max_m:     6.0     # ignore distant background objects
+    obstacle_dilation_px:     20      # expand mask to cover halo / shadow edges
     camera_height_fallback_m: 0.45    # approximate camera mount height (fallback only)
