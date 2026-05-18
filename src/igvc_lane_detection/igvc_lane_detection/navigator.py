@@ -256,9 +256,11 @@ class IGVCNavigatorNode(Node):
 
         # ── Publishers ────────────────────────────────────────────────────
         self._path_pub = self.create_publisher(Path, '/lane_path', 10)
+        self._status_pub = self.create_publisher(String, '/navigator/status', 10)
 
         # ── Main loop ─────────────────────────────────────────────────────
         self.create_timer(0.1, self._update)   # 10 Hz
+        self.create_timer(1.0, self._publish_status)  # 1 Hz diagnostics
 
     # ── Parameter helpers ─────────────────────────────────────────────────
 
@@ -541,17 +543,20 @@ class IGVCNavigatorNode(Node):
         orig_y = g.info.origin.position.y  # lateral offset of col 0 in base_link
 
         data = np.frombuffer(bytes(g.data), dtype=np.int8).reshape(H, W)
-        # Strictly-free cells only (cost == 0).  Treating unknown (-1) as
-        # drivable made the free band balloon out to the grid edge
-        # whenever one lane was missing from the costmap — the centroid
-        # then sat well outside the corridor and the carrot got sent
-        # across the opposing lane.
-        free_mask = (data == 0)
+        # Treat cost==0 (free) and cost==-1 (unknown) as drivable.
+        # Unknown cells are unobserved space ahead — blocking the walk on
+        # them causes stalls at every map gap.  The lane_half_cols window
+        # still constrains the search to ±lane_half_m of the current
+        # centroid, so unknown cells outside the corridor cannot pull the
+        # carrot sideways.
+        free_mask = (data <= 0)
 
         # Expected lane half-width, in cells.  We clamp the free band to a
         # window of this size on either side of the previous centroid so a
         # one-sided lane detection can't yank the carrot sideways.
-        lane_half_m        = 1.2
+        # 1.8 m matches a 3 m lane half-width and gives margin for
+        # imperfect lane boundary positions in noisy maps.
+        lane_half_m        = 1.8
         lane_half_cols     = max(4, int(round(lane_half_m / res)))
         max_lateral_jump_m = 0.5
         max_gap_rows = max(0, int(round(self._centreline_gap_tolerance_m / res)))
@@ -1036,6 +1041,24 @@ class IGVCNavigatorNode(Node):
         # Clear so _update picks the next waypoint on the next tick
         if self._active_wp is not None and status != GoalStatus.STATUS_CANCELED:
             self._active_wp = None
+
+    def _publish_status(self) -> None:
+        """Publish a 1 Hz human-readable diagnostic string on /navigator/status."""
+        parts = [
+            f'loc={self._loc_status}',
+            f'aborts={self._consecutive_aborts}',
+            f'goal_pending={self._goal_pending}',
+            f'active_wp={"yes" if self._active_wp is not None else "no"}',
+            f'path_reason={self._last_lane_path_reason}',
+            f'grid={"yes" if self._grid is not None else "no"}',
+        ]
+        if self._abort_backoff_until is not None:
+            remaining = (self._abort_backoff_until - self.get_clock().now()).nanoseconds / 1e9
+            if remaining > 0.0:
+                parts.append(f'backoff={remaining:.1f}s')
+        msg = String()
+        msg.data = ' | '.join(parts)
+        self._status_pub.publish(msg)
 
     def _cancel_goal(self) -> None:
         if self._goal_handle is not None:
