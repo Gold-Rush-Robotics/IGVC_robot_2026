@@ -300,9 +300,11 @@ class IGVCNavigatorNode(Node):
 
         # ── Publishers ────────────────────────────────────────────────────
         self._path_pub = self.create_publisher(Path, '/lane_path', 10)
+        self._status_pub = self.create_publisher(String, '/navigator/status', 10)
 
         # ── Main loop ─────────────────────────────────────────────────────
         self.create_timer(0.1, self._update)   # 10 Hz
+        self.create_timer(1.0, self._publish_status)  # 1 Hz diagnostics
 
     # ── Parameter helpers ─────────────────────────────────────────────────
 
@@ -1541,6 +1543,24 @@ class IGVCNavigatorNode(Node):
         # Clear so _update picks the next waypoint on the next tick
         if self._active_wp is not None and status != GoalStatus.STATUS_CANCELED:
             self._active_wp = None
+
+    def _publish_status(self) -> None:
+        """Publish a 1 Hz human-readable diagnostic string on /navigator/status."""
+        parts = [
+            f'loc={self._loc_status}',
+            f'aborts={self._consecutive_aborts}',
+            f'goal_pending={self._goal_pending}',
+            f'active_wp={"yes" if self._active_wp is not None else "no"}',
+            f'path_reason={self._last_lane_path_reason}',
+            f'grid={"yes" if self._grid is not None else "no"}',
+        ]
+        if self._abort_backoff_until is not None:
+            remaining = (self._abort_backoff_until - self.get_clock().now()).nanoseconds / 1e9
+            if remaining > 0.0:
+                parts.append(f'backoff={remaining:.1f}s')
+        msg = String()
+        msg.data = ' | '.join(parts)
+        self._status_pub.publish(msg)
 
     def _cancel_goal(self) -> None:
         if self._goal_handle is not None:
