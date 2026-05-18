@@ -32,14 +32,14 @@ planner_server:
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_smac_planner::SmacPlanner2D"
-      tolerance: 0.5                   # goal tolerance (m) — generous for GPS accuracy
+      tolerance: 0.3                   # goal tolerance (m) — tighter for precise lane following
       downsample_costmap: true
       downsampling_factor: 1
       allow_unknown: true              # needed: unknown cells exist at course edges
       max_iterations: 1000000
       max_on_approach_iterations: 1000
-      max_planning_time: 0.2           # cap so 5 Hz replan never stalls
-      cost_travel_multiplier: 6.0
+      max_planning_time: 0.5           # extended — noisy costmaps need more search time
+      cost_travel_multiplier: 2.0      # reduced from 6.0 — willing to traverse high-cost corridor
       use_final_approach_orientation: false
       smoother:
         max_iterations: 1000
@@ -88,13 +88,13 @@ controller_server:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
       desired_linear_vel: 0.45
       desired_angular_vel: 0.8
-      lookahead_dist: 0.7
-      min_lookahead_dist: 0.35
-      max_lookahead_dist: 1.2
+      lookahead_dist: 1.0              # increased from 0.7 — smoother tracking, less snaking
+      min_lookahead_dist: 0.5          # increased from 0.35
+      max_lookahead_dist: 2.0          # increased from 1.2 — look further ahead on straights
       lookahead_time: 0.6
       rotate_to_heading_angular_vel: 0.8
       transform_tolerance: 1.0
-      use_velocity_scaled_lookahead_dist: false
+      use_velocity_scaled_lookahead_dist: true  # adapts lookahead to current speed
       min_approach_linear_velocity: 0.1
       approach_velocity_scaling_dist: 1.0
       # The local obstacle layer is currently too noisy for RPP's internal
@@ -157,16 +157,17 @@ collision_monitor:
 
     SlowZone:
       type: "polygon"
-      # Nav2 collision_monitor declares polygon points as a string and parses
-      # the nested point list internally.
       points: "[[1.0, 0.5], [1.0, -0.5], [0.0, -0.5], [0.0, 0.5]]"
       action_type: "slowdown"
-      enabled: false
+      slowdown_ratio: 0.5
+      min_points: 2
+      enabled: true
     StopZone:
       type: "polygon"
-      points: "[[1.0, 0.5], [1.0, -0.5], [0.0, -0.5], [0.0, 0.5]]"
-      action_type: "slowdown"
-      enabled: false
+      points: "[[0.55, 0.4], [0.55, -0.4], [0.0, -0.4], [0.0, 0.4]]"
+      action_type: "stop"
+      min_points: 2
+      enabled: true
 
     observation_sources: ["front_pointcloud"]
     front_pointcloud:
@@ -237,7 +238,7 @@ local_costmap:
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
-        enabled: false
+        enabled: true
         tf_filter_tolerance: 1.0
         footprint_clearing_enabled: true
         observation_sources: "front_pointcloud left_pointcloud right_pointcloud lidar_scan"
@@ -307,7 +308,10 @@ local_costmap:
         map_subscribe_transient_local: true
         subscribe_to_updates: true
         map_topic: "/lane_map"
-        lethal_cost_threshold: 90
+        # 101 → cost-100 lane cells come in as high-cost (253), not lethal (254).
+        # Lethal cells cause SmacPlanner to refuse ALL paths through paint; high-cost
+        # steers the robot away without making the corridor impassable.
+        lethal_cost_threshold: 101
         unknown_cost_value: 1
         track_unknown_space: false
         use_maximum: true
@@ -391,7 +395,8 @@ global_costmap:
         map_subscribe_transient_local: true
         subscribe_to_updates: true
         map_topic: "/lane_map"
-        lethal_cost_threshold: 90
+        # 101 → cost-100 lane cells come in as high-cost (253), not lethal (254).
+        lethal_cost_threshold: 101
         unknown_cost_value: 1
         track_unknown_space: false
         use_maximum: true
@@ -399,4 +404,4 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 2.0
-        inflation_radius: 0.25
+        inflation_radius: 0.6    # raised from 0.25 to match local costmap margin

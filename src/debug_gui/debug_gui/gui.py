@@ -30,8 +30,8 @@ class JointStatePublisher(Node):
         self.image_signal.signal.connect(self.app.update_image)
 
     def create_subscribers(self):
-        # topics = [ "left_zed_camera_x/zed_node/rgb/color/rect/image","/front_zed_camera_x/zed_node/rgb/color/rect/image","right_zed_camera_x/zed_node/rgb/color/rect/image"]
-        topics = ["/right_zed_camera_x/zed_node/confidence/confidence_map", "/lane_debug/cam0/overlay", "/lane_debug/cam1/overlay", "/lane_debug/cam2/overlay" ]
+        topics = [ "left_zed_camera_x/zed_node/rgb/color/rect/image","/front_zed_camera_x/zed_node/rgb/color/rect/image","right_zed_camera_x/zed_node/rgb/color/rect/image"]
+        # topics = ["/right_zed_camera_x/zed_node/confidence/confidence_map", "/lane_debug/cam0/overlay", "/lane_debug/cam1/overlay", "/lane_debug/cam2/overlay" ]
         # topics = [ "/lane_debug/cam0/overlay" ]
         # topics = [ "/debug/stitched_lanes" ]
         for i, topic in enumerate(topics):
