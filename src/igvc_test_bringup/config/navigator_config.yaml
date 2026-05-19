@@ -8,11 +8,11 @@ igvc_navigator:
     progress_checker_id: "progress_checker"
 
     # Local lane path extraction and update discipline.
-    # Tightened from 2.0 / 0.75 / 1.5 — stale costmap + odom were allowing the
-    # path to be anchored to an old robot pose, causing cross-line tracking on turns.
-    max_costmap_age_sec: 0.5
+    # Camera segmentation can publish /lane_costmap at ~0.4-1.0 Hz under load;
+    # keep the latest valid grid long enough for the navigator to use it.
+    max_costmap_age_sec: 5.0
     max_odom_age_sec: 0.5
-    max_odom_costmap_skew_sec: 0.5
+    max_odom_costmap_skew_sec: 5.0
     path_lookahead_m: 4.0
     # Reduced from 1.0s → 0.33s so the path refreshes ~3x per second; at
     # 0.45 m/s this means no more than ~15 cm of stale corridor on turns.
@@ -20,7 +20,7 @@ igvc_navigator:
     min_follow_path_poses: 5
     min_follow_path_length_m: 1.5
     path_sample_spacing_m: 0.10
-    path_smooth_window: 11
+    path_smooth_window: 5
     path_change_tolerance_m: 0.25
     path_change_tolerance_rad: 0.25
     max_path_lateral_jump_m: 0.60

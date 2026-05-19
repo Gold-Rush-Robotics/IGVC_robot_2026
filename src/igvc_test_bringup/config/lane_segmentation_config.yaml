@@ -3,7 +3,7 @@ lane_segmentation_node:
     # ── Camera configuration ────────────────────────────────────────
     # All three ZEDs feed the segmentation pipeline in their native
     # orientation — YOLOPv2 performed better without any pre-rotation.
-    num_cameras: 3
+    num_cameras: 1
     camera_topics:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
       # - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
@@ -23,8 +23,8 @@ lane_segmentation_node:
 
     # ── Local rolling costmap ───────────────────────────────────────
     grid_resolution: 0.05
-    grid_width:     20.0
-    grid_height:    20.0
+    grid_width:     10.0
+    grid_height:    10.0
 
     # ── Region of interest / body cropping ──────────────────────────
     # roi_enabled=false → use the full frame (matches the offline
@@ -61,14 +61,19 @@ lane_segmentation_node:
     persistent_map_frame:      "odom"
     persistent_pose_source:    "odom"
     odom_topic:                "/front_zed_camera_x/zed_node/odom"
-    persistent_map_size_m:    40.0
+    persistent_map_size_m:    100.0
     persistent_map_resolution: 0.125
     persistent_map_decay:      0.97
     persistent_hit_weight:     3.0
+    persistent_free_hit_weight: 1.0
     persistent_threshold:     12.0
+    persistent_free_threshold: 3.0
     persistent_max_value:    200.0
     persistent_publish_hz:     10.0  # raised from 2.0 — was discarding 14 frames between publishes
     persistent_clear_radius_m: 0.8
+    local_costmap_from_persistent: true
+    local_costmap_publish_hz: 10.0
+    local_back_nogo_buffer_m: 0.30
 
     # Skip persistent-map writes when the robot is spinning faster
     # than this (rad/s).  During tight in-place turns the depth-projected

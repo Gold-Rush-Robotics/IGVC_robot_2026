@@ -50,6 +50,8 @@ def generate_launch_description() -> LaunchDescription:
             PathJoinSubstitution([bringup, 'launch', 'lane_segmentation.launch.py'])
         ),
         launch_arguments={
+            'gps_enabled': gps_enabled,
+            'force_identity_map_to_odom': 'true',
             'use_sim_time': use_sim_time,
         }.items(),
     )
@@ -84,8 +86,11 @@ def generate_launch_description() -> LaunchDescription:
             {'odom_frame_id': 'odom'},
             {'base_frame_id': 'base_link'},
             {'publish_rate_hz': 100.0},
-            {'use_original_timestamp': True},   # use sensor timestamp to avoid TF desync
-            {'warn_odom_age_sec': 0.2},           # tightened from 0.5 — stale odometry threshold
+            # Match isaac_nav_test: publish TF at the current ROS time so
+            # RViz/Nav2 can transform base_link-framed /lane_costmap even
+            # when the ZED odom message timestamp lags under sim/YOLO load.
+            {'use_original_timestamp': False},
+            {'warn_odom_age_sec': 0.5},
         ],
     )
     gps_node = Node(
@@ -140,7 +145,7 @@ def generate_launch_description() -> LaunchDescription:
         # lane_follower,
         lane_segmentation,
         # gps_node,
-        # odom_tf_bridge_node,
+        odom_tf_bridge_node,
         # zed_f9p_launch,
         twist_stamper_node,
     ])

@@ -8,11 +8,12 @@
 #    2. gt_nav_bridge_node stamps obstacle lethal cells and republishes →
 #       /lane_map  (nav2 StaticLayer)
 #       /lane_costmap  (navigator local path extraction)
-#    3. igvc_navigator extracts a centreline from /lane_costmap and drives nav2
+#    3. igvc_navigator extracts a local lane path from /lane_costmap and drives
+#       Nav2 via FollowPath
 #    4. nav2 (controller_server + planner_server + bt_navigator) closes the loop
 #
 #  Launch with:
-#    ros2 launch igvc_test_bringup isaac_nav_test.launch.py [nav_mode:=follow_path|navigate_to_pose]
+#    ros2 launch igvc_test_bringup isaac_nav_test.launch.py
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ── Ground-truth grid publisher ───────────────────────────────────────────────
@@ -89,17 +90,6 @@ igvc_navigator:
     replan_dist_m: 1.5
     allow_straight_fallback: true
 
-    # ── Centerline-waypoint strategy (overrides local lane extraction) ──
-    # Set by launch file. Drives Nav2 via NavigateToPose goals along the
-    # pre-known JSON centerline; SmacPlanner2D routes around obstacles.
-    nav_strategy: "centerline_waypoints"
-    centerline_lookahead_m: 6.0
-    centerline_advance_m: 0.6
-    centerline_loop: true
-    centerline_direction: "auto"
-    centerline_search_window_m: 8.0
-    centerline_reacquire_dist_m: 3.0
-    centerline_max_goal_dist_m: 12.0
-    # NavigateToPose tolerance — should comfortably exceed centerline_advance_m
-    # so the rolling goal is replaced before the robot 'arrives' at it.
-    goal_tolerance_m: 1.5
+    # Explicitly use local lane extraction from /lane_costmap.
+    # No pre-known centerline waypoints are used in this test.
+    nav_strategy: "local_lane"

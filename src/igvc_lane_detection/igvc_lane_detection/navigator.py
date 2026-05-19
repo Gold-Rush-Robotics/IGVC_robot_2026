@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import math
 import json
+import heapq
 from collections import deque
 from typing import Optional
 
@@ -990,20 +991,16 @@ class IGVCNavigatorNode(Node):
         LETHAL.  Prefer the free corridor when it is available so simulated
         obstacles do not get mistaken for lane lines.
 
-        Algorithm:
-          1. Collect all lethal cells (cost == 100) within the lookahead.
-          2. Split into left side (lat > 0) and right side (lat < 0).
-          3. Fit a polynomial lat = f(fwd) to each side.
-          4. Sample (fwd, (left(fwd) + right(fwd)) / 2) along the horizon.
-             If only one side is detected, offset by half corridor width.
+                Algorithm:
+                    1. Crop the local lane grid to the forward lookahead window.
+                    2. Run a clearance-biased Dijkstra search over FREE cells only.
+                    3. Force every step to keep or increase forward x so generated
+                         paths cannot ask the robot to reverse or U-turn.
+                    4. Reconstruct the best reachable corridor-centred path.
 
-        The previous row-by-row free-cell centroid approach failed when
-        the corridor between detected lane lines was not filled in as
-        free cells: lane_segmentation only fills free between detected
-        lane lines in rows where a lane is actually present in that
-        row, so on diagonal or sparse line segments most rows between
-        the robot and the visible lines stayed at -1 (unknown), causing
-        centreline extraction to find nothing and the robot to stall.
+                This treats the perfect segmentation map as a small planning graph,
+                which is much more stable than fitting lane edges or assuming the
+                centreline can be represented as y=f(x) through sharp turns.
         """
         g = self._grid
         if g is None:
@@ -1011,125 +1008,202 @@ class IGVCNavigatorNode(Node):
 
         W, H   = g.info.width, g.info.height
         res    = g.info.resolution
-        orig_y = g.info.origin.position.y  # lateral offset of col 0 in base_link
+        orig_x = g.info.origin.position.x  # forward offset of col 0 in base_link
+        orig_y = g.info.origin.position.y  # lateral offset of row 0 in base_link
 
+        # ROS OccupancyGrid convention: data[row=y_idx, col=x_idx].
         data = np.frombuffer(bytes(g.data), dtype=np.int8).reshape(H, W)
 
-        # 1. Prefer FREE corridor boundaries when present.
-        #    GT mode:     corridor=FREE(0), outside=UNKNOWN(-1), obstacles=LETHAL(100).
-        #    Camera mode: lane lines=LETHAL(100), corridor mixed FREE/UNKNOWN.
-        #
-        #    Scan every row in the lookahead window; for each row use the
-        #    outermost free cells as the left/right corridor boundary.
-        #    Obstacle cells (100) punch holes in the free region but the
-        #    outermost free cells on each side still represent the corridor
-        #    edges correctly.  No per-row gap or lateral-jump filtering —
-        #    those checks fired prematurely on sharp bends where the corridor
-        #    shifts quickly in the base_link frame.  The polynomial fit and
-        #    the corridor_max_lat guard below handle outliers.
-        max_row = min(H, int(self._lookahead / res) + 1)
-        free_rows_all, free_cols_all = np.where(data[:max_row] == 0)
-        if free_rows_all.size >= 3:
-            syn_rows: list[int] = []
-            syn_cols: list[int] = []
-            for r in np.unique(free_rows_all):
-                c_in_row = free_cols_all[free_rows_all == r]
-                if c_in_row.size >= 2:
-                    syn_rows.extend([int(r), int(r)])
-                    syn_cols.extend([int(c_in_row.max()), int(c_in_row.min())])
-            if len(syn_rows) >= 3:
-                lane_rows = np.array(syn_rows, dtype=np.intp)
-                lane_cols = np.array(syn_cols, dtype=np.intp)
-            else:
-                lane_rows, lane_cols = np.where(data[:max_row] == 100)
-        else:
-            # No free corridor cells — camera pipeline: lane lines are LETHAL.
-            lane_rows, lane_cols = np.where(data[:max_row] == 100)
-        if lane_rows.size < 3:
+        # Grid-search centreline.  The lane map is already a perfect FREE
+        # corridor bounded by non-free cells, so treat centreline extraction
+        # as a small planning problem inside that corridor instead of trying
+        # to infer a curve with polyfits or x-column midpoints.
+        corridor_max_lat = 3.0
+        min_col = max(0, int((-0.10 - orig_x) / res))
+        max_col = min(W, int((self._lookahead - orig_x) / res) + 1)
+        min_row = max(0, int((-corridor_max_lat - orig_y) / res))
+        max_row = min(H, int((corridor_max_lat - orig_y) / res) + 1)
+        if max_col <= min_col + 2 or max_row <= min_row + 2:
             return []
 
-        fwds = lane_rows.astype(float) * res
-        lats = orig_y + (lane_cols.astype(float) + 0.5) * res
-
-        # 2. Filter to plausible corridor extent (±2.0m). Anything beyond
-        #    is almost certainly stray detection or an adjacent corridor.
-        corridor_max_lat = 2.0
-        keep = np.abs(lats) <= corridor_max_lat
-        fwds = fwds[keep]
-        lats = lats[keep]
-        if fwds.size < 3:
+        roi = data[min_row:max_row, min_col:max_col]
+        free = roi == 0
+        # Camera mode often leaves small UNKNOWN gaps between otherwise good
+        # free-space samples.  Treat UNKNOWN as traversable but expensive;
+        # lane paint and obstacles remain blocked.  This prevents
+        # "no connected free band" failures without letting UNKNOWN become
+        # the preferred path when actual FREE corridor cells exist.
+        traversable = roi < 90
+        roi_h, roi_w = traversable.shape
+        if roi_h < 3 or roi_w < 3 or not traversable.any():
             return []
 
-        # 3. Split sides. ROS REP-103: +y is left of the robot, -y is right.
-        #    Small dead-band around 0 so a stray cell on the centreline
-        #    isn't force-classified.
-        left_mask  = lats >  0.10
-        right_mask = lats < -0.10
+        start_r = int((0.0 - orig_y) / res) - min_row
+        start_c = int((0.0 - orig_x) / res) - min_col
+        start_r = max(0, min(roi_h - 1, start_r))
+        start_c = max(0, min(roi_w - 1, start_c))
 
-        def _fit(mask: np.ndarray):
-            n = int(mask.sum())
-            if n < 3:
-                return None
-            # Degree 1 if few points, degree 2 otherwise (handles turns).
-            deg = 1 if n < 8 else 2
-            try:
-                return np.polyfit(fwds[mask], lats[mask], deg=deg)
-            except (np.linalg.LinAlgError, ValueError):
-                return None
+        def _nearest_traversable_cell(max_radius_m: float = 0.80) -> Optional[tuple[int, int]]:
+            if traversable[start_r, start_c]:
+                return start_r, start_c
+            max_radius = max(1, int(max_radius_m / res))
+            best: Optional[tuple[int, int]] = None
+            best_score = float('inf')
+            for radius in range(1, max_radius + 1):
+                r0 = max(0, start_r - radius)
+                r1 = min(roi_h - 1, start_r + radius)
+                c0 = max(0, start_c - radius)
+                c1 = min(roi_w - 1, start_c + radius)
+                rows, cols = np.where(traversable[r0:r1 + 1, c0:c1 + 1])
+                if rows.size == 0:
+                    continue
+                rows = rows + r0
+                cols = cols + c0
+                d2 = (rows - start_r) ** 2 + (cols - start_c) ** 2
+                # Prefer a nearby FREE cell over UNKNOWN when both are
+                # available at about the same radius.
+                free_bonus = np.where(free[rows, cols], 0.0, 16.0)
+                scores = d2.astype(float) + free_bonus
+                idx = int(np.argmin(scores))
+                if float(scores[idx]) < best_score:
+                    best = (int(rows[idx]), int(cols[idx]))
+                    best_score = float(scores[idx])
+                break
+            return best
 
-        left_poly  = _fit(left_mask)
-        right_poly = _fit(right_mask)
-
-        if left_poly is None and right_poly is None:
+        start = _nearest_traversable_cell()
+        if start is None:
             return []
 
-        # 4. Sample centreline over the range with actual lane evidence so
-        #    we don't extrapolate past the last visible lane segment.
-        if left_poly is not None and right_poly is not None:
-            fwd_max = float(min(fwds[left_mask].max(), fwds[right_mask].max()))
-        elif left_poly is not None:
-            fwd_max = float(fwds[left_mask].max())
-        else:
-            fwd_max = float(fwds[right_mask].max())
-        fwd_max = min(fwd_max, self._lookahead)
+        # Chamfer distance-to-obstacle.  Higher clearance means closer to the
+        # corridor medial axis, so Dijkstra will prefer true centreline cells
+        # while still passing through tight gaps if that is the only route.
+        large = 1.0e6
+        clearance = np.where(traversable, large, 0.0).astype(float)
+        clearance[0, :] = 0.0
+        clearance[-1, :] = 0.0
+        clearance[:, 0] = 0.0
+        clearance[:, -1] = 0.0
+        forward_pass = ((-1, 0, 1.0), (0, -1, 1.0),
+                        (-1, -1, math.sqrt(2.0)), (-1, 1, math.sqrt(2.0)))
+        reverse_pass = ((1, 0, 1.0), (0, 1, 1.0),
+                        (1, 1, math.sqrt(2.0)), (1, -1, math.sqrt(2.0)))
+        for r in range(roi_h):
+            for c in range(roi_w):
+                if not traversable[r, c]:
+                    continue
+                for dr, dc, step in forward_pass:
+                    rr = r + dr
+                    cc = c + dc
+                    if 0 <= rr < roi_h and 0 <= cc < roi_w:
+                        clearance[r, c] = min(clearance[r, c], clearance[rr, cc] + step)
+        for r in range(roi_h - 1, -1, -1):
+            for c in range(roi_w - 1, -1, -1):
+                if not traversable[r, c]:
+                    continue
+                for dr, dc, step in reverse_pass:
+                    rr = r + dr
+                    cc = c + dc
+                    if 0 <= rr < roi_h and 0 <= cc < roi_w:
+                        clearance[r, c] = min(clearance[r, c], clearance[rr, cc] + step)
+        clearance_m = clearance * res
 
-        # Start a little ahead of the robot to avoid extrapolation near 0.
-        fwd_min = 0.4
-        if fwd_max <= fwd_min + 0.5:
+        cost = np.full((roi_h, roi_w), np.inf, dtype=float)
+        travel = np.full((roi_h, roi_w), np.inf, dtype=float)
+        parent_r = np.full((roi_h, roi_w), -1, dtype=np.int32)
+        parent_c = np.full((roi_h, roi_w), -1, dtype=np.int32)
+        sr, sc = start
+        cost[sr, sc] = 0.0
+        travel[sr, sc] = 0.0
+        heap: list[tuple[float, int, int]] = [(0.0, sr, sc)]
+
+        # Never step to a lower forward column: this enforces the user's
+        # no-reverse requirement at the path generator, before RPP sees it.
+        neighbours = ((-1, 0, 1.0), (1, 0, 1.0),
+                      (-1, 1, math.sqrt(2.0)), (0, 1, 1.0),
+                      (1, 1, math.sqrt(2.0)))
+        max_travel_m = max(self._lookahead * 1.8, self._min_follow_path_length_m)
+        while heap:
+            cur_cost, r, c = heapq.heappop(heap)
+            if cur_cost != cost[r, c]:
+                continue
+            if travel[r, c] > max_travel_m:
+                continue
+            for dr, dc, step_cells in neighbours:
+                rr = r + dr
+                cc = c + dc
+                if rr < 0 or rr >= roi_h or cc < 0 or cc >= roi_w:
+                    continue
+                if not traversable[rr, cc]:
+                    continue
+                fwd = orig_x + (min_col + cc + 0.5) * res
+                if fwd < -0.05:
+                    continue
+                step_m = step_cells * res
+                # Clearance below robot half-width is allowed but expensive.
+                # This centres the path without falsely blocking narrow gaps.
+                clr = max(float(clearance_m[rr, cc]), res)
+                clearance_penalty = min(6.0, 0.45 / clr)
+                lateral_penalty = 0.30 if dc == 0 else 0.0
+                unknown_penalty = 8.0 if not free[rr, cc] else 0.0
+                next_cost = cur_cost + step_m * (
+                    1.0 + clearance_penalty + lateral_penalty + unknown_penalty)
+                if next_cost < cost[rr, cc]:
+                    cost[rr, cc] = next_cost
+                    travel[rr, cc] = travel[r, c] + step_m
+                    parent_r[rr, cc] = r
+                    parent_c[rr, cc] = c
+                    heapq.heappush(heap, (next_cost, rr, cc))
+
+        best: Optional[tuple[int, int]] = None
+        best_score = -float('inf')
+        min_goal_travel = max(1.0, self._min_follow_path_length_m)
+        visited = np.isfinite(cost)
+        rows, cols = np.where(visited)
+        for r, c in zip(rows, cols):
+            if travel[r, c] < min_goal_travel:
+                continue
+            fwd = orig_x + (min_col + c + 0.5) * res
+            lat = orig_y + (min_row + r + 0.5) * res
+            if fwd < 0.40 or abs(lat) > corridor_max_lat:
+                continue
+            edge_penalty = 1.0 if r <= 1 or r >= roi_h - 2 else 0.0
+            unknown_goal_penalty = 1.5 if not free[r, c] else 0.0
+            score = (
+                1.50 * float(travel[r, c])
+                + 3.00 * fwd
+                + 0.80 * min(float(clearance_m[r, c]), 1.2)
+                - 0.70 * float(cost[r, c])
+                - 0.08 * abs(lat)
+                - unknown_goal_penalty
+                - edge_penalty
+            )
+            if score > best_score:
+                best_score = score
+                best = (int(r), int(c))
+
+        if best is None:
             return []
 
-        spacing = max(0.10, float(self._path_sample_spacing_m))
-        sample_count = max(2, int(math.ceil((fwd_max - fwd_min) / spacing)) + 1)
-        sample_fwds = np.linspace(fwd_min, fwd_max, sample_count)
-
-        half_corridor = 1.0  # m — offset from a single visible line
+        cells: list[tuple[int, int]] = []
+        r, c = best
+        while r >= 0 and c >= 0:
+            cells.append((r, c))
+            if r == sr and c == sc:
+                break
+            pr = int(parent_r[r, c])
+            pc = int(parent_c[r, c])
+            if pr < 0 or pc < 0:
+                return []
+            r, c = pr, pc
+        cells.reverse()
 
         pts: list[tuple[float, float]] = []
-        for fwd in sample_fwds:
-            left_lat  = float(np.polyval(left_poly,  fwd)) if left_poly  is not None else None
-            right_lat = float(np.polyval(right_poly, fwd)) if right_poly is not None else None
-
-            if left_lat is not None and right_lat is not None:
-                sep = left_lat - right_lat
-                if sep < 0.5:
-                    # Lines have crossed / collapsed — past corridor end.
-                    break
-                if sep > 4.0:
-                    # One fit is suspect; fall back to the denser side.
-                    if int(left_mask.sum()) >= int(right_mask.sum()):
-                        lat = left_lat - half_corridor
-                    else:
-                        lat = right_lat + half_corridor
-                else:
-                    lat = 0.5 * (left_lat + right_lat)
-            elif left_lat is not None:
-                lat = left_lat - half_corridor
-            else:
-                lat = right_lat + half_corridor  # type: ignore[operator]
-
-            # Clamp — guards against polynomial extrapolation blow-up.
-            if abs(lat) > corridor_max_lat:
-                break
+        for r, c in cells:
+            fwd = orig_x + (min_col + c + 0.5) * res
+            lat = orig_y + (min_row + r + 0.5) * res
+            if fwd < -0.05:
+                continue
             pts.append((float(fwd), float(lat)))
 
         return pts
@@ -1236,14 +1310,30 @@ class IGVCNavigatorNode(Node):
         """Smooth and resample raw centreline points for controller tracking."""
         if len(pts) < 2:
             return pts
+        # Anchor the path at the robot origin (base_link 0,0).  Without this
+        # the first raw sample at fwd_min=0.4 with a non-zero lat would
+        # create an almost-sideways yaw on pose[0] and rviz would render a
+        # backward-curling fan of arrows even though the rest of the path
+        # is forward.  Anchoring also gives the smoother a real boundary
+        # value to pull the first lane samples toward straight ahead.
+        anchored = [(0.0, 0.0)] + list(pts)
         return self._resample_path_points(
-            self._smooth_path_points(pts), self._path_sample_spacing_m)
+            self._smooth_path_points(anchored), self._path_sample_spacing_m)
 
     def _smooth_path_points(
         self,
         pts: list[tuple[float, float]],
     ) -> list[tuple[float, float]]:
-        """Apply a small moving average to lateral jitter."""
+        """Apply a moving average to lateral jitter.
+
+        Endpoints are *included* in the smoothed output (the previous
+        version pinned smooth_lat[0] = laterals[0], which left a wild
+        first sample untouched and produced a near-sideways yaw on the
+        very first path pose).  With the path anchored at (0,0) by
+        _condition_path_points the start is now a hard constraint, so the
+        smoother is free to pull the early lane samples toward straight
+        ahead without drifting away from the robot.
+        """
         window = int(self._path_smooth_window)
         if window <= 1 or len(pts) < 3:
             return pts
@@ -1258,8 +1348,10 @@ class IGVCNavigatorNode(Node):
         padded = np.pad(laterals, (half, half), mode='edge')
         kernel = np.ones(window, dtype=float) / float(window)
         smooth_lat = np.convolve(padded, kernel, mode='valid')
+        # Pin only the anchor (robot origin) so the controller's first
+        # tracked pose is always at the robot.  All other points —
+        # including the final one — stay smoothed.
         smooth_lat[0] = laterals[0]
-        smooth_lat[-1] = laterals[-1]
         return [(fwd, float(lat)) for (fwd, _), lat in zip(pts, smooth_lat)]
 
     def _resample_path_points(

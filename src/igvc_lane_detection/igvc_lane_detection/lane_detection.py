@@ -801,24 +801,27 @@ class LaneDetectionNode(Node):
             lpts = [(fwd, lat + W) for fwd, lat in rpts]
 
         W_grid, H, res = g.info.width, g.info.height, self.grid_res
+        # ROS OccupancyGrid convention: data[row=y_idx, col=x_idx].
+        # info.width  = forward cells (+x), info.height = lateral cells (+y).
+        nx, ny = W_grid, H
         data = list(g.data)
 
-        for row in range(H):
-            fwd = row * res
+        for col in range(nx):
+            fwd = col * res
             ll = self._interp(lpts, fwd)
             rl = self._interp(rpts, fwd)
             if ll is None or rl is None:
                 continue
 
-            left_col = max(0, min(W_grid - 1, int((ll + self.grid_width_m / 2) / res)))
-            right_col = max(0, min(W_grid - 1, int((rl + self.grid_width_m / 2) / res)))
-            lo, hi = min(left_col, right_col), max(left_col, right_col)
+            left_row  = max(0, min(ny - 1, int((ll + self.grid_width_m / 2) / res)))
+            right_row = max(0, min(ny - 1, int((rl + self.grid_width_m / 2) / res)))
+            lo, hi = min(left_row, right_row), max(left_row, right_row)
 
-            for col in range(W_grid):
-                if lo < col < hi:
-                    data[row * W_grid + col] = 0      # free
-                elif col == lo or col == hi:
-                    data[row * W_grid + col] = 100    # lethal boundary
+            for row in range(ny):
+                if lo < row < hi:
+                    data[row * nx + col] = 0      # free
+                elif row == lo or row == hi:
+                    data[row * nx + col] = 100    # lethal boundary
 
         g.data = data
         return g
@@ -826,11 +829,12 @@ class LaneDetectionNode(Node):
         g = OccupancyGrid()
         g.header.stamp    = self.get_clock().now().to_msg() if stamp is None else stamp
         g.header.frame_id = self.occupancy_grid_frame
-        W = int(self.grid_width_m  / self.grid_res)
-        H = int(self.grid_height_m / self.grid_res)
+        # ROS convention: info.width = forward cells, info.height = lateral cells.
+        nx = int(self.grid_height_m / self.grid_res)  # forward cells
+        ny = int(self.grid_width_m / self.grid_res)   # lateral cells
         g.info.resolution = self.grid_res
-        g.info.width      = W
-        g.info.height     = H
+        g.info.width      = nx
+        g.info.height     = ny
 
         if self.occupancy_grid_frame == self.base_frame:
             g.info.origin.position.x = 0.0
@@ -855,7 +859,7 @@ class LaneDetectionNode(Node):
                 g.info.origin.position.z = tf.transform.translation.z
                 g.info.origin.orientation = q
 
-        g.data = [-1] * (W * H)
+        g.data = [-1] * (nx * ny)
         return g
 
     # ═══════════════════════════════════════════════════════════════════════
