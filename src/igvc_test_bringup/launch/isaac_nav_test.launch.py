@@ -12,16 +12,14 @@ Instead of running the YOLOPv2 vision pipeline, this launch file:
   3. Starts the full nav2 stack (controller_server, planner_server,
      bt_navigator …) using nav2_lane_follow_config.yaml — unchanged from
      the real-world config.
-  4. Starts the IGVC navigator node, which extracts a local centreline from
-     /lane_costmap and drives nav2 via FollowPath or NavigateToPose.
+  4. Starts the IGVC navigator node in local_lane + FollowPath mode, so
+      planning depends only on /lane_map and /lane_costmap (no pre-known
+      centerline waypoints).
 
 Usage
 -----
-    # Default: FollowPath (path sent directly to controller_server)
+    # Local lane extraction from /lane_costmap + FollowPath
     ros2 launch igvc_test_bringup isaac_nav_test.launch.py
-
-    # Rolling NavigateToPose carrot
-    ros2 launch igvc_test_bringup isaac_nav_test.launch.py nav_mode:=navigate_to_pose
 
     # Override track
     ros2 launch igvc_test_bringup isaac_nav_test.launch.py \\
@@ -30,7 +28,6 @@ Usage
 
 Arguments
 ---------
-    nav_mode                follow_path | navigate_to_pose  (default: follow_path)
     use_sim_time            true | false                    (default: true)
     track_file              path to track_points.json
     track_image_file        path to track.png
@@ -53,7 +50,7 @@ from launch.launch_description_sources import (
     AnyLaunchDescriptionSource,
     PythonLaunchDescriptionSource,
 )
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -90,7 +87,6 @@ def generate_launch_description() -> LaunchDescription:
         workspace_root, 'IGVC_track_generator', 'track.png')
 
     # ── LaunchConfiguration aliases ──────────────────────────────────────
-    nav_mode = LaunchConfiguration('nav_mode')
     use_sim_time = LaunchConfiguration('use_sim_time')
     track_file = LaunchConfiguration('track_file')
     track_image_file = LaunchConfiguration('track_image_file')
@@ -110,10 +106,6 @@ def generate_launch_description() -> LaunchDescription:
     fallback_y = 16.63174225312982
     fallback_z = 0.0820257550378943
     fallback_yaw = -3.141592653589793
-
-    # follow_path_enabled: true when nav_mode == 'follow_path', else false
-    follow_path_enabled = PythonExpression(
-        ["'true' if '", nav_mode, "' == 'follow_path' else 'false'"])
 
     # ── Robot pose from JSON (identical to isaac_lane_test) ──────────────
     def apply_robot_pose_from_json(context, *args, **kwargs):
@@ -312,12 +304,8 @@ def generate_launch_description() -> LaunchDescription:
                 'use_sim_time': use_sim_time,
                 'gps_enabled': False,
                 'force_identity_map_to_odom': True,
-                'follow_path_enabled': follow_path_enabled,
-                # Drive Nav2 with rolling NavigateToPose goals along the
-                # pre-known track centerline.  SmacPlanner2D handles routing
-                # around obstacles via the global /lane_map costmap.
-                'nav_strategy': 'centerline_waypoints',
-                'centerline_source_json': track_file,
+                'follow_path_enabled': True,
+                'nav_strategy': 'local_lane',
                 # navigator_config.yaml is shared with non-sim flows and has
                 # strict 0.1 s freshness gates. In this Isaac nav-test stack,
                 # /lane_costmap is published at 5 Hz (0.2 s), so relax gates
@@ -344,15 +332,6 @@ def generate_launch_description() -> LaunchDescription:
 
     # ── Launch description ────────────────────────────────────────────────
     return LaunchDescription([
-        DeclareLaunchArgument(
-            'nav_mode',
-            default_value='navigate_to_pose',
-            choices=['follow_path', 'navigate_to_pose'],
-            description=(
-                'follow_path: send local centreline path directly to '
-                'controller_server (FollowPath action). '
-                'navigate_to_pose: use rolling NavigateToPose carrot goals.'),
-        ),
         DeclareLaunchArgument(
             'use_sim_time',
             default_value='true',

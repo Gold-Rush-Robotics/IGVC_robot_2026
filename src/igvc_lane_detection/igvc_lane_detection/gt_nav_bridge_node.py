@@ -300,12 +300,17 @@ class GTNavBridgeNode(Node):
 
         fixed_w = int(fixed.info.width)
         fixed_h = int(fixed.info.height)
-        local_w = max(1, int(round(self._local_width_m / self._local_res)))
-        local_h = max(1, int(round(self._local_height_m / self._local_res)))
+        # ROS OccupancyGrid convention: data[row=y_idx, col=x_idx].
+        # info.width  = #cells along +x (forward in base_link)
+        # info.height = #cells along +y (lateral in base_link)
+        # _local_height_m is the forward extent; _local_width_m is the lateral
+        # extent (matches existing parameter naming in the codebase).
+        nx = max(1, int(round(self._local_height_m / self._local_res)))
+        ny = max(1, int(round(self._local_width_m / self._local_res)))
 
         fixed_data = np.frombuffer(bytes(fixed.data), dtype=np.int8).reshape(
             fixed_h, fixed_w)
-        local_data = np.full((local_h, local_w), -1, dtype=np.int8)
+        local_data = np.full((ny, nx), -1, dtype=np.int8)
 
         pose = odom.pose.pose
         robot_x = pose.position.x
@@ -322,12 +327,11 @@ class GTNavBridgeNode(Node):
         fixed_oy = fixed.info.origin.position.y
         local_oy = -0.5 * self._local_width_m
 
-        rows = np.arange(local_h, dtype=np.float32)
-        cols = np.arange(local_w, dtype=np.float32)
-        # navigator.py intentionally treats lane_costmap rows as forward
-        # distance and columns as lateral offset in base_link.
-        local_x = rows[:, None] * self._local_res
-        local_y = local_oy + cols[None, :] * self._local_res
+        # cols → +x (forward), rows → +y (lateral) in base_link.
+        col_idx = np.arange(nx, dtype=np.float32)
+        row_idx = np.arange(ny, dtype=np.float32)
+        local_x = col_idx[None, :] * self._local_res
+        local_y = local_oy + row_idx[:, None] * self._local_res
 
         world_x = robot_x + cos_yaw * local_x - sin_yaw * local_y
         world_y = robot_y + sin_yaw * local_x + cos_yaw * local_y
@@ -340,20 +344,18 @@ class GTNavBridgeNode(Node):
         )
         local_data[valid] = fixed_data[src_rows[valid], src_cols[valid]]
 
-        # Add a small lethal strip at the back edge of the local crop.
-        # This acts as a no-go buffer for the unobserved space immediately
-        # behind the costmap window in test mode.
+        # Lethal strip at the back edge (x ∈ [0, back_buf_m)): first columns.
         back_buf_cells = int(math.ceil(self._local_back_nogo_buffer_m / self._local_res))
         if back_buf_cells > 0:
-            back_buf_cells = min(back_buf_cells, local_h)
-            local_data[:back_buf_cells, :] = 100
+            back_buf_cells = min(back_buf_cells, nx)
+            local_data[:, :back_buf_cells] = 100
 
         local = OccupancyGrid()
         local.header.stamp = self.get_clock().now().to_msg()
         local.header.frame_id = 'base_link'
         local.info.resolution = self._local_res
-        local.info.width = local_w
-        local.info.height = local_h
+        local.info.width = nx
+        local.info.height = ny
         local.info.origin.position.x = 0.0
         local.info.origin.position.y = local_oy
         local.info.origin.position.z = 0.0

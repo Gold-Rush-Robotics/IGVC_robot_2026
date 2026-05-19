@@ -19,6 +19,7 @@ unchanged.
 
 from __future__ import annotations
 
+import math
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import cv2
@@ -111,12 +112,18 @@ class LaneSegmentationNode(Node):
         self.persist_size_m       = p('persistent_map_size_m',     100.0)
         self.persist_decay        = p('persistent_map_decay',        0.998)
         self.persist_hit_w        = p('persistent_hit_weight',       4.0)
+        self.persist_free_hit_w   = p('persistent_free_hit_weight',  1.0)
         self.persist_threshold    = p('persistent_threshold',       15.0)
+        self.persist_free_threshold = p('persistent_free_threshold',  3.0)
         self.persist_max          = p('persistent_max_value',      200.0)
         self.persist_pub_hz       = p('persistent_publish_hz',       2.0)
         self.persist_clear_radius = p('persistent_clear_radius_m',   0.8)
         self.persist_pose_source  = p('persistent_pose_source',      'tf')
-        self.odom_topic           = p('odom_topic',                  '/odom')
+        self.odom_topic           = p('odom_topic',                  '/front_zed_camera_x/zed_node/odom')
+        self.local_from_persistent = bool(p('local_costmap_from_persistent', True))
+        self.local_publish_hz      = float(p('local_costmap_publish_hz', 10.0))
+        self.local_back_nogo_buffer_m = max(
+            0.0, float(p('local_back_nogo_buffer_m', 0.30)))
 
         # ── Pose deduplication — skip persistent write if not moved ────
         self.min_pose_change_m   = float(p('min_pose_change_m',   0.05))
@@ -254,7 +261,7 @@ class LaneSegmentationNode(Node):
         self.tf_buffer   = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        if self.persist_pose_source == 'odom':
+        if self.persist_pose_source == 'odom' or self.local_from_persistent:
             odom_qos = QoSProfile(
                 reliability=ReliabilityPolicy.BEST_EFFORT,
                 history=HistoryPolicy.KEEP_LAST,
@@ -262,9 +269,11 @@ class LaneSegmentationNode(Node):
             self.create_subscription(
                 Odometry, self.odom_topic, self._on_odom, odom_qos)
             self.get_logger().info(
-                f'Persistent map pose source: odom topic {self.odom_topic}')
+                f'Lane map/local crop pose source: odom topic {self.odom_topic}')
 
-        self.create_timer(1.0, self._republish_grid)
+        self.create_timer(
+            1.0 / max(self.local_publish_hz, 0.1),
+            self._republish_grid)
         self.create_timer(
             1.0 / max(self.persist_pub_hz, 0.1),
             self._publish_persistent_map)
@@ -280,6 +289,7 @@ class LaneSegmentationNode(Node):
         n = int(self.persist_size_m / self.persist_res)
         self._pN = n
         self._phits = np.zeros((n, n), dtype=np.float32)
+        self._pfree = np.zeros((n, n), dtype=np.float32)
         half = self.persist_size_m / 2.0
         self._p_ox = -half
         self._p_oy = -half
@@ -353,13 +363,17 @@ class LaneSegmentationNode(Node):
         return (x, y, translation.z + pose.position.z, transform_yaw + odom_yaw, pose.orientation)
 
     def _update_persistent_map(
-        self, lane_pts: Optional[Sequence[Tuple[float, float]]], stamp,
+        self,
+        free_pts: Optional[Sequence[Tuple[float, float]]],
+        lane_pts: Optional[Sequence[Tuple[float, float]]],
+        stamp,
     ) -> None:
         self._last_persistent_stamp = stamp
-        if not lane_pts:
+        if not free_pts and not lane_pts:
             # Still apply the global decay so stale evidence fades even on
             # empty frames.
             self._phits *= self.persist_decay
+            self._pfree *= self.persist_decay
             return
 
         # Yaw-rate gate: during fast in-place turns, depth-projected
@@ -374,6 +388,7 @@ class LaneSegmentationNode(Node):
             yaw_rate = abs(self._latest_odom.twist.twist.angular.z)
             if yaw_rate > self.max_yaw_rate_persist:
                 self._phits *= self.persist_decay
+                self._pfree *= self.persist_decay
                 self.get_logger().debug(
                     f'Skipping persistent-map write: |yaw_rate|='
                     f'{yaw_rate:.2f} rad/s > '
@@ -401,15 +416,35 @@ class LaneSegmentationNode(Node):
         n = self._pN
 
         self._phits *= self.persist_decay
+        self._pfree *= self.persist_decay
 
-        for fwd, lat in lane_pts:
-            wx = tx + cos_y * fwd - sin_y * lat
-            wy = ty + sin_y * fwd + cos_y * lat
-            col, row = self._world_to_pgrid(wx, wy)
-            if 0 <= col < n and 0 <= row < n:
-                self._phits[row, col] = min(
-                    self._phits[row, col] + self.persist_hit_w,
-                    self.persist_max)
+        if free_pts:
+            for fwd, lat in free_pts:
+                wx = tx + cos_y * fwd - sin_y * lat
+                wy = ty + sin_y * fwd + cos_y * lat
+                col, row = self._world_to_pgrid(wx, wy)
+                if 0 <= col < n and 0 <= row < n:
+                    self._pfree[row, col] = min(
+                        self._pfree[row, col] + self.persist_free_hit_w,
+                        self.persist_max)
+
+        if lane_pts:
+            for fwd, lat in lane_pts:
+                wx = tx + cos_y * fwd - sin_y * lat
+                wy = ty + sin_y * fwd + cos_y * lat
+                col, row = self._world_to_pgrid(wx, wy)
+                if 0 <= col < n and 0 <= row < n:
+                    self._phits[row, col] = min(
+                        self._phits[row, col] + self.persist_hit_w,
+                        self.persist_max)
+
+    def _persistent_grid_data(self, stamp=None, clear_robot: bool = True) -> np.ndarray:
+        data = np.full((self._pN, self._pN), -1, dtype=np.int8)
+        data[self._pfree >= self.persist_free_threshold] = 0
+        data[self._phits >= self.persist_threshold] = 100
+        if clear_robot:
+            self._clear_persistent_robot_footprint(data, stamp)
+        return data
 
     def _publish_persistent_map(self) -> None:
         stamp = self._last_persistent_stamp
@@ -426,8 +461,7 @@ class LaneSegmentationNode(Node):
         g.info.origin.position.y    = self._p_oy
         g.info.origin.orientation.w = 1.0
 
-        data = np.where(self._phits >= self.persist_threshold, 100, -1).astype(np.int8)
-        self._clear_persistent_robot_footprint(data, stamp)
+        data = self._persistent_grid_data(stamp)
         g.data = data.flatten().tolist()
         self.persist_pub.publish(g)
 
@@ -588,10 +622,14 @@ class LaneSegmentationNode(Node):
         if fused_free or fused_lane:
             self.latest_grid = self._build_grid(
                 fused_free, fused_lane, process_stamp)
-            self.grid_pub.publish(self.latest_grid)
-            self._update_persistent_map(fused_lane, rgb_msg.header.stamp)
+            self._update_persistent_map(
+                fused_free, fused_lane, rgb_msg.header.stamp)
+            if self.local_from_persistent:
+                self._publish_local_costmap_from_persistent()
+            else:
+                self.grid_pub.publish(self.latest_grid)
         elif self.keep_last_grid_on_miss:
-            self.grid_pub.publish(self.latest_grid)
+            self._republish_grid()
         else:
             self.latest_grid = self._empty_grid(process_stamp)
             self.grid_pub.publish(self.latest_grid)
@@ -912,13 +950,17 @@ class LaneSegmentationNode(Node):
         stamp,
     ) -> OccupancyGrid:
         g = self._empty_grid(stamp)
-        w_g, h_g, res = g.info.width, g.info.height, self.grid_res
-        data = np.full((h_g, w_g), -1, dtype=np.int8)
+        # ROS OccupancyGrid convention: data[row=y_idx, col=x_idx].
+        # info.width  = forward cells (+x), info.height = lateral cells (+y).
+        nx = g.info.width
+        ny = g.info.height
+        res = self.grid_res
+        data = np.full((ny, nx), -1, dtype=np.int8)
 
         def to_cell(fwd: float, lat: float) -> Optional[Tuple[int, int]]:
-            row = int(fwd / res)
-            col = int((lat + self.grid_width_m / 2.0) / res)
-            if 0 <= row < h_g and 0 <= col < w_g:
+            col = int(fwd / res)
+            row = int((lat + self.grid_width_m / 2.0) / res)
+            if 0 <= row < ny and 0 <= col < nx:
                 return row, col
             return None
 
@@ -935,23 +977,24 @@ class LaneSegmentationNode(Node):
 
         # ── Corridor fill from lane boundaries ──────────────────────────────
         # Use reliably-detected lane lines to infer the drivable corridor.
-        # For each row that has lane cells, find the innermost lane-boundary
-        # column on each side of the robot centreline and fill unknown (-1)
-        # cells between them with free (0).  This compensates for sparse
-        # depth-projection of the drivable-area YOLO head.
-        center_col = w_g // 2  # column index for lateral=0 (robot centreline)
+        # For each forward column that has lane cells, find the innermost
+        # lane-boundary row on each side of the robot centreline and fill
+        # unknown (-1) cells between them with free (0).  Compensates for
+        # sparse depth-projection of the drivable-area YOLO head.
+        center_row = ny // 2  # row index for lateral=0 (robot centreline)
         half_fill  = max(4, int(round(1.2 / res)))  # 1.2 m half-width in cells
-        lane_rows  = np.where(np.any(data == 100, axis=1))[0]
-        for row in lane_rows:
-            lane_in_row = np.where(data[row] == 100)[0]
-            right_side  = lane_in_row[lane_in_row < center_col]   # cols left of centre (right lane line in image)
-            left_side   = lane_in_row[lane_in_row > center_col]   # cols right of centre (left lane line in image)
-            lo = int(right_side.max()) + 1 if len(right_side) > 0 else max(0, center_col - half_fill)
-            hi = int(left_side.min())      if len(left_side)  > 0 else min(w_g, center_col + half_fill)
+        lane_cols  = np.where(np.any(data == 100, axis=0))[0]
+        for col in lane_cols:
+            lane_in_col = np.where(data[:, col] == 100)[0]
+            # +y is left of robot → higher row index = left side.
+            right_side = lane_in_col[lane_in_col < center_row]
+            left_side  = lane_in_col[lane_in_col > center_row]
+            lo = int(right_side.max()) + 1 if len(right_side) > 0 else max(0, center_row - half_fill)
+            hi = int(left_side.min())      if len(left_side)  > 0 else min(ny, center_row + half_fill)
             if lo >= hi:
                 continue
-            seg = data[row, lo:hi]
-            data[row, lo:hi] = np.where(seg == np.int8(-1), np.int8(0), seg)
+            seg = data[lo:hi, col]
+            data[lo:hi, col] = np.where(seg == np.int8(-1), np.int8(0), seg)
         # ────────────────────────────────────────────────────────────────────
 
         g.data = data.flatten().tolist()
@@ -962,11 +1005,13 @@ class LaneSegmentationNode(Node):
         g.header.stamp = (
             self.get_clock().now().to_msg() if stamp is None else stamp)
         g.header.frame_id = self.occupancy_grid_frame
-        w_g = int(self.grid_width_m / self.grid_res)
-        h_g = int(self.grid_height_m / self.grid_res)
+        # ROS convention: info.width = #cells along +x (forward),
+        # info.height = #cells along +y (lateral).
+        nx = int(self.grid_height_m / self.grid_res)  # forward cells
+        ny = int(self.grid_width_m / self.grid_res)   # lateral cells
         g.info.resolution = self.grid_res
-        g.info.width = w_g
-        g.info.height = h_g
+        g.info.width = nx
+        g.info.height = ny
 
         if self.occupancy_grid_frame == self.base_frame:
             g.info.origin.position.x = 0.0
@@ -985,12 +1030,15 @@ class LaneSegmentationNode(Node):
                 yaw = yaw_from_quat(q.x, q.y, q.z, q.w)
                 tx = tf.transform.translation.x
                 ty = tf.transform.translation.y
+                # Origin = world position of cell (0,0). Lateral extent is
+                # centred on the robot, so the (0,0) corner is offset by
+                # -grid_width_m/2 along the rotated +y axis from the robot.
                 g.info.origin.position.x = tx + np.sin(yaw) * (self.grid_width_m / 2.0)
                 g.info.origin.position.y = ty - np.cos(yaw) * (self.grid_width_m / 2.0)
                 g.info.origin.position.z = tf.transform.translation.z
                 g.info.origin.orientation = q
 
-        g.data = [-1] * (w_g * h_g)
+        g.data = [-1] * (nx * ny)
         return g
 
     # ═══════════════════════════════════════════════════════════════════
@@ -1061,7 +1109,66 @@ class LaneSegmentationNode(Node):
     # ═══════════════════════════════════════════════════════════════════
 
     def _republish_grid(self) -> None:
+        if self.local_from_persistent:
+            if self._publish_local_costmap_from_persistent():
+                return
         self.grid_pub.publish(self.latest_grid)
+
+    def _publish_local_costmap_from_persistent(self) -> bool:
+        pose = self._persistent_pose(None)
+        if pose is None:
+            return False
+
+        tx, ty, _tz, yaw, _orientation = pose
+        cos_yaw = math.cos(yaw)
+        sin_yaw = math.sin(yaw)
+
+        if self.grid_res <= 0.0 or self.persist_res <= 0.0:
+            return False
+
+        nx = max(1, int(round(self.grid_height_m / self.grid_res)))
+        ny = max(1, int(round(self.grid_width_m / self.grid_res)))
+        local_oy = -0.5 * self.grid_width_m
+        local_data = np.full((ny, nx), -1, dtype=np.int8)
+        persistent_data = self._persistent_grid_data(None, clear_robot=False)
+
+        col_idx = np.arange(nx, dtype=np.float32)
+        row_idx = np.arange(ny, dtype=np.float32)
+        local_x = col_idx[None, :] * self.grid_res
+        local_y = local_oy + row_idx[:, None] * self.grid_res
+
+        world_x = tx + cos_yaw * local_x - sin_yaw * local_y
+        world_y = ty + sin_yaw * local_x + cos_yaw * local_y
+
+        src_cols = np.rint((world_x - self._p_ox) / self.persist_res).astype(np.int32)
+        src_rows = np.rint((world_y - self._p_oy) / self.persist_res).astype(np.int32)
+        valid = (
+            (src_cols >= 0) & (src_cols < self._pN) &
+            (src_rows >= 0) & (src_rows < self._pN)
+        )
+        local_data[valid] = persistent_data[src_rows[valid], src_cols[valid]]
+
+        if not np.any((local_data == 0) | (local_data == 100)):
+            return False
+
+        back_buf_cells = int(math.ceil(self.local_back_nogo_buffer_m / self.grid_res))
+        if back_buf_cells > 0:
+            local_data[:, :min(back_buf_cells, nx)] = 100
+
+        local = OccupancyGrid()
+        local.header.stamp = self.get_clock().now().to_msg()
+        local.header.frame_id = self.base_frame
+        local.info.resolution = self.grid_res
+        local.info.width = nx
+        local.info.height = ny
+        local.info.origin.position.x = 0.0
+        local.info.origin.position.y = local_oy
+        local.info.origin.position.z = 0.0
+        local.info.origin.orientation.w = 1.0
+        local.data = local_data.ravel().tolist()
+        self.latest_grid = local
+        self.grid_pub.publish(local)
+        return True
 
     def _watchdog(self) -> None:
         if not self._got_frame:
