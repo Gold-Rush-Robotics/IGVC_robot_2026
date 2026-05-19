@@ -17,7 +17,6 @@ class ImageSignal(QObject):
 class JointStatePublisher(Node):
     def __init__(self):
         super().__init__('joint_state_publisher')
-        self.publisher = self.create_publisher(JointState, 'isaac_joint_commands', 10)
         # Subscribe to isaac_joint_commands to update joint positions in the GUI
         self.camera_subscribers = []
         self.create_subscribers()
@@ -30,7 +29,8 @@ class JointStatePublisher(Node):
         self.image_signal.signal.connect(self.app.update_image)
 
     def create_subscribers(self):
-        topics = [ "left_zed_camera_x/zed_node/rgb/color/rect/image","/front_zed_camera_x/zed_node/rgb/color/rect/image","right_zed_camera_x/zed_node/rgb/color/rect/image"]
+        # topics = [ "left_zed_camera_x/zed_node/rgb/color/rect/image","/front_zed_camera_x/zed_node/rgb/color/rect/image","right_zed_camera_x/zed_node/rgb/color/rect/image"]
+        topics = ["/zed/zed_node/rgb/color/rect/image", "/lane_debug/cam0/overlay"] 
         # topics = ["/right_zed_camera_x/zed_node/confidence/confidence_map", "/lane_debug/cam0/overlay", "/lane_debug/cam1/overlay", "/lane_debug/cam2/overlay" ]
         # topics = [ "/lane_debug/cam0/overlay" ]
         # topics = [ "/debug/stitched_lanes" ]

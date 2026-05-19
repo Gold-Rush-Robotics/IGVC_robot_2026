@@ -118,6 +118,10 @@ class LaneSegmentationNode(Node):
         self.persist_max          = p('persistent_max_value',      200.0)
         self.persist_pub_hz       = p('persistent_publish_hz',       2.0)
         self.persist_clear_radius = p('persistent_clear_radius_m',   0.8)
+        self.persist_publish_clear_robot = bool(
+            p('persistent_publish_clear_robot', True))
+        self.persist_skip_no_subscribers = bool(
+            p('persistent_skip_publish_without_subscribers', True))
         self.persist_pose_source  = p('persistent_pose_source',      'tf')
         self.odom_topic           = p('odom_topic',                  '/front_zed_camera_x/zed_node/odom')
         self.local_from_persistent = bool(p('local_costmap_from_persistent', True))
@@ -290,6 +294,10 @@ class LaneSegmentationNode(Node):
         self._pN = n
         self._phits = np.zeros((n, n), dtype=np.float32)
         self._pfree = np.zeros((n, n), dtype=np.float32)
+        self._persistent_dirty = True
+        self._persistent_data_cache: Optional[np.ndarray] = None
+        self._persistent_msg: Optional[OccupancyGrid] = None
+        self._persistent_msg_dirty = True
         half = self.persist_size_m / 2.0
         self._p_ox = -half
         self._p_oy = -half
@@ -374,6 +382,8 @@ class LaneSegmentationNode(Node):
             # empty frames.
             self._phits *= self.persist_decay
             self._pfree *= self.persist_decay
+            self._persistent_dirty = True
+            self._persistent_msg_dirty = True
             return
 
         # Yaw-rate gate: during fast in-place turns, depth-projected
@@ -389,6 +399,8 @@ class LaneSegmentationNode(Node):
             if yaw_rate > self.max_yaw_rate_persist:
                 self._phits *= self.persist_decay
                 self._pfree *= self.persist_decay
+                self._persistent_dirty = True
+                self._persistent_msg_dirty = True
                 self.get_logger().debug(
                     f'Skipping persistent-map write: |yaw_rate|='
                     f'{yaw_rate:.2f} rad/s > '
@@ -413,56 +425,105 @@ class LaneSegmentationNode(Node):
         self._last_persist_pose = (tx, ty, yaw)
 
         cos_y, sin_y = np.cos(yaw), np.sin(yaw)
-        n = self._pN
 
         self._phits *= self.persist_decay
         self._pfree *= self.persist_decay
 
-        if free_pts:
-            for fwd, lat in free_pts:
-                wx = tx + cos_y * fwd - sin_y * lat
-                wy = ty + sin_y * fwd + cos_y * lat
-                col, row = self._world_to_pgrid(wx, wy)
-                if 0 <= col < n and 0 <= row < n:
-                    self._pfree[row, col] = min(
-                        self._pfree[row, col] + self.persist_free_hit_w,
-                        self.persist_max)
+        self._stamp_persistent_points(
+            free_pts, tx, ty, cos_y, sin_y,
+            self._pfree, self.persist_free_hit_w)
+        self._stamp_persistent_points(
+            lane_pts, tx, ty, cos_y, sin_y,
+            self._phits, self.persist_hit_w)
+        self._persistent_dirty = True
+        self._persistent_msg_dirty = True
 
-        if lane_pts:
-            for fwd, lat in lane_pts:
-                wx = tx + cos_y * fwd - sin_y * lat
-                wy = ty + sin_y * fwd + cos_y * lat
-                col, row = self._world_to_pgrid(wx, wy)
-                if 0 <= col < n and 0 <= row < n:
-                    self._phits[row, col] = min(
-                        self._phits[row, col] + self.persist_hit_w,
-                        self.persist_max)
+    def _stamp_persistent_points(
+        self,
+        points: Optional[Sequence[Tuple[float, float]]],
+        tx: float,
+        ty: float,
+        cos_y: float,
+        sin_y: float,
+        grid: np.ndarray,
+        weight: float,
+    ) -> None:
+        if points is None or len(points) == 0:
+            return
+
+        pts = np.asarray(points, dtype=np.float32)
+        fwd = pts[:, 0]
+        lat = pts[:, 1]
+        cols = (
+            (tx + cos_y * fwd - sin_y * lat - self._p_ox)
+            / self.persist_res
+        ).astype(np.int32)
+        rows = (
+            (ty + sin_y * fwd + cos_y * lat - self._p_oy)
+            / self.persist_res
+        ).astype(np.int32)
+        valid = (
+            (cols >= 0) & (cols < self._pN) &
+            (rows >= 0) & (rows < self._pN)
+        )
+        if not np.any(valid):
+            return
+
+        rows = rows[valid]
+        cols = cols[valid]
+        np.add.at(grid, (rows, cols), weight)
+        grid[rows, cols] = np.minimum(grid[rows, cols], self.persist_max)
 
     def _persistent_grid_data(self, stamp=None, clear_robot: bool = True) -> np.ndarray:
-        data = np.full((self._pN, self._pN), -1, dtype=np.int8)
-        data[self._pfree >= self.persist_free_threshold] = 0
-        data[self._phits >= self.persist_threshold] = 100
+        if self._persistent_data_cache is None or self._persistent_dirty:
+            data = np.full((self._pN, self._pN), -1, dtype=np.int8)
+            data[self._pfree >= self.persist_free_threshold] = 0
+            data[self._phits >= self.persist_threshold] = 100
+            self._persistent_data_cache = data
+            self._persistent_dirty = False
+
+        data = self._persistent_data_cache
         if clear_robot:
+            data = data.copy()
             self._clear_persistent_robot_footprint(data, stamp)
         return data
 
     def _publish_persistent_map(self) -> None:
+        if (
+            self.persist_skip_no_subscribers
+            and self.persist_pub.get_subscription_count() == 0
+        ):
+            return
+
         stamp = self._last_persistent_stamp
         if stamp is None:
             stamp = self.get_clock().now().to_msg()
-        n = self._pN
-        g = OccupancyGrid()
-        g.header.stamp              = stamp
-        g.header.frame_id           = self.persist_frame
-        g.info.resolution           = self.persist_res
-        g.info.width                = n
-        g.info.height               = n
-        g.info.origin.position.x    = self._p_ox
-        g.info.origin.position.y    = self._p_oy
-        g.info.origin.orientation.w = 1.0
 
-        data = self._persistent_grid_data(stamp)
-        g.data = data.flatten().tolist()
+        rebuild_msg = (
+            self._persistent_msg is None
+            or self._persistent_msg_dirty
+            or self.persist_publish_clear_robot
+        )
+        if rebuild_msg:
+            n = self._pN
+            g = OccupancyGrid()
+            g.header.frame_id           = self.persist_frame
+            g.info.resolution           = self.persist_res
+            g.info.width                = n
+            g.info.height               = n
+            g.info.origin.position.x    = self._p_ox
+            g.info.origin.position.y    = self._p_oy
+            g.info.origin.orientation.w = 1.0
+
+            data = self._persistent_grid_data(
+                stamp, clear_robot=self.persist_publish_clear_robot)
+            g.data = data.ravel().tolist()
+            self._persistent_msg = g
+            self._persistent_msg_dirty = False
+        else:
+            g = self._persistent_msg
+
+        g.header.stamp = stamp
         self.persist_pub.publish(g)
 
     def _clear_persistent_robot_footprint(self, data: np.ndarray, stamp) -> None:
