@@ -19,6 +19,7 @@ unchanged.
 
 from __future__ import annotations
 
+import array
 import math
 from typing import Iterable, List, Optional, Sequence, Tuple
 
@@ -199,6 +200,51 @@ class LaneSegmentationNode(Node):
         self.obstacle_dilation_px       = int(p('obstacle_dilation_px', 25))
         self.camera_height_fallback_m   = float(p('camera_height_fallback_m', 0.45))
 
+        # ── Lane-line refinement (paint-only filter) ─────────────────
+        # YOLOPv2's lane-line head fires on more than just painted lines —
+        # in particular it tags road boundaries / sidewalk edges where
+        # the asphalt ends.  IGVC lanes are *only* painted white, so we
+        # filter the raw lane mask through:
+        #   1. drivable-area gate     → keep only paint that lies inside
+        #      (or within ``lane_da_dilate_px`` of) the drivable area, so
+        #      curbs / off-road edges are dropped.
+        #   2. white-paint colour gate → keep only pixels whose RGB looks
+        #      like white paint (high V, low S in HSV).  This is what
+        #      separates a true lane line from the road-edge texture.
+        # Both filters can be disabled independently.
+        self.lane_threshold             = float(p('lane_threshold', 0.5))
+        self.lane_in_drivable_only      = bool(p('lane_in_drivable_only', True))
+        self.lane_da_dilate_px          = int(p('lane_da_dilate_px', 30))
+        self.lane_color_filter_enabled  = bool(p('lane_color_filter_enabled', True))
+        self.lane_color_v_min           = int(p('lane_color_v_min', 170))
+        self.lane_color_s_max           = int(p('lane_color_s_max', 70))
+        self.lane_morph_close_px        = int(p('lane_morph_close_px', 3))
+        # Pre-allocate kernels.
+        _kc = self.lane_morph_close_px | 1
+        self._lane_close_kernel = (
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_kc, _kc))
+            if self.lane_morph_close_px > 1 else None)
+        _kd = self.lane_da_dilate_px | 1
+        self._lane_da_dilate_kernel = (
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_kd, _kd))
+            if self.lane_da_dilate_px > 0 else None)
+
+        # ── Classical white-paint augmentation (for thin IRL lines) ──
+        # The model is trained on real driving data with lane lines
+        # several inches wide.  IGVC IRL paint is 0.5–2 inches wide and
+        # often too thin to trigger the head reliably even at lower
+        # ``lane_threshold``.  When this flag is on we add white-paint
+        # pixels (gated by drivable-area + colour) directly to the lane
+        # mask, supplementing the model's response.  The augmentation is
+        # restricted to the drivable area so road edges and white sky
+        # regions cannot contribute.
+        self.lane_color_augment_enabled = bool(
+            p('lane_color_augment_enabled', False))
+        self.lane_color_augment_v_min   = int(p('lane_color_augment_v_min', 200))
+        self.lane_color_augment_s_max   = int(p('lane_color_augment_s_max', 50))
+        self.lane_color_augment_min_area_px = int(
+            p('lane_color_augment_min_area_px', 25))
+
         if not self.model_weights:
             raise RuntimeError(
                 "Parameter 'model_weights' must be set to the path of "
@@ -225,6 +271,7 @@ class LaneSegmentationNode(Node):
                 clahe_tile=tuple(self.model_clahe_tile),
                 blur_ksize=tuple(self.model_blur_ksize),
                 blur_sigma=self.model_blur_sigma,
+                lane_threshold=self.lane_threshold,
             )
         else:
             self.model = YolopV2(
@@ -237,6 +284,7 @@ class LaneSegmentationNode(Node):
                 clahe_tile=tuple(self.model_clahe_tile),
                 blur_ksize=tuple(self.model_blur_ksize),
                 blur_sigma=self.model_blur_sigma,
+                lane_threshold=self.lane_threshold,
             )
         self.model.load()
         if self.model.fallback_warning:
@@ -299,6 +347,8 @@ class LaneSegmentationNode(Node):
         self._cam_state: dict = {}
         self._latest_odom: Optional[Odometry] = None
         self._last_persist_pose: Optional[Tuple] = None
+        # Per-shape pixel meshgrid cache (built lazily, reused across frames).
+        self._pixel_grid_cache: dict = {}
 
         self.tf_buffer   = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -352,6 +402,29 @@ class LaneSegmentationNode(Node):
         self._latest_odom = msg
 
     def _persistent_pose(self, stamp=None):
+        # Prefer a stamp-aligned TF lookup whenever a stamp is provided.
+        # With multiple cameras, inference is serialised so left/right
+        # frames are processed several model-latency periods after they
+        # were captured.  Using the *latest* odom for those frames
+        # projects their lane points to a world pose that no longer
+        # matches when the photons hit the sensor — the lane lines then
+        # appear shifted in the persistent map.  A TF lookup at the
+        # frame stamp uses odom_tf_bridge_node's history to recover the
+        # robot pose at capture time, eliminating the shift.
+        if stamp is not None:
+            transform = lookup_tf(
+                self.tf_buffer, self.persist_frame, self.base_frame, stamp)
+            if transform is not None:
+                translation = transform.transform.translation
+                rotation = transform.transform.rotation
+                return (
+                    translation.x,
+                    translation.y,
+                    translation.z,
+                    yaw_from_quat(rotation.x, rotation.y, rotation.z, rotation.w),
+                    rotation,
+                )
+
         if self.persist_pose_source == 'odom':
             return self._persistent_pose_from_odom()
 
@@ -555,7 +628,7 @@ class LaneSegmentationNode(Node):
 
             data = self._persistent_grid_data(
                 stamp, clear_robot=self.persist_publish_clear_robot)
-            g.data = data.ravel().tolist()
+            g.data = array.array('b', data.tobytes())
             self._persistent_msg = g
             self._persistent_msg_dirty = False
         else:
@@ -652,6 +725,11 @@ class LaneSegmentationNode(Node):
                 throttle_duration_sec=5.0)
             ll_mask = np.zeros_like(ll_mask)
 
+        # ── Lane refinement: drop road edges, recover thin paint ────
+        # See ``_refine_lane_mask`` for details.  Runs before the ROI /
+        # chassis crop so the colour gate sees the original RGB.
+        ll_mask = self._refine_lane_mask(bgr, da_mask, ll_mask)
+
         # ── Morphological cleanup of drivable-area mask (removes sim noise) ──
         if self._da_morph_kernel is not None:
             da_mask = cv2.morphologyEx(
@@ -726,7 +804,7 @@ class LaneSegmentationNode(Node):
 
         fused_free, fused_lane = self._fuse_points(process_stamp)
 
-        if fused_free or fused_lane:
+        if fused_free.shape[0] > 0 or fused_lane.shape[0] > 0:
             self.latest_grid = self._build_grid(
                 fused_free, fused_lane, process_stamp)
             self._update_persistent_map(
@@ -745,7 +823,7 @@ class LaneSegmentationNode(Node):
         self._publish_lane_markers(lane_components, process_stamp)
 
         self.get_logger().info(
-            f'cam[{cam_idx}] free={len(free_pts)} lane={len(lane_pts)} '
+            f'cam[{cam_idx}] free={free_pts.shape[0]} lane={lane_pts.shape[0]} '
             f'components={len(lane_components)} '
             f'active_cams={len(self._active_cam_states(process_stamp))}',
             throttle_duration_sec=1.0)
@@ -760,17 +838,46 @@ class LaneSegmentationNode(Node):
         return active
 
 
-    def _fuse_points(self, stamp) -> Tuple[List, List]:
-        free_pts: List[Tuple[float, float]] = []
-        lane_pts: List[Tuple[float, float]] = []
+    def _fuse_points(self, stamp) -> Tuple[np.ndarray, np.ndarray]:
+        """Concatenate per-camera ``(N, 2)`` arrays into one fused array each."""
+        free_chunks: List[np.ndarray] = []
+        lane_chunks: List[np.ndarray] = []
         for state in self._active_cam_states(stamp):
-            free_pts.extend(state['free'])
-            lane_pts.extend(state['lane'])
-        return free_pts, lane_pts
+            f = state['free']
+            l = state['lane']
+            if f is not None and f.shape[0] > 0:
+                free_chunks.append(f)
+            if l is not None and l.shape[0] > 0:
+                lane_chunks.append(l)
+        free_arr = (
+            np.concatenate(free_chunks, axis=0)
+            if free_chunks else np.empty((0, 2), dtype=np.float32))
+        lane_arr = (
+            np.concatenate(lane_chunks, axis=0)
+            if lane_chunks else np.empty((0, 2), dtype=np.float32))
+        return free_arr, lane_arr
 
     # ═══════════════════════════════════════════════════════════════════
     # Mask → base_link projection
     # ═══════════════════════════════════════════════════════════════════
+
+    def _pixel_grid(self, h: int, w: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Return cached ``(ug, vg)`` pixel-coordinate grids for shape (h, w).
+
+        Building these via ``np.meshgrid`` every frame on Jetson is a
+        non-trivial cost at depth-image resolution (1280×720 → ~1 M
+        floats × 2).  Cache by shape; we typically only see one or two
+        sizes per node lifetime.
+        """
+        key = (h, w)
+        cached = self._pixel_grid_cache.get(key)
+        if cached is not None:
+            return cached
+        us = np.arange(w, dtype=np.float32)
+        vs = np.arange(h, dtype=np.float32)
+        ug, vg = np.meshgrid(us, vs)
+        self._pixel_grid_cache[key] = (ug, vg)
+        return ug, vg
 
     def _build_obstacle_mask(self, depth: np.ndarray, cam_tf, cam_idx: int) -> Optional[np.ndarray]:
         """Return a bool mask (same H×W as depth) where pixels are occupied by obstacles.
@@ -802,9 +909,7 @@ class LaneSegmentationNode(Node):
             cx, cy = cx * sx, cy * sy
 
         # Build pixel coordinate grids
-        us = np.arange(dw, dtype=np.float32)
-        vs = np.arange(dh, dtype=np.float32)
-        ug, vg = np.meshgrid(us, vs)  # (dh, dw)
+        ug, vg = self._pixel_grid(dh, dw)
 
         d = depth.astype(np.float32)
 
@@ -823,11 +928,12 @@ class LaneSegmentationNode(Node):
                 [1 - 2*(r.y*r.y + r.z*r.z),   2*(r.x*r.y - r.z*r.w),   2*(r.x*r.z + r.y*r.w)],
                 [2*(r.x*r.y + r.z*r.w),   1 - 2*(r.x*r.x + r.z*r.z),   2*(r.y*r.z - r.x*r.w)],
                 [2*(r.x*r.z - r.y*r.w),   2*(r.y*r.z + r.x*r.w),   1 - 2*(r.x*r.x + r.y*r.y)],
-            ], dtype=np.float64)
-            # Stack into (3, N), transform, then reshape back
-            pts = np.stack([xc.ravel(), yc.ravel(), zc.ravel()], axis=0)  # (3, N)
-            pts_base = R @ pts  # (3, N)
-            bz = pts_base[2].reshape(dh, dw).astype(np.float32) + float(t.z)
+            ], dtype=np.float32)
+            # Z-row only — the obstacle gate is on base_link Z so we
+            # don't need the X / Y rows.  Saves ~2/3 of the matmul cost.
+            bz = (
+                R[2, 0] * xc + R[2, 1] * yc + R[2, 2] * zc + float(t.z)
+            ).astype(np.float32)
         else:
             # Approximate: camera points straight forward, height from param
             # bz ≈ camera_height - Y_camera_frame (Y down in optical frame)
@@ -843,6 +949,99 @@ class LaneSegmentationNode(Node):
             obs = cv2.dilate(obs.astype(np.uint8), kernel).astype(bool)
 
         return obs
+
+    def _refine_lane_mask(
+        self,
+        bgr: np.ndarray,
+        da_mask: np.ndarray,
+        ll_mask: np.ndarray,
+    ) -> np.ndarray:
+        """Filter & augment the raw YOLOPv2 lane-line mask.
+
+        Steps (all individually toggleable via parameters):
+          1. Restrict to the drivable area (optionally dilated) — the
+             head fires on road-edge texture which is *not* painted; we
+             only want lines that lie on or near the road surface.
+          2. Colour-gate: keep only pixels that look like white paint
+             (high V, low S in HSV).  Removes asphalt-vs-grass edges
+             that the model still labels as "lane line".
+          3. Optional white-paint augmentation: ADD bright white-paint
+             pixels (within the drivable area) that the model may have
+             missed because IRL paint is too thin (0.5–2 inches) to
+             trigger the head reliably.
+          4. Morphological close: bridges 1–2 pixel gaps along thin
+             lines so connected-component filtering does not throw away
+             dashed / broken paint.
+        """
+        if ll_mask is None or ll_mask.size == 0:
+            return ll_mask
+
+        # Make sure we work in uint8 {0,1}.
+        ll = (ll_mask > 0).astype(np.uint8)
+
+        # Resize masks to BGR shape if a model returns at a different size.
+        h, w = bgr.shape[:2]
+        if ll.shape[:2] != (h, w):
+            ll = cv2.resize(ll, (w, h), interpolation=cv2.INTER_NEAREST)
+        if da_mask is not None and da_mask.shape[:2] != (h, w):
+            da = cv2.resize(
+                (da_mask > 0).astype(np.uint8), (w, h),
+                interpolation=cv2.INTER_NEAREST)
+        else:
+            da = (da_mask > 0).astype(np.uint8) if da_mask is not None else None
+
+        # Compute drivable-area gate (DA optionally dilated outward so
+        # paint just outside the predicted DA still survives).
+        da_gate: Optional[np.ndarray] = None
+        if da is not None:
+            if self._lane_da_dilate_kernel is not None:
+                da_gate = cv2.dilate(da, self._lane_da_dilate_kernel)
+            else:
+                da_gate = da
+
+        # 1) Keep only lane mask cells inside the (dilated) drivable area.
+        if self.lane_in_drivable_only and da_gate is not None:
+            ll = ll & da_gate
+
+        # Pre-compute HSV once if we need it for colour filter / augment.
+        need_hsv = (
+            self.lane_color_filter_enabled
+            or self.lane_color_augment_enabled
+        )
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV) if need_hsv else None
+
+        # 2) White-paint colour gate on the model's lane mask.
+        if self.lane_color_filter_enabled and hsv is not None:
+            v = hsv[:, :, 2]
+            s = hsv[:, :, 1]
+            white = ((v >= self.lane_color_v_min) &
+                     (s <= self.lane_color_s_max)).astype(np.uint8)
+            ll = ll & white
+
+        # 3) White-paint augmentation: classical detector for thin lines.
+        if self.lane_color_augment_enabled and hsv is not None and da_gate is not None:
+            v = hsv[:, :, 2]
+            s = hsv[:, :, 1]
+            paint = ((v >= self.lane_color_augment_v_min) &
+                     (s <= self.lane_color_augment_s_max)).astype(np.uint8)
+            paint &= da_gate
+            # Drop tiny specular highlights / pebbles by area filter.
+            if self.lane_color_augment_min_area_px > 0 and np.any(paint):
+                n_lbl, lbls, stats, _ = cv2.connectedComponentsWithStats(
+                    paint, connectivity=8)
+                keep = np.zeros_like(paint)
+                for lbl in range(1, n_lbl):
+                    if stats[lbl, cv2.CC_STAT_AREA] >= \
+                            self.lane_color_augment_min_area_px:
+                        keep[lbls == lbl] = 1
+                paint = keep
+            ll = ((ll | paint) > 0).astype(np.uint8)
+
+        # 4) Morphological close to bridge thin-line gaps.
+        if self._lane_close_kernel is not None and np.any(ll):
+            ll = cv2.morphologyEx(ll, cv2.MORPH_CLOSE, self._lane_close_kernel)
+
+        return ll
 
     def _apply_mask_roi(self, mask: np.ndarray) -> np.ndarray:
         """Zero-out chassis + out-of-ROI regions of a binary mask."""
@@ -898,6 +1097,109 @@ class LaneSegmentationNode(Node):
         trans = np.array([t.x, t.y, t.z], dtype=np.float32)
         return rot, trans
 
+    def _project_pixel_indices(
+        self,
+        ys_mask: np.ndarray,
+        xs_mask: np.ndarray,
+        mask_shape: Tuple[int, int],
+        depth: np.ndarray,
+        cam_idx: int,
+        cam_tf,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Vectorised mask-pixel → ``base_link`` projection.
+
+        Parameters
+        ----------
+        ys_mask, xs_mask
+            Pixel coords in *mask* resolution.
+        mask_shape
+            ``(h, w)`` of the source mask, used to scale to depth coords.
+
+        Returns
+        -------
+        pts
+            ``(N, 2) float32`` ``(fwd, lat)`` array of valid points.
+        valid_idx
+            ``(N,) int`` indices into the input arrays that survived all
+            gates (NaN/range/forward).  Lets the caller carry side-data
+            (e.g. component labels) through the projection without a
+            Python loop.
+        """
+        if ys_mask.size == 0:
+            return (np.empty((0, 2), dtype=np.float32),
+                    np.empty((0,), dtype=np.int64))
+
+        h_d, w_d = depth.shape[:2]
+        h_m, w_m = mask_shape
+        sx = w_d / float(w_m) if w_m > 0 else 1.0
+        sy = h_d / float(h_m) if h_m > 0 else 1.0
+
+        # Mask → depth coords.  Round to nearest int.
+        if sx == 1.0 and sy == 1.0:
+            xd = xs_mask.astype(np.int32, copy=False)
+            yd = ys_mask.astype(np.int32, copy=False)
+        else:
+            xd = (xs_mask.astype(np.float32) * sx).astype(np.int32)
+            yd = (ys_mask.astype(np.float32) * sy).astype(np.int32)
+
+        in_bounds = (xd >= 0) & (xd < w_d) & (yd >= 0) & (yd < h_d)
+        if not np.any(in_bounds):
+            return (np.empty((0, 2), dtype=np.float32),
+                    np.empty((0,), dtype=np.int64))
+
+        # Carry the surviving original indices through each gate.
+        idx0 = np.flatnonzero(in_bounds)
+        xd = xd[idx0]
+        yd = yd[idx0]
+
+        # Direct depth lookup.  We rely on the YOLOPv2 lane mask being
+        # spatially extensive enough that direct sampling captures the
+        # geometry; the previous per-pixel ``np.median`` patch was the
+        # main Python-loop bottleneck and produced only marginally
+        # different points for ZED depth.
+        d = depth[yd, xd].astype(np.float32, copy=False)
+        gate = (
+            np.isfinite(d)
+            & (d > self.min_detection_depth_m)
+            & (d < self.max_detection_depth_m)
+        )
+        if not np.any(gate):
+            return (np.empty((0, 2), dtype=np.float32),
+                    np.empty((0,), dtype=np.int64))
+
+        idx1 = idx0[gate]
+        xd = xd[gate].astype(np.float32, copy=False)
+        yd = yd[gate].astype(np.float32, copy=False)
+        d = d[gate]
+
+        fx, fy, cx, cy = self._intrinsics(cam_idx, depth.shape)
+        rot, trans = self._cam_tf_components(cam_tf)
+
+        if rot is None or trans is None:
+            fwd = d
+            lat = -(xd - float(cx)) * d / float(fx)
+        else:
+            xc = (xd - float(cx)) * d / float(fx)
+            yc = (yd - float(cy)) * d / float(fy)
+            zc = d
+            # rot: (3, 3) float32; pts_cam: (3, N).
+            pts_cam = np.stack([xc, yc, zc], axis=0)
+            pts_base = rot @ pts_cam
+            pts_base[0] += float(trans[0])
+            pts_base[1] += float(trans[1])
+            fwd = pts_base[0]
+            lat = pts_base[1]
+
+        forward_gate = fwd > 0.0
+        if not np.any(forward_gate):
+            return (np.empty((0, 2), dtype=np.float32),
+                    np.empty((0,), dtype=np.int64))
+
+        idx_final = idx1[forward_gate]
+        pts = np.stack([fwd[forward_gate], lat[forward_gate]], axis=1).astype(
+            np.float32, copy=False)
+        return pts, idx_final
+
     def _project_mask_points(
         self,
         mask: np.ndarray,
@@ -905,56 +1207,39 @@ class LaneSegmentationNode(Node):
         cam_idx: int,
         cam_tf,
         stride: int,
-    ) -> List[Tuple[float, float]]:
-        """Return a list of ``(fwd, lat)`` in ``base_link`` for mask pixels."""
+    ) -> np.ndarray:
+        """Vectorised drivable-area projection.
+
+        Returns an ``(N, 2) float32`` array of ``(fwd, lat)`` points in
+        ``base_link``.  The list-of-tuples API of the previous
+        implementation is replaced with a numpy array — downstream code
+        (``_fuse_points`` / ``_build_grid`` / ``_stamp_persistent_points``)
+        already accepts both.
+        """
         if mask is None or mask.size == 0:
-            return []
+            return np.empty((0, 2), dtype=np.float32)
 
-        # Align mask size to depth — seg model output is already resized to
-        # the RGB frame; depth may be a different resolution.  If so, scale
-        # pixel coords accordingly when sampling depth.
-        h_m, w_m = mask.shape[:2]
-        h_d, w_d = depth.shape[:2]
-        sx = w_d / float(w_m) if w_m > 0 else 1.0
-        sy = h_d / float(h_m) if h_m > 0 else 1.0
+        # Stride decimation on the mask itself — cheaper than indexing
+        # after the fact because the mask is mostly zeros.
+        sub = mask[::stride, ::stride] if stride > 1 else mask
+        ys_sub, xs_sub = np.nonzero(sub)
+        if ys_sub.size == 0:
+            return np.empty((0, 2), dtype=np.float32)
 
-        fx, fy, cx, cy = self._intrinsics(cam_idx, depth.shape)
-        rot, trans = self._cam_tf_components(cam_tf)
+        # Cap.  Use a deterministic stride-decimation rather than RNG
+        # so frame-to-frame the same pixels are kept (less flicker in
+        # the persistent map).
+        if ys_sub.size > self.max_points_per_frame:
+            keep_every = int(math.ceil(ys_sub.size / self.max_points_per_frame))
+            ys_sub = ys_sub[::keep_every]
+            xs_sub = xs_sub[::keep_every]
 
-        sub = mask[::stride, ::stride]
-        ys, xs = np.nonzero(sub)
-        if ys.size == 0:
-            return []
+        # Map back to mask coords.
+        ys_mask = ys_sub * stride if stride > 1 else ys_sub
+        xs_mask = xs_sub * stride if stride > 1 else xs_sub
 
-        # Random subsample to cap cost.
-        if ys.size > self.max_points_per_frame:
-            idx = np.random.default_rng().choice(
-                ys.size, size=self.max_points_per_frame, replace=False)
-            ys = ys[idx]
-            xs = xs[idx]
-
-        pts: List[Tuple[float, float]] = []
-        max_d = self.max_detection_depth_m
-        min_d = self.min_detection_depth_m
-        for v_sub, u_sub in zip(ys.tolist(), xs.tolist()):
-            v = v_sub * stride
-            u = u_sub * stride
-            # Map mask (u, v) → depth (u, v)
-            vd = int(v * sy)
-            ud = int(u * sx)
-            if not (0 <= vd < h_d and 0 <= ud < w_d):
-                continue
-            d = sample_valid_depth(
-                depth, ud, vd,
-                radius=self.depth_search_radius_px,
-                min_d=min_d, max_d=max_d)
-            if d is None:
-                continue
-            fwd, lat, _ = pixel_to_base(
-                ud, vd, d, fx, fy, cx, cy, rot, trans)
-            if fwd <= 0.0:
-                continue
-            pts.append((fwd, lat))
+        pts, _ = self._project_pixel_indices(
+            ys_mask, xs_mask, mask.shape[:2], depth, cam_idx, cam_tf)
         return pts
 
     def _project_lane_mask(
@@ -963,87 +1248,78 @@ class LaneSegmentationNode(Node):
         depth: np.ndarray,
         cam_idx: int,
         cam_tf,
-    ) -> Tuple[List[Tuple[float, float]], List[List[Tuple[float, float]]]]:
-        """Project the lane-line mask and split by connected component.
+    ) -> Tuple[np.ndarray, List[np.ndarray]]:
+        """Vectorised lane-line projection, partitioned by component.
 
         Returns
         -------
         all_pts
-            Flat list of every projected lane-line point in ``base_link``.
+            ``(N, 2) float32`` array of every projected lane point.
         components
-            List of per-component point lists, sorted by average lateral
-            offset (most-positive = left-most) so the marker colouring is
-            stable frame-to-frame.
+            List of per-component ``(M_i, 2) float32`` arrays, sorted by
+            mean lateral offset (most-positive first) so colours are
+            stable.
         """
         if ll_mask is None or ll_mask.size == 0:
-            return [], []
+            return np.empty((0, 2), dtype=np.float32), []
 
-        # Connected components on the full-resolution mask so small blobs
-        # can be filtered by real pixel area.
         num, labels, stats, _ = cv2.connectedComponentsWithStats(
             ll_mask.astype(np.uint8), connectivity=8)
+        if num <= 1:
+            return np.empty((0, 2), dtype=np.float32), []
 
-        fx, fy, cx, cy = self._intrinsics(cam_idx, depth.shape)
-        rot, trans = self._cam_tf_components(cam_tf)
-        h_d, w_d = depth.shape[:2]
-        h_m, w_m = ll_mask.shape[:2]
-        sx = w_d / float(w_m) if w_m > 0 else 1.0
-        sy = h_d / float(h_m) if h_m > 0 else 1.0
-        stride = self.ll_subsample_px
-        min_d = self.min_detection_depth_m
-        max_d = self.max_detection_depth_m
+        # Build a label-keep mask in one pass (avoids building a python
+        # list and per-label np.where).
+        keep_label = np.zeros(num, dtype=bool)
+        keep_label[1:] = stats[1:, cv2.CC_STAT_AREA] >= self.min_lane_component_px
+        if not np.any(keep_label):
+            return np.empty((0, 2), dtype=np.float32), []
 
-        components: List[List[Tuple[float, float]]] = []
-        all_pts: List[Tuple[float, float]] = []
+        # Pixels that survive the area filter, full-resolution.
+        survivors = keep_label[labels]
+        ys_all, xs_all = np.nonzero(survivors)
+        if ys_all.size == 0:
+            return np.empty((0, 2), dtype=np.float32), []
 
-        # Skip label 0 (background).
-        for label in range(1, num):
-            area = int(stats[label, cv2.CC_STAT_AREA])
-            if area < self.min_lane_component_px:
-                continue
+        # Stride subsample.
+        stride = max(1, self.ll_subsample_px)
+        if stride > 1:
+            ys_all = ys_all[::stride]
+            xs_all = xs_all[::stride]
 
-            ys, xs = np.where(labels == label)
-            if ys.size == 0:
-                continue
+        # Cap.
+        if ys_all.size > self.max_points_per_frame:
+            keep_every = int(math.ceil(ys_all.size / self.max_points_per_frame))
+            ys_all = ys_all[::keep_every]
+            xs_all = xs_all[::keep_every]
 
-            # Stride-subsample within the component.
-            if stride > 1:
-                keep = np.arange(0, ys.size, stride)
-                ys = ys[keep]
-                xs = xs[keep]
+        # Carry the per-pixel component label through projection.
+        lbl_per_px = labels[ys_all, xs_all]
 
-            if ys.size > self.max_points_per_frame:
-                rng = np.random.default_rng()
-                idx = rng.choice(
-                    ys.size, size=self.max_points_per_frame, replace=False)
-                ys = ys[idx]
-                xs = xs[idx]
+        all_pts, valid_idx = self._project_pixel_indices(
+            ys_all, xs_all, ll_mask.shape[:2], depth, cam_idx, cam_tf)
+        if all_pts.shape[0] == 0:
+            return all_pts, []
 
-            comp_pts: List[Tuple[float, float]] = []
-            for v, u in zip(ys.tolist(), xs.tolist()):
-                vd = int(v * sy)
-                ud = int(u * sx)
-                if not (0 <= vd < h_d and 0 <= ud < w_d):
-                    continue
-                d = sample_valid_depth(
-                    depth, ud, vd,
-                    radius=self.depth_search_radius_px,
-                    min_d=min_d, max_d=max_d)
-                if d is None:
-                    continue
-                fwd, lat, _ = pixel_to_base(
-                    ud, vd, d, fx, fy, cx, cy, rot, trans)
-                if fwd <= 0.0:
-                    continue
-                comp_pts.append((fwd, lat))
+        lbl_per_pt = lbl_per_px[valid_idx]
 
-            if comp_pts:
+        # Group by component.  np.unique + np.argsort runs in C; we then
+        # slice with searchsorted boundaries — no per-pixel python loop.
+        order = np.argsort(lbl_per_pt, kind='stable')
+        pts_sorted = all_pts[order]
+        lbl_sorted = lbl_per_pt[order]
+        unique_lbls, starts = np.unique(lbl_sorted, return_index=True)
+        ends = np.append(starts[1:], lbl_sorted.size)
+
+        components: List[np.ndarray] = []
+        for s, e in zip(starts.tolist(), ends.tolist()):
+            comp_pts = pts_sorted[s:e]
+            if comp_pts.shape[0] > 0:
                 components.append(comp_pts)
-                all_pts.extend(comp_pts)
 
-        # Sort left-to-right by mean lateral offset (most positive first).
-        components.sort(
-            key=lambda pts: -float(np.mean([p[1] for p in pts])))
+        # Sort components left-to-right by mean lateral offset.  +y is
+        # left of the robot, so most-positive first.
+        components.sort(key=lambda a: -float(a[:, 1].mean()))
         return all_pts, components
 
     # ═══════════════════════════════════════════════════════════════════
@@ -1052,8 +1328,8 @@ class LaneSegmentationNode(Node):
 
     def _build_grid(
         self,
-        free_pts: Iterable[Tuple[float, float]],
-        lane_pts: Iterable[Tuple[float, float]],
+        free_pts,
+        lane_pts,
         stamp,
     ) -> OccupancyGrid:
         g = self._empty_grid(stamp)
@@ -1063,24 +1339,22 @@ class LaneSegmentationNode(Node):
         ny = g.info.height
         res = self.grid_res
         data = np.full((ny, nx), -1, dtype=np.int8)
+        half_w = self.grid_width_m / 2.0
 
-        def to_cell(fwd: float, lat: float) -> Optional[Tuple[int, int]]:
-            col = int(fwd / res)
-            row = int((lat + self.grid_width_m / 2.0) / res)
-            if 0 <= row < ny and 0 <= col < nx:
-                return row, col
-            return None
+        def _stamp(pts, value: int) -> None:
+            arr = pts if isinstance(pts, np.ndarray) else np.asarray(
+                pts, dtype=np.float32)
+            if arr.size == 0:
+                return
+            cols = (arr[:, 0] / res).astype(np.int32)
+            rows = ((arr[:, 1] + half_w) / res).astype(np.int32)
+            ok = (cols >= 0) & (cols < nx) & (rows >= 0) & (rows < ny)
+            if np.any(ok):
+                data[rows[ok], cols[ok]] = np.int8(value)
 
         # Free first so lethal overrides it.
-        for fwd, lat in free_pts:
-            cell = to_cell(fwd, lat)
-            if cell is not None:
-                data[cell] = 0
-
-        for fwd, lat in lane_pts:
-            cell = to_cell(fwd, lat)
-            if cell is not None:
-                data[cell] = 100
+        _stamp(free_pts, 0)
+        _stamp(lane_pts, 100)
 
         # ── Corridor fill from lane boundaries ──────────────────────────────
         # Use reliably-detected lane lines to infer the drivable corridor.
@@ -1104,7 +1378,7 @@ class LaneSegmentationNode(Node):
             data[lo:hi, col] = np.where(seg == np.int8(-1), np.int8(0), seg)
         # ────────────────────────────────────────────────────────────────────
 
-        g.data = data.flatten().tolist()
+        g.data = array.array('b', data.tobytes())
         return g
 
     def _empty_grid(self, stamp=None) -> OccupancyGrid:
@@ -1145,7 +1419,8 @@ class LaneSegmentationNode(Node):
                 g.info.origin.position.z = tf.transform.translation.z
                 g.info.origin.orientation = q
 
-        g.data = [-1] * (nx * ny)
+        empty = np.full(nx * ny, -1, dtype=np.int8)
+        g.data = array.array('b', empty.tobytes())
         return g
 
     # ═══════════════════════════════════════════════════════════════════
@@ -1293,7 +1568,7 @@ class LaneSegmentationNode(Node):
         local.info.origin.position.y = local_oy
         local.info.origin.position.z = 0.0
         local.info.origin.orientation.w = 1.0
-        local.data = local_data.ravel().tolist()
+        local.data = array.array('b', local_data.tobytes())
         self.latest_grid = local
         self.grid_pub.publish(local)
         return True
