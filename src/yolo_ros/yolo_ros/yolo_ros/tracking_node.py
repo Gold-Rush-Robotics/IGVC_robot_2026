@@ -62,29 +62,34 @@ class TrackingNode(LifecycleNode):
         self.cv_bridge = CvBridge()
 
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """
-        Configure lifecycle callback.
+        try:
+            """
+            Configure lifecycle callback.
 
-        Retrieves parameters, creates the tracker instance, and sets up publishers.
+            Retrieves parameters, creates the tracker instance, and sets up publishers.
 
-        @param state Current lifecycle state
-        @return Transition callback return status
-        """
-        self.get_logger().info(f"[{self.get_name()}] Configuring...")
+            @param state Current lifecycle state
+            @return Transition callback return status
+            """
+            self.get_logger().info(f"[{self.get_name()}] Configuring...")
 
-        tracker_name = self.get_parameter("tracker").get_parameter_value().string_value
+            tracker_name = self.get_parameter("tracker").get_parameter_value().string_value
 
-        self.image_reliability = (
-            self.get_parameter("image_reliability").get_parameter_value().integer_value
-        )
+            self.image_reliability = (
+                self.get_parameter("image_reliability").get_parameter_value().integer_value
+            )
 
-        self.tracker = self.create_tracker(tracker_name)
-        self._pub = self.create_publisher(DetectionArray, "tracking", 10)
+            self.tracker = self.create_tracker(tracker_name)
+            self._pub = self.create_publisher(DetectionArray, "tracking", 10)
 
-        super().on_configure(state)
-        self.get_logger().info(f"[{self.get_name()}] Configured")
-
-        return TransitionCallbackReturn.SUCCESS
+            super().on_configure(state)
+            self.get_logger().info(f"[{self.get_name()}] Configured")
+            return TransitionCallbackReturn.SUCCESS
+        except Exception as e:
+            import traceback
+            self.get_logger().error(f"on_configure FAILED: {e}")
+            self.get_logger().error(traceback.format_exc())
+            return TransitionCallbackReturn.FAILURE
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
         """
@@ -196,7 +201,7 @@ class TrackingNode(LifecycleNode):
             "bytetrack",
             "botsort",
         ], f"Only support 'bytetrack' and 'botsort' for now, but got '{cfg.tracker_type}'"
-        tracker = TRACKER_MAP[cfg.tracker_type](args=cfg, frame_rate=1)
+        tracker = TRACKER_MAP[cfg.tracker_type](args=cfg)
         return tracker
 
     def detections_cb(self, img_msg: Image, detections_msg: DetectionArray) -> None:
@@ -268,10 +273,14 @@ class TrackingNode(LifecycleNode):
 def main():
     rclpy.init()
     node = TrackingNode()
+
+    import threading
+    import time
+    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    spin_thread.start()
+
     node.trigger_configure()
+    time.sleep(1.0)           # ← wait for configure to complete
     node.trigger_activate()
 
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+    spin_thread.join()

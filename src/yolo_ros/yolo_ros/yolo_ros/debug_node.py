@@ -480,10 +480,12 @@ class DebugNode(LifecycleNode):
 def main():
     rclpy.init()
     node = DebugNode()
+
+    import threading
+    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    spin_thread.start()
+
     node.trigger_configure()
     node.trigger_activate()
 
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+    spin_thread.join()

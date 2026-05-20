@@ -39,7 +39,7 @@ def generate_launch_description():
         model = LaunchConfiguration("model")
         model_cmd = DeclareLaunchArgument(
             "model",
-            default_value="best.pt",
+            default_value="/root/ros2_ws/src/IGVC_robot_2026/src/yolo_ros/best.pt",
             description="Model name or path",
         )
 
