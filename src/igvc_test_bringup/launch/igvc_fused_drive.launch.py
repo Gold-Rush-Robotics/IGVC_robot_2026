@@ -144,7 +144,7 @@ def generate_launch_description() -> LaunchDescription:
         motor_controllers,
         # lane_follower,
         lane_segmentation,
-        # gps_node,
+        gps_node,
         odom_tf_bridge_node,
         # zed_f9p_launch,
         twist_stamper_node,
