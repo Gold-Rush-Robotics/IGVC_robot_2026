@@ -30,7 +30,7 @@ class JointStatePublisher(Node):
 
     def create_subscribers(self):
         # topics = [ "left_zed_camera_x/zed_node/rgb/color/rect/image","/front_zed_camera_x/zed_node/rgb/color/rect/image","right_zed_camera_x/zed_node/rgb/color/rect/image"]
-        topics = [ "/lane_debug/cam0/overlay", "/lane_debug/cam1/overlay", "/lane_debug/cam2/overlay" ]
+        topics = [ "/yolo/dbg_image", "/zed/zed_node/rgb/color/rect/image"]
         # topics = [ "/lane_debug/cam0/overlay" ]
         # topics = [ "/debug/stitched_lanes" ]
         for i, topic in enumerate(topics):
