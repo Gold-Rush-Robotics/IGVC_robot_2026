@@ -488,7 +488,9 @@ class LaneSegmentationNode(Node):
         stamp,
     ) -> None:
         self._last_persistent_stamp = stamp
-        if not free_pts and not lane_pts:
+        free_empty = free_pts is None or len(free_pts) == 0
+        lane_empty = lane_pts is None or len(lane_pts) == 0
+        if free_empty and lane_empty:
             # Still apply the global decay so stale evidence fades even on
             # empty frames.
             self._phits *= self.persist_decay
