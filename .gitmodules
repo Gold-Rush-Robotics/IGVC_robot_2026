@@ -19,3 +19,6 @@
 [submodule "src/ros2-ublox-zedf9p"]
 	path = src/ros2-ublox-zedf9p
 	url = https://github.com/AAU-Space-Robotics/ros2-ublox-zedf9p.git
+[submodule "src/yolo_ros"]
+	path = src/yolo_ros
+	url = https://github.com/Gold-Rush-Robotics/yolo_ros.git
