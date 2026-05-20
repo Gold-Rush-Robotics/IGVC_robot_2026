@@ -50,7 +50,7 @@ lane_segmentation_node:
     # ── Lane-line correlation / map alignment ───────────────────────
     # Pose deduplication: skip persistent map write if the robot hasn't moved
     # enough since the last write (prevents lane cells stacking on top of each
-    # other when YOLO frames are slower than the robot motion).
+    # other when YOLO frames are slower than the robot motion). 
     min_pose_change_m:   0.05
     min_pose_change_rad: 0.02
 
@@ -63,7 +63,7 @@ lane_segmentation_node:
     odom_topic:                "/front_zed_camera_x/zed_node/odom"
     persistent_map_size_m:    100.0
     persistent_map_resolution: 0.20
-    persistent_map_decay:      0.97
+    persistent_map_decay:      0.998
     persistent_hit_weight:     5.0
     persistent_free_hit_weight: 1.0
     persistent_threshold:     6.0
@@ -73,7 +73,7 @@ lane_segmentation_node:
     persistent_clear_radius_m: 0.8
     persistent_publish_clear_robot: false
     persistent_skip_publish_without_subscribers: true
-    local_costmap_from_persistent: false
+    local_costmap_from_persistent: true
     local_costmap_publish_hz: 10.0
     local_back_nogo_buffer_m: 0.30
 
@@ -109,7 +109,7 @@ lane_segmentation_node:
     #   - CLAHE boosts contrast on the flat sim lighting / textureless ground
     #   - Blur suppresses high-frequency rendering artefacts that trigger
     #     false drivable-area and lane-line positives
-    model_preprocess:  false
+    model_preprocess:  true
     model_clahe_clip:  2.0
     model_clahe_tile:  [8, 8]
     model_blur_ksize:  [5, 5]
@@ -119,7 +119,7 @@ lane_segmentation_node:
     # Morphological open (erode then dilate) removes isolated speckles
     # that appear in sim but not on real roads.
     da_morph_kernel_px:   7
-    min_da_component_px:  3000      # drop DA blobs smaller than this (px)
+    min_da_component_px:  300      # drop DA blobs smaller than this (px)
 
     # Mask → point-cloud rasterisation
     da_subsample_px: 8
@@ -127,14 +127,14 @@ lane_segmentation_node:
     # Lowered from 150 → 60 px: the 150 threshold was silently dropping
     # thin / far-field lane evidence (dashed markings, oblique cameras)
     # producing visually-correct overlays but a near-empty /lane_map.
-    min_lane_component_px: 60
-    max_points_per_frame:  4000    # per-mask hard cap
+    min_lane_component_px: 10
+    max_points_per_frame:  10000    # per-mask hard cap
 
     # Lane mask dilation (kernel px in YOLOPv2 input resolution).
     # Widens each detected lane pixel by ~3 px before projection so the
     # persistent map receives a thicker stamp and small mask gaps fade.
     # Set to 0 to disable.
-    ll_dilation_px: 3
+    ll_dilation_px: 50
 
     # Local /lane_costmap lane (100) inflation radius in metres.
     # Equivalent to a ~1 m wide drivable corridor margin (0.5 m each
@@ -143,7 +143,7 @@ lane_segmentation_node:
     local_lane_inflation_m: 0.5
 
     # ── Debug ───────────────────────────────────────────────────────
-    publish_overlay: true
+    publish_overlay: false
     lane_marker_topic: "/lane_segmentation/lanes"
 
     # ── Depth-based obstacle masking ─────────────────────────────────
