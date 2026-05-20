@@ -148,6 +148,27 @@ class LaneSegmentationNode(Node):
         self.min_lane_component_px  = int(p('min_lane_component_px', 150))
         self.min_da_component_px    = int(p('min_da_component_px', 0))
         self.max_points_per_frame   = int(p('max_points_per_frame', 4000))
+
+        # ── Lane raster thickening / corridor inflation ─────────────
+        # ``ll_dilation_px`` widens the raw lane-line mask *before* it is
+        # projected into the persistent map.  Each detected lane pixel
+        # therefore covers a slightly larger neighbourhood in world
+        # coordinates, which fills small mask gaps (dashed markings,
+        # far-field thin strokes) and prevents sparse evidence from
+        # failing the persistent-threshold accumulator.
+        # ``local_lane_inflation_m`` inflates the *output* /lane_costmap
+        # lane (100) cells by this radius before publishing.  Acts as a
+        # soft corridor margin (~1 m wide drivable swath given a 0.5 m
+        # default) so navigator paths cannot squeeze through gaps in
+        # the segmentation mask.
+        self.ll_dilation_px         = max(0, int(p('ll_dilation_px', 0)))
+        if self.ll_dilation_px > 0:
+            _kll = self.ll_dilation_px | 1  # ensure odd
+            self._ll_dilate_kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (_kll, _kll))
+        else:
+            self._ll_dilate_kernel = None
+        self.local_lane_inflation_m = float(p('local_lane_inflation_m', 0.0))
         self.publish_mask_overlay   = p('publish_mask_overlay',     True)
         self.lane_marker_topic      = p('lane_marker_topic',        '/lane_segmentation/lanes')
 
@@ -182,20 +203,37 @@ class LaneSegmentationNode(Node):
                 "src/igvc_lane_detection/scripts/fetch_yolopv2_weights.sh.")
 
         # ── Initialise segmentation model ────────────────────────────
+        # Backend dispatch: ``.engine`` → TensorRT runtime; anything else
+        # → TorchScript via the YolopV2 wrapper.
+        weights_lower = str(self.model_weights).lower()
+        use_trt = weights_lower.endswith('.engine') or weights_lower.endswith('.trt')
         self.get_logger().info(
-            f"Loading YOLOPv2 from '{self.model_weights}' on "
-            f"'{self.model_device}' (half={self.model_half})…")
-        self.model = YolopV2(
-            weights_path=self.model_weights,
-            device=self.model_device,
-            half=self.model_half,
-            img_size=self.model_img_size,
-            preprocess=self.model_preprocess,
-            clahe_clip=self.model_clahe_clip,
-            clahe_tile=tuple(self.model_clahe_tile),
-            blur_ksize=tuple(self.model_blur_ksize),
-            blur_sigma=self.model_blur_sigma,
-        )
+            f"Loading YOLOPv2 from '{self.model_weights}' "
+            f"(backend={'tensorrt' if use_trt else 'torchscript'}, "
+            f"half={self.model_half})…")
+        if use_trt:
+            from .yolopv2_trt import YolopV2TRT
+            self.model = YolopV2TRT(
+                engine_path=self.model_weights,
+                img_size=self.model_img_size,
+                preprocess=self.model_preprocess,
+                clahe_clip=self.model_clahe_clip,
+                clahe_tile=tuple(self.model_clahe_tile),
+                blur_ksize=tuple(self.model_blur_ksize),
+                blur_sigma=self.model_blur_sigma,
+            )
+        else:
+            self.model = YolopV2(
+                weights_path=self.model_weights,
+                device=self.model_device,
+                half=self.model_half,
+                img_size=self.model_img_size,
+                preprocess=self.model_preprocess,
+                clahe_clip=self.model_clahe_clip,
+                clahe_tile=tuple(self.model_clahe_tile),
+                blur_ksize=tuple(self.model_blur_ksize),
+                blur_sigma=self.model_blur_sigma,
+            )
         self.model.load()
         if self.model.fallback_warning:
             self.get_logger().warn(self.model.fallback_warning)
@@ -598,6 +636,14 @@ class LaneSegmentationNode(Node):
                         interpolation=cv2.INTER_NEAREST).astype(bool)
                 da_mask[obs_mask] = 0
                 ll_mask[obs_mask] = 0
+
+        # ── Lane mask dilation (pre-projection) ──
+        # Thicken the raw lane mask so each detected lane pixel projects
+        # to a small neighbourhood instead of a single ray.  This fills
+        # small gaps in the persistent map without changing the model.
+        if self._ll_dilate_kernel is not None and ll_mask is not None and ll_mask.size:
+            ll_mask = cv2.dilate(
+                ll_mask.astype(np.uint8), self._ll_dilate_kernel, iterations=1)
 
         # ── Project masks into base_link ──
         free_pts = self._project_mask_points(
@@ -1150,6 +1196,27 @@ class LaneSegmentationNode(Node):
 
         if not np.any((local_data == 0) | (local_data == 100)):
             return False
+
+        # ── Lane corridor inflation ──
+        # Dilate lane (100) cells by ``local_lane_inflation_m`` so the
+        # navigator sees a continuous lane swath even when the raw mask
+        # has small gaps.  Equivalent to enforcing a minimum corridor
+        # margin on either side of the path without changing the
+        # extractor.  Only the lane class is inflated — free/unknown
+        # cells are left alone so the corridor interior stays open.
+        if self.local_lane_inflation_m > 0.0 and self.grid_res > 0.0:
+            radius_cells = int(math.ceil(
+                self.local_lane_inflation_m / self.grid_res))
+            if radius_cells > 0:
+                k = 2 * radius_cells + 1
+                kernel = cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE, (k, k))
+                lane_mask = (local_data == 100).astype(np.uint8)
+                inflated = cv2.dilate(lane_mask, kernel, iterations=1)
+                # Only overwrite cells that are currently free (0) or
+                # unknown (-1).  Existing 100 stays 100.
+                grow = (inflated > 0) & (local_data != 100)
+                local_data[grow] = 100
 
         back_buf_cells = int(math.ceil(self.local_back_nogo_buffer_m / self.grid_res))
         if back_buf_cells > 0:

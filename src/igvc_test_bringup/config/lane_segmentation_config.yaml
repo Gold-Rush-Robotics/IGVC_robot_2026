@@ -64,9 +64,9 @@ lane_segmentation_node:
     persistent_map_size_m:    100.0
     persistent_map_resolution: 0.125
     persistent_map_decay:      0.97
-    persistent_hit_weight:     3.0
+    persistent_hit_weight:     5.0
     persistent_free_hit_weight: 1.0
-    persistent_threshold:     12.0
+    persistent_threshold:     6.0
     persistent_free_threshold: 3.0
     persistent_max_value:    200.0
     persistent_publish_hz:     10.0  # raised from 2.0 — was discarding 14 frames between publishes
@@ -97,14 +97,17 @@ lane_segmentation_node:
     # model_weights: ""
     model_device:  "cuda:0"
     model_half:    true
-    model_img_size: 640
+    # 384 is ~2.7× fewer FLOPs than the YOLOPv2 reference 640 with negligible
+    # accuracy loss for low-frequency lane / drivable-area features.  Raise
+    # back to 640 if far-field thin markings start dropping out.
+    model_img_size: 384
 
     # ── Preprocessor (CLAHE + Gaussian blur, applied before letterbox) ──
     # Aggressive values tuned for Isaac Sim domain gap:
     #   - CLAHE boosts contrast on the flat sim lighting / textureless ground
     #   - Blur suppresses high-frequency rendering artefacts that trigger
     #     false drivable-area and lane-line positives
-    model_preprocess:  true
+    model_preprocess:  false
     model_clahe_clip:  2.0
     model_clahe_tile:  [8, 8]
     model_blur_ksize:  [5, 5]
@@ -119,13 +122,23 @@ lane_segmentation_node:
     # Mask → point-cloud rasterisation
     da_subsample_px: 8
     ll_subsample_px: 3
-    # Lowered from 150 → 20 px: with the side cameras now contributing
-    # paint, a lot of lane evidence arrives as thin 30-80 px slivers
-    # (dashed markings, far-field lines, oblique angles on the 90°
-    # rotated L/R feeds).  150 px was silently dropping every one of
-    # them, producing overlays full of red paint but lane=0 downstream.
-    min_lane_component_px: 150
+    # Lowered from 150 → 60 px: the 150 threshold was silently dropping
+    # thin / far-field lane evidence (dashed markings, oblique cameras)
+    # producing visually-correct overlays but a near-empty /lane_map.
+    min_lane_component_px: 60
     max_points_per_frame:  4000    # per-mask hard cap
+
+    # Lane mask dilation (kernel px in YOLOPv2 input resolution).
+    # Widens each detected lane pixel by ~3 px before projection so the
+    # persistent map receives a thicker stamp and small mask gaps fade.
+    # Set to 0 to disable.
+    ll_dilation_px: 3
+
+    # Local /lane_costmap lane (100) inflation radius in metres.
+    # Equivalent to a ~1 m wide drivable corridor margin (0.5 m each
+    # side) — prevents the navigator from threading through gaps in
+    # the raw segmentation.  Set to 0.0 to disable inflation.
+    local_lane_inflation_m: 0.5
 
     # ── Debug ───────────────────────────────────────────────────────
     publish_overlay: true
