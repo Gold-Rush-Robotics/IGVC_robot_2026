@@ -17,7 +17,6 @@ class ImageSignal(QObject):
 class JointStatePublisher(Node):
     def __init__(self):
         super().__init__('joint_state_publisher')
-        self.publisher = self.create_publisher(JointState, 'isaac_joint_commands', 10)
         # Subscribe to isaac_joint_commands to update joint positions in the GUI
         self.camera_subscribers = []
         self.create_subscribers()
