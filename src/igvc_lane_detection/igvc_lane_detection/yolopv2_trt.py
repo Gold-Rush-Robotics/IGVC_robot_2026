@@ -67,6 +67,7 @@ class YolopV2TRT:
         clahe_tile: Tuple[int, int] = (8, 8),
         blur_ksize: Tuple[int, int] = (5, 5),
         blur_sigma: float = 0.0,
+        lane_threshold: float = 0.5,
     ) -> None:
         if trt is None or cudart is None:
             raise RuntimeError(
@@ -78,6 +79,7 @@ class YolopV2TRT:
         self.preprocess_enabled = bool(preprocess)
         self.blur_ksize = tuple(blur_ksize)
         self.blur_sigma = float(blur_sigma)
+        self.lane_threshold = float(lane_threshold)
         self._clahe = cv2.createCLAHE(
             clipLimit=float(clahe_clip), tileGridSize=tuple(clahe_tile))
         self._stride = 32
@@ -240,7 +242,7 @@ class YolopV2TRT:
         else:
             da = (da_logits[0] > 0.5).astype(np.uint8)
         if ll_logits.shape[0] == 1:
-            lane = (ll_logits[0] > 0.5).astype(np.uint8)
+            lane = (ll_logits[0] > self.lane_threshold).astype(np.uint8)
         else:
             lane = (ll_logits[1] > ll_logits[0]).astype(np.uint8)
 
