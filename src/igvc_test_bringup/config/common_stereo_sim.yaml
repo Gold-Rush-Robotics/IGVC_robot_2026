@@ -1,0 +1,199 @@
+# config/common_stereo_sim.yaml
+# ZED X stereo camera parameters for Isaac Sim (zed-isaac-sim extension).
+# Key differences from common_stereo_real.yaml:
+#   - use_sim_time: true
+#   - simulation.sim_enabled: true  (streams from Isaac Sim via IPC/RTSP)
+#   - imu_fusion: false  (Isaac Sim ZED extension does NOT publish IMU)
+#   - sensors.publish_imu_tf: false
+#   - pos_tracking_enabled: false  (Isaac Sim provides ground-truth TF externally)
+#   - area_memory: false  (no loop closure needed in simulation)
+#   - depth_mode: NEURAL_LIGHT  (lighter GPU footprint in sim)
+#   - pub_resolution: NATIVE  (sim imagery is already clean, no downscale needed)
+#   - gnss_fusion_enabled: false
+#
+# Isaac Sim connection: each camera node connects to sim_address:sim_port.
+# The per-camera sim_port is injected by zed_multi_sim.launch.py
+# (30000 = left, 30001 = front, 30002 = right).
+
+---
+/**:
+    ros__parameters:
+        use_sim_time: true
+
+        simulation:
+            sim_enabled: true          # Connect to an Isaac Sim ZED streaming server
+            sim_address: '127.0.0.1'   # Isaac Sim host (IPC mode — same machine)
+            sim_port: 30000            # Overridden per-camera by zed_multi_sim.launch.py
+
+        svo:
+            use_svo_timestamps: true
+            svo_loop: false
+            svo_realtime: false
+            play_from_frame: 0
+
+        general:
+            camera_timeout_sec: 10      # Longer timeout while Isaac Sim initialises
+            camera_max_reconnect: 10
+            camera_flip: false
+            self_calib: true
+            serial_number: 0            # Overwritten by launch file
+            pub_resolution: 'NATIVE'    # Sim imagery is clean — no downscale needed
+            pub_downscale_factor: 1.0
+            pub_frame_rate: 30.0
+            enable_image_validity_check: 0  # Disable — sim frames are always valid
+            gpu_id: -1
+            optional_opencv_calibration_file: ''
+            async_image_retrieval: false
+
+        video:
+            brightness: 4
+            contrast: 4
+            hue: 0
+            saturation: 4
+            sharpness: 4
+            gamma: 8
+            auto_exposure_gain: true
+            exposure: 80
+            gain: 80
+            auto_whitebalance: true
+            whitebalance_temperature: 42
+
+        sensors:
+            publish_imu_tf: false        # No IMU in Isaac Sim ZED extension
+            sensors_image_sync: false
+            sensors_pub_rate: 200.
+
+        region_of_interest:
+            automatic_roi: false
+            depth_far_threshold_meters: 2.5
+            image_height_ratio_cutoff: 0.5
+            apply_to_depth: true
+            apply_to_positional_tracking: true
+            apply_to_object_detection: true
+            apply_to_body_tracking: true
+            apply_to_spatial_mapping: true
+
+        depth:
+            depth_mode: 'NEURAL_LIGHT'   # Lighter footprint for sim — keeps GPU headroom
+            depth_stabilization: 0       # No positional tracking → stabilisation off
+            openni_depth_mode: false
+            point_cloud_freq: 15.0       # 3 cameras — halve point-cloud bandwidth
+            point_cloud_res: 'COMPACT'
+            depth_confidence: 50         # Permissive in sim; environment is clean
+            depth_texture_conf: 100
+            remove_saturated_areas: true
+            publish_depth_confidence: true
+
+        pos_tracking:
+            pos_tracking_enabled: false  # Isaac Sim supplies ground-truth pose via TF
+            pos_tracking_mode: 'GEN_1'   # Fallback if externally re-enabled
+            imu_fusion: false            # No IMU in Isaac Sim ZED extension
+            publish_tf: false            # TF comes from Isaac Sim /tf bridge
+            publish_map_tf: false
+            map_frame: 'map'
+            odometry_frame: 'odom'
+            area_memory_db_path: ''
+            area_memory: false           # No loop closure in simulation
+            reset_odom_with_loop_closure: false
+            depth_min_range: 0.0
+            set_as_static: false
+            set_gravity_as_origin: false
+            floor_alignment: false
+            initial_base_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            path_pub_rate: 2.0
+            path_max_count: -1
+            two_d_mode: false            # Full 3-D pose available from Isaac Sim
+            fixed_z_value: 0.00
+            transform_time_offset: 0.0
+            reset_pose_with_svo_loop: false
+
+        gnss_fusion:
+            gnss_fusion_enabled: false
+            gnss_fix_topic: '/fix'
+            gnss_zero_altitude: false
+            h_covariance_mul: 1.0
+            v_covariance_mul: 1.0
+            publish_utm_tf: false
+            broadcast_utm_transform_as_parent_frame: false
+            enable_reinitialization: false
+            enable_rolling_calibration: false
+            enable_translation_uncertainty_target: false
+            gnss_vio_reinit_threshold: 5.0
+            target_translation_uncertainty: 10e-2
+            target_yaw_uncertainty: 1e-2
+
+        mapping:
+            mapping_enabled: false
+            resolution: 0.05
+            max_mapping_range: 5.0
+            fused_pointcloud_freq: 1.0
+            clicked_point_topic: '/clicked_point'
+            pd_max_distance_threshold: 0.15
+            pd_normal_similarity_threshold: 15.0
+
+        object_detection:
+            od_enabled: false
+            model: 'MULTI_CLASS_BOX_FAST'
+            custom_onnx_file: ''
+            custom_onnx_input_size: 512
+            custom_label_yaml: ''
+            allow_reduced_precision_inference: true
+            max_range: 20.0
+            confidence_threshold: 75.0
+            prediction_timeout: 0.5
+            enable_tracking: true
+            filtering_mode: '1'
+            mc_people: true
+            mc_vehicle: true
+            mc_bag: true
+            mc_animal: true
+            mc_electronics: true
+            mc_fruit_vegetable: true
+            mc_sport: true
+
+        body_tracking:
+            bt_enabled: false
+            model: 'HUMAN_BODY_MEDIUM'
+            body_format: 'BODY_38'
+            allow_reduced_precision_inference: false
+            max_range: 20.0
+            body_kp_selection: 'FULL'
+            enable_body_fitting: false
+            enable_tracking: true
+            prediction_timeout_s: 0.5
+            confidence_threshold: 50.0
+            minimum_keypoints_threshold: 5
+
+        stream_server:
+            stream_enabled: false
+            codec: 'H264'
+            port: 30000
+            bitrate: 12500
+            gop_size: -1
+            adaptative_bitrate: false
+            chunk_size: 16084
+            target_framerate: 0
+
+        advanced:
+            thread_sched_policy: 'SCHED_BATCH'
+            thread_grab_priority: 50
+            thread_sensor_priority: 70
+            thread_pointcloud_priority: 60
+
+        debug:
+            sdk_verbose: 1
+            debug_common: false
+            debug_sim: false
+            debug_video_depth: false
+            debug_camera_controls: false
+            debug_point_cloud: false
+            debug_positional_tracking: false
+            debug_gnss: false
+            debug_sensors: false
+            debug_mapping: false
+            debug_terrain_mapping: false
+            debug_object_detection: false
+            debug_body_tracking: false
+            debug_roi: false
+            debug_streaming: false
+            debug_advanced: false

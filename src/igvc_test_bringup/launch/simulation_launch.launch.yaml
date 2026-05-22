@@ -10,6 +10,8 @@ launch:
         value: '30002'
       - name: sim_mode
         value: 'true'
+      - name: ros_params_override_path
+        value: $(find-pkg-share igvc_test_bringup)/config/common_stereo_sim.yaml
       - name: use_sim_time
         value: 'true'
       - name: publish_tf
@@ -32,6 +34,8 @@ launch:
         value: 'true'
       - name: sim_port
         value: '30000'
+      - name: ros_params_override_path
+        value: $(find-pkg-share igvc_test_bringup)/config/common_stereo_sim.yaml
       - name: use_sim_time
         value: 'true'
       - name: publish_tf
@@ -54,6 +58,8 @@ launch:
         value: 'true'
       - name: sim_port
         value: '30006'
+      - name: ros_params_override_path
+        value: $(find-pkg-share igvc_test_bringup)/config/common_stereo_sim.yaml
       - name: use_sim_time
         value: 'true'
       - name: publish_tf

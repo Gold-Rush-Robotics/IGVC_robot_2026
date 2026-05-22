@@ -1,0 +1,26 @@
+# YOLOv12 Training Requirements
+# Install with: pip install -r training_requirements.txt
+
+# Core YOLO framework
+ultralytics>=8.0.0
+
+# Deep learning framework
+# torch>=2.0.0
+# torchvision>=0.15.0
+
+# Data handling
+numpy>=1.21.0
+opencv-python>=4.5.0
+Pillow>=9.0.0
+
+# Configuration and utilities
+PyYAML>=5.3
+pyyaml-include>=1.2
+
+# Monitoring and visualization
+tensorboard>=2.0
+tqdm>=4.62.0
+
+# Other utilities
+psutil>=5.8.0
+matplotlib>=3.5.0

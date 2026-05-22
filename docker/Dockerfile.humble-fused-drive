@@ -1,0 +1,32 @@
+FROM ros:humble-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN sed -i 's/^# \(.*universe\)/\1/' /etc/apt/sources.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3-colcon-common-extensions \
+        python3-pip \
+        ros-humble-xacro \
+        ros-humble-robot-state-publisher \
+        ros-humble-controller-manager \
+        ros-humble-ros2-control \
+        ros-humble-ros2-controllers \
+        ros-humble-joy \
+        ros-humble-teleop-twist-joy \
+        ros-humble-rviz2 \
+        ros-humble-robot-localization \
+        ros-humble-navigation2 \
+        ros-humble-nav2-bringup \
+        ros-humble-cv-bridge \
+        ros-humble-image-geometry \
+        ros-humble-tf2-geometry-msgs \
+        ros-humble-message-filters \
+        ros-humble-odom-to-tf-ros2 \
+        ros-humble-twist-stamper \
+        ros-humble-simulation-interfaces \
+    && pip3 install --no-cache-dir -U pip \
+    && pip3 install --no-cache-dir 'numpy<2' ultralytics opencv-python-headless torch \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /root/ros2_ws

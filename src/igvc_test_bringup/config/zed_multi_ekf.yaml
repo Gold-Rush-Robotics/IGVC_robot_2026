@@ -1,9 +1,9 @@
 zed_multi_ekf:
   ros__parameters:
     frequency: 30.0
-    sensor_timeout: 0.1
+    sensor_timeout: 0.05  # tightened from 0.1 — rejects stale sensor data faster
     two_d_mode: true
-    publish_tf: true
+    publish_tf: false  # disabled — odom_tf_bridge is the designated 100 Hz TF publisher; two publishers on the same transform cause lookup jitter
     predict_to_current_time: true
 
     map_frame: map
@@ -20,7 +20,7 @@ zed_multi_ekf:
                    false, false, false]   # ax, ay, az
     odom0_differential: true             # ← KEY: treat as velocity source
     odom0_relative: false
-    odom0_queue_size: 10
+    odom0_queue_size: 5   # reduced from 10 to cut buffering latency
     odom0_nodelay: true
 
     # ── Front camera: primary pose source (absolute) ──
@@ -32,7 +32,7 @@ zed_multi_ekf:
                    false, false, false]
     odom1_differential: false            # Absolute pose anchor
     odom1_relative: false
-    odom1_queue_size: 10
+    odom1_queue_size: 5   # reduced from 10 to cut buffering latency
     odom1_nodelay: true
 
     # ── Right camera: velocity only ──
@@ -44,7 +44,7 @@ zed_multi_ekf:
                    false, false, false]
     odom2_differential: true             # ← same as left
     odom2_relative: false
-    odom2_queue_size: 10
+    odom2_queue_size: 5   # reduced from 10 to cut buffering latency
     odom2_nodelay: true
 
     # ── Process noise tuning ──

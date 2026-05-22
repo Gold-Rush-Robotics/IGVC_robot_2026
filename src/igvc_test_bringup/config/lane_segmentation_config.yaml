@@ -3,7 +3,7 @@ lane_segmentation_node:
     # ── Camera configuration ────────────────────────────────────────
     # All three ZEDs feed the segmentation pipeline in their native
     # orientation — YOLOPv2 performed better without any pre-rotation.
-    num_cameras: 3
+    num_cameras: 1
     camera_topics:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
       # - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
@@ -23,8 +23,8 @@ lane_segmentation_node:
 
     # ── Local rolling costmap ───────────────────────────────────────
     grid_resolution: 0.05
-    grid_width:     20.0
-    grid_height:    20.0
+    grid_width:     10.0
+    grid_height:    10.0
 
     # ── Region of interest / body cropping ──────────────────────────
     # roi_enabled=false → use the full frame (matches the offline
@@ -38,45 +38,163 @@ lane_segmentation_node:
 
     # ── Depth sampling ──────────────────────────────────────────────
     depth_scale: 1.0
-    min_detection_depth_m: 0.5
-    max_detection_depth_m: 5.0
-    depth_search_radius_px: 2
+    min_detection_depth_m: 0.3
+    max_detection_depth_m: 8.0
+    depth_search_radius_px: 6
 
     # ── Multi-camera fusion (single-camera for now, left in for future)
-    fusion_timeout_sec: 0.5
+    max_time_offset_sec: 0.1
+    fusion_timeout_sec: 0.1
     keep_last_grid_on_miss: true
 
-    # ── Persistent (fixed-frame) lane map ───────────────────────────
-    persistent_map_frame:      "map"
-    persistent_map_size_m:    40.0
-    persistent_map_resolution: 0.125
+    # ── Lane-line correlation / map alignment ───────────────────────
+    # Pose deduplication: skip persistent map write if the robot hasn't moved
+    # enough since the last write (prevents lane cells stacking on top of each
+    # other when YOLO frames are slower than the robot motion). 
+    min_pose_change_m:   0.05
+    min_pose_change_rad: 0.02
+
+    # ── Persistent (fixed-frame) lane map ─────────────────────────────
+    # Use odom frame (not map) so TF lookup goes directly to ZED odom
+    # (~100 Hz) instead of through the EKF (30 Hz) — fixes the root cause
+    # of lanes stacking at the same world position.
+    persistent_map_frame:      "odom"
+    persistent_pose_source:    "odom"
+    odom_topic:                "/front_zed_camera_x/zed_node/odom"
+    persistent_map_size_m:    100.0
+    persistent_map_resolution: 0.20
     persistent_map_decay:      0.998
-    persistent_hit_weight:     4.0
-    persistent_threshold:     15.0
+    persistent_hit_weight:     5.0
+    persistent_free_hit_weight: 1.0
+    persistent_threshold:     6.0
+    persistent_free_threshold: 3.0
     persistent_max_value:    200.0
-    persistent_publish_hz:     2.0
+    persistent_publish_hz:     4.0
     persistent_clear_radius_m: 0.8
+    persistent_publish_clear_robot: false
+    persistent_skip_publish_without_subscribers: true
+    local_costmap_from_persistent: true
+    local_costmap_publish_hz: 10.0
+    local_back_nogo_buffer_m: 0.30
+
+    # Skip persistent-map writes when the robot is spinning faster
+    # than this (rad/s).  During tight in-place turns the depth-projected
+    # lane points smear in odom; pausing writes (decay still runs) lets
+    # the map self-correct as the robot settles.
+    max_yaw_rate_for_persist_update_rad_s: 0.6
+
+    # Keep the synchronizer latest-only so YOLO does not chew through
+    # a backlog of old RGB+depth pairs when the camera out-runs inference.
+    sync_queue_size: 2
+    # Jetson real-world pipeline latency is often 0.40-0.70s under YOLO load.
+    # Keep latest-only queueing but allow those frames through.
+    max_frame_age_sec: 2.0
 
     # ── YOLOPv2 segmentation model ──────────────────────────────────
     # model_weights is intentionally empty — the launch file fills it
     # in from $YOLOPV2_WEIGHTS or the model_weights launch argument so
     # the absolute path stays out of source control.
-    model_weights: "/ros2_ws/src/IGVC_robot_2026/models/yolopv2.pt"
+    # model_weights: "/ros2_ws/src/IGVC_robot_2026/models/yolopv2.pt"
+    model_weights: "/home/nitin-5090/Documents/DevEnv/jazzy_ws/IGVC_robot_2026/models/yolopv2.pt"
+    # model_weights: ""
     model_device:  "cuda:0"
     model_half:    true
-    model_img_size: 640
+    # 384 is ~2.7× fewer FLOPs than the YOLOPv2 reference 640 with negligible
+    # accuracy loss for low-frequency lane / drivable-area features.  Raise
+    # back to 640 if far-field thin markings start dropping out.
+    model_img_size: 384
 
-    # Mask → point-cloud rasterisation
-    da_subsample_px: 6             # drivable-area stride (cheap, dense)
-    ll_subsample_px: 2             # lane-line stride (sparse, precise)
-    # Lowered from 150 → 20 px: with the side cameras now contributing
-    # paint, a lot of lane evidence arrives as thin 30-80 px slivers
-    # (dashed markings, far-field lines, oblique angles on the 90°
-    # rotated L/R feeds).  150 px was silently dropping every one of
-    # them, producing overlays full of red paint but lane=0 downstream.
-    min_lane_component_px: 150
-    max_points_per_frame:  4000    # per-mask hard cap
+    # ── Preprocessor (CLAHE + Gaussian blur, applied before letterbox) ──
+    # Aggressive values tuned for Isaac Sim domain gap:
+    #   - CLAHE boosts contrast on the flat sim lighting / textureless ground
+    #   - Blur suppresses high-frequency rendering artefacts that trigger
+    #     false drivable-area and lane-line positives
+    model_preprocess:  true
+    model_clahe_clip:  2.0
+    model_clahe_tile:  [8, 8]
+    model_blur_ksize:  [5, 5]
+    model_blur_sigma:  0.0
+
+    # ── Post-processing cleanup (drivable-area mask) ─────────────────
+    # Morphological open (erode then dilate) removes isolated speckles
+    # that appear in sim but not on real roads.
+    da_morph_kernel_px:   7
+    min_da_component_px:  300      # drop DA blobs smaller than this (px)
+
+    # Mask → point-cloud rasterisation.
+    # The pipeline downstream of the model is now fully vectorised
+    # (numpy gather + matmul instead of Python per-pixel loops), so we
+    # can afford much denser sampling than the old defaults of 8/3.
+    # Lowering these increases the number of free-space and lane points
+    # that reach /lane_costmap and /lane_map.
+    da_subsample_px: 8
+    ll_subsample_px: 1
+    # Lowered from 150 → 60 px: the 150 threshold was silently dropping
+    # thin / far-field lane evidence (dashed markings, oblique cameras)
+    # producing visually-correct overlays but a near-empty /lane_map.
+    min_lane_component_px: 10
+    max_points_per_frame:  10000    # per-mask hard cap
+
+    # Lane mask dilation (kernel px in YOLOPv2 input resolution).
+    # Widens each detected lane pixel by ~3 px before projection so the
+    # persistent map receives a thicker stamp and small mask gaps fade.
+    # Set to 0 to disable.
+    ll_dilation_px: 50
+
+    # Local /lane_costmap lane (100) inflation radius in metres.
+    # Equivalent to a ~1 m wide drivable corridor margin (0.5 m each
+    # side) — prevents the navigator from threading through gaps in
+    # the raw segmentation.  Set to 0.0 to disable inflation.
+    local_lane_inflation_m: 0.5
 
     # ── Debug ───────────────────────────────────────────────────────
-    publish_overlay: true
+    publish_overlay: false
     lane_marker_topic: "/lane_segmentation/lanes"
+
+    # ── Lane-line refinement (paint-only filter) ────────────────────
+    # YOLOPv2's lane-line head is trained on driving data and fires on
+    # more than just painted lines — in particular it tags road edges /
+    # asphalt-grass boundaries / curbs as "lane lines".  IGVC tracks have
+    # only painted *white* lines, so we reject everything else with a
+    # two-stage gate:
+    #   (a) lane_in_drivable_only  → keep ll_mask cells inside (or near)
+    #       the drivable-area mask.  Drops curb / off-road false positives.
+    #   (b) lane_color_filter_*    → keep only pixels that look white-painted
+    #       in HSV (high V, low S).  Drops the asphalt-grass texture line.
+    # `lane_threshold` lowers the per-pixel confidence cutoff on the head
+    # (default torch.round = 0.5) so faint thin paint is recovered.
+    # `lane_morph_close_px` bridges 1-2 px gaps along thin lines so the
+    # min_lane_component_px filter does not reject dashed segments.
+    lane_threshold:               0.35
+    lane_in_drivable_only:        true
+    lane_da_dilate_px:            30
+    lane_color_filter_enabled:    true
+    lane_color_v_min:             170    # HSV V ≥ this → bright enough
+    lane_color_s_max:             70     # HSV S ≤ this → low saturation (white)
+    lane_morph_close_px:          3
+
+    # ── Classical white-paint augmentation (thin-line recovery) ─────
+    # IRL IGVC paint is 0.5–2 inches wide vs sim 4 inches; the model
+    # often misses these even at lower `lane_threshold`.  Enable this to
+    # ADD bright white-paint pixels (gated by drivable area + colour) to
+    # the lane mask, supplementing the model.  Off in sim where the wider
+    # lines already trigger the head reliably; flip to true on hardware.
+    lane_color_augment_enabled:       false
+    lane_color_augment_v_min:         200   # stricter than the filter gate
+    lane_color_augment_s_max:         50
+    lane_color_augment_min_area_px:   25
+
+    # ── Depth-based obstacle masking ─────────────────────────────────
+    # After YOLOPv2 inference, pixels whose 3-D base_link height lands in the
+    # obstacle band are zeroed out of both the drivable-area and lane-line masks.
+    # This prevents the model from hallucinating lane lines over barrels / cones.
+    #
+    # Tune obstacle_z_min_m upward if ground reflections still trigger false mask.
+    # Tune obstacle_dilation_px upward if silhouette halo edges remain visible.
+    obstacle_mask_enabled:    false
+    obstacle_z_min_m:         0.20    # base_link Z above this → obstacle (not ground)
+    obstacle_z_max_m:         2.5     # above this → sky/ceiling, ignore
+    obstacle_depth_min_m:     0.3     # ignore very-close depth noise
+    obstacle_depth_max_m:     6.0     # ignore distant background objects
+    obstacle_dilation_px:     20      # expand mask to cover halo / shadow edges
+    camera_height_fallback_m: 0.25    # approximate camera mount height (fallback only)

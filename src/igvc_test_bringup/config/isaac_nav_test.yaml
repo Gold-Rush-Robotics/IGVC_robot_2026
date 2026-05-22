@@ -1,0 +1,95 @@
+# ──────────────────────────────────────────────────────────────────────────────
+#  isaac_nav_test.yaml
+#
+#  Shared parameters for the navigator ground-truth test harness.
+#  This test bypasses the YOLOPv2 vision pipeline entirely:
+#
+#    1. track_ground_truth_node publishes the perfect lane grid → /lane_ground_truth
+#    2. gt_nav_bridge_node stamps obstacle lethal cells and republishes →
+#       /lane_map  (nav2 StaticLayer)
+#       /lane_costmap  (navigator local path extraction)
+#    3. igvc_navigator extracts a local lane path from /lane_costmap and drives
+#       Nav2 via FollowPath
+#    4. nav2 (controller_server + planner_server + bt_navigator) closes the loop
+#
+#  Launch with:
+#    ros2 launch igvc_test_bringup isaac_nav_test.launch.py
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Ground-truth grid publisher ───────────────────────────────────────────────
+track_ground_truth_node:
+  ros__parameters:
+    track_file: ""                     # populated from launch arg
+    track_image_file: ""               # populated from launch arg
+    track_image_pixels_per_meter: 52.5
+    frame_id: "map"                    # map≡odom in this GPS-less test; global_costmap expects map frame
+    publish_hz: 2.0                    # low rate is fine — GT never changes
+    resolution: 0.1
+    # Grid must be big enough to contain the whole track around the robot start.
+    # The track image is ~54 m × 30 m and the start pose can be near a corner,
+    # so size the grid for the worst case (full track + margin).
+    width_m: 80.0
+    height_m: 80.0
+    lane_half_width_m: 0.25
+    fallback_circle_radius_m: 8.0
+    fallback_circle_points: 200
+    occupancy_topic: "/lane_ground_truth"
+    midpoint_path_topic: "/lane_ground_truth_midpoint_path"
+    debug_png_path: "/tmp/igvc_nav_ground_truth.png"
+
+# ── GT → nav2 bridge  ─────────────────────────────────────────────────────────
+gt_nav_bridge_node:
+  ros__parameters:
+    # track_file populated from launch arg at runtime
+    track_file: ""
+    ground_truth_topic: "/lane_ground_truth"
+    # Obstacles in the JSON have their footprint radius already.
+    # Add a hard safety margin so the global planner routes around them
+    # before the robot is close enough for its footprint to become occupied.
+    obstacle_inflate_radius_m: 0.30
+    local_costmap_width_m: 6.0
+    local_costmap_height_m: 6.0
+    local_costmap_resolution_m: 0.1
+    local_costmap_publish_hz: 5.0
+    local_costmap_back_nogo_buffer_m: 0.3
+    lane_boundary_thickness_cells: 1
+
+# ── Navigator ─────────────────────────────────────────────────────────────────
+igvc_navigator:
+  ros__parameters:
+    gps_enabled: false
+    map_frame: "map"
+    odom_frame: "odom"
+    base_frame: "base_link"
+
+    # Nav2 controller bridge IDs — must match nav2_lane_follow_config.yaml
+    follow_path_action: "follow_path"
+    controller_id: "FollowPath"
+    goal_checker_id: "goal_checker"
+    progress_checker_id: "progress_checker"
+
+    # GT grid doesn't update at 10 Hz like the rolling costmap.
+    # Relax the freshness gate so the navigator never drops a valid grid.
+    max_costmap_age_sec: 5.0
+    max_odom_age_sec: 0.5
+    max_odom_costmap_skew_sec: 5.0
+
+    # Local lane path extraction parameters
+    path_lookahead_m: 4.0
+    replan_min_dt_sec: 0.8
+    min_follow_path_poses: 5
+    min_follow_path_length_m: 1.5
+    path_sample_spacing_m: 0.10
+    path_smooth_window: 5
+    path_change_tolerance_m: 0.30
+    path_change_tolerance_rad: 0.30
+    max_path_lateral_jump_m: 0.6
+
+    # Rolling NavigateToPose fallback carrot parameters
+    waypoint_horizon_m: 1.8
+    replan_dist_m: 1.5
+    allow_straight_fallback: true
+
+    # Explicitly use local lane extraction from /lane_costmap.
+    # No pre-known centerline waypoints are used in this test.
+    nav_strategy: "local_lane"
