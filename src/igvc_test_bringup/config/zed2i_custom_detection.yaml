@@ -1,0 +1,139 @@
+# ZED2i override config for IGVC YOLOv12 custom object detection
+# This config enables object detection and points to the IGVC-trained custom ONNX model.
+# Base this on common_stereo.yaml but override only the OD-specific parameters.
+
+/**:
+  ros__parameters:
+    object_detection:
+      od_enabled: true  # Enable object detection
+      detection_model: 'CUSTOM_YOLOLIKE_BOX_OBJECTS'  # Use custom YOLO-like ONNX model
+      custom_onnx_file: '/home/root/ros2_ws/jazzy_ws/IGVC_robot_2026/best.onnx'  # Path to ONNX file (can be set via launch argument or environment)
+      custom_onnx_input_size: 640  # Input tensor size: 1x3x512x512
+      custom_class_count: 15  # Number of classes in the IGVC YOLOv12 model
+      allow_reduced_precision_inference: true
+      max_range: 10.0  # Maximum detection range in meters
+      confidence_threshold: 50.0  # Minimum detection confidence [0, 99]
+      prediction_timeout: 0.5  # Tracking prediction timeout in seconds
+      enable_tracking: false  # Enable object tracking across frames
+      filtering_mode: 'NMS3D'  # '1' = NMS3D
+
+      # IGVC YOLOv12 class definitions
+      class_000:
+        label: '3'
+        model_class_id: 0
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: false
+        is_static: false
+
+      class_001:
+        label: 'Tire'
+        model_class_id: 1
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+
+      class_002:
+        label: 'pedestrianCrossing'
+        model_class_id: 2
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+
+      class_003:
+        label: 'person'
+        model_class_id: 3
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: false
+
+      class_004:
+        label: 'signalAhead'
+        model_class_id: 4
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+
+      class_005:
+        label: 'speedLimit20'
+        model_class_id: 5
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+
+      class_006:
+        label: 'speedLimit25'
+        model_class_id: 6
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+
+      class_007:
+        label: 'speedLimit30'
+        model_class_id: 7
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+
+      class_008:
+        label: 'speedLimit35'
+        model_class_id: 8
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+
+      class_009:
+        label: 'speedLimit40'
+        model_class_id: 9
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+
+      class_010:
+        label: 'stop'
+        model_class_id: 10
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+
+      class_011:
+        label: 'stopAhead'
+        model_class_id: 11
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+
+      class_012:
+        label: 'tire'
+        model_class_id: 12
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+
+      class_013:
+        label: 'traffic barrel'
+        model_class_id: 13
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
+
+      class_014:
+        label: 'yield'
+        model_class_id: 14
+        enabled: true
+        confidence_threshold: 50.0
+        is_grounded: true
+        is_static: true
