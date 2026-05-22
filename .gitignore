@@ -13,3 +13,6 @@ data/*
 rosbag_export_test/
 yolopv2_bag/
 runs/
+
+__pycache__/
+*.pyc

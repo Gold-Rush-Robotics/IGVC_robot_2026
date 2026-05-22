@@ -6,7 +6,7 @@
 	url = https://github.com/Gold-Rush-Robotics/IGVC_track_generator.git
 [submodule "isaac/exts"]
 	path = isaac/exts
-	url = https://github.com/Gold-Rush-Robotics/zed-isaac-sim.git
+	url = https://github.com/stereolabs/zed-isaac-sim.git
 [submodule "src/zed-description"]
 	path = src/zed-description
 	url = https://github.com/stereolabs/zed-ros2-description.git
@@ -22,3 +22,6 @@
 [submodule "src/greenwave_monitor"]
 	path = src/greenwave_monitor
 	url = https://github.com/NVIDIA-ISAAC-ROS/greenwave_monitor.git
+[submodule "src/yolo_ros"]
+	path = src/yolo_ros
+	url = https://github.com/Gold-Rush-Robotics/yolo_ros.git

@@ -1,12 +1,16 @@
 #!/bin/bash
-# YOLOv12 Training Script Wrapper
+# YOLO26 Training Script Wrapper
 # Usage: ./train_yolov12.sh [options]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
 # Default values
+<<<<<<<< HEAD:training/train_yolov12.sh
 MODEL="weights/yolov12n.pt"
+========
+MODEL="yolo26n.pt"
+>>>>>>>> origin/main:train_yolov26.sh
 EPOCHS=100
 BATCH=128
 IMGSZ=640
@@ -46,12 +50,16 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --help)
-            echo "YOLOv12 Training Script"
+            echo "YOLO26 Training Script"
             echo ""
             echo "Usage: $0 [options]"
             echo ""
             echo "Options:"
+<<<<<<<< HEAD:training/train_yolov12.sh
             echo "  --model MODEL       Model path or model size (yolov12n.pt, yolov12s.pt, etc.) [default: weights/yolov12n.pt]"
+========
+            echo "  --model MODEL       Model size (yolo26n.pt, yolo26s.pt, etc.) [default: yolo26n.pt]"
+>>>>>>>> origin/main:train_yolov26.sh
             echo "  --epochs N          Number of epochs [default: 100]"
             echo "  --batch N           Batch size [default: 16]"
             echo "  --imgsz N           Image size [default: 640]"
@@ -62,7 +70,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Examples:"
             echo "  ./train_yolov12.sh                                  # Train with defaults"
-            echo "  ./train_yolov12.sh --model yolov12m.pt --epochs 200 # Train medium model for 200 epochs"
+            echo "  ./train_yolov12.sh --model yolo26m.pt --epochs 200  # Train medium model for 200 epochs"
             echo "  ./train_yolov12.sh --resume                         # Resume last training"
             exit 0
             ;;
@@ -75,7 +83,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Build Python command
+<<<<<<<< HEAD:training/train_yolov12.sh
 CMD="python3 $SCRIPT_DIR/train_yolov12.py"
+========
+CMD="python3 train_yolov26.py"
+>>>>>>>> origin/main:train_yolov26.sh
 CMD="$CMD --model $MODEL"
 CMD="$CMD --epochs $EPOCHS"
 CMD="$CMD --batch $BATCH"
