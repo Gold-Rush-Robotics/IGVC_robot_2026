@@ -1,9 +1,9 @@
 #!/bin/bash
-# YOLOv12 Training Script Wrapper
+# YOLO26 Training Script Wrapper
 # Usage: ./train_yolov12.sh [options]
 
 # Default values
-MODEL="yolov12n.pt"
+MODEL="yolo26n.pt"
 EPOCHS=100
 BATCH=128
 IMGSZ=640
@@ -43,12 +43,12 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --help)
-            echo "YOLOv12 Training Script"
+            echo "YOLO26 Training Script"
             echo ""
             echo "Usage: $0 [options]"
             echo ""
             echo "Options:"
-            echo "  --model MODEL       Model size (yolov12n.pt, yolov12s.pt, etc.) [default: yolov12n.pt]"
+            echo "  --model MODEL       Model size (yolo26n.pt, yolo26s.pt, etc.) [default: yolo26n.pt]"
             echo "  --epochs N          Number of epochs [default: 100]"
             echo "  --batch N           Batch size [default: 16]"
             echo "  --imgsz N           Image size [default: 640]"
@@ -59,7 +59,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Examples:"
             echo "  ./train_yolov12.sh                                  # Train with defaults"
-            echo "  ./train_yolov12.sh --model yolov12m.pt --epochs 200 # Train medium model for 200 epochs"
+            echo "  ./train_yolov12.sh --model yolo26m.pt --epochs 200  # Train medium model for 200 epochs"
             echo "  ./train_yolov12.sh --resume                         # Resume last training"
             exit 0
             ;;
@@ -72,7 +72,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Build Python command
-CMD="python3 train_yolov12.py"
+CMD="python3 train_yolov26.py"
 CMD="$CMD --model $MODEL"
 CMD="$CMD --epochs $EPOCHS"
 CMD="$CMD --batch $BATCH"
