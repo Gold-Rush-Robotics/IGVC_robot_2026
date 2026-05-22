@@ -150,6 +150,20 @@ def parse_arguments():
     
     return parser.parse_args()
 
+def download_model(model_name):
+    """Download model if not found locally."""
+    model_path = Path(model_name).resolve()
+    
+    if model_path.exists():
+        print(f"✓ Model found locally: {model_path}")
+        return model_path
+
+    print(f"⬇ Model not found locally, downloading: {model_name}")
+    url = f"https://github.com/sunsmarterjie/yolov12/releases/download/v1.0/{model_name}"
+    import urllib.request
+    urllib.request.urlretrieve(url, str(model_path))
+    print(f"✓ Downloaded: {model_path}")
+    return model_path
 
 def check_dataset(data_path):
     """Verify dataset configuration and paths."""
@@ -212,6 +226,7 @@ def main():
     
     # Load YOLOv12 model
     print(f"Loading YOLOv12 model: {args.model}")
+    download_model(args.model)
     model = YOLO(args.model)
     
     # Training configuration
