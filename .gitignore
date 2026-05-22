@@ -12,3 +12,6 @@ isaacsim/*
 
 rosbag_export_test/
 yolopv2_bag/
+
+__pycache__/
+*.pyc
