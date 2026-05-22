@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-YOLOv12 Training Script for IGVC Dataset
-This script trains a YOLOv12 model on the IGVC dataset.
+YOLO26 training script for the IGVC dataset.
+This script trains a YOLO26 model on the IGVC dataset.
 """
 
 import os
@@ -14,14 +14,14 @@ from datetime import datetime
 
 def parse_arguments():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Train YOLOv12 model on IGVC dataset')
+    parser = argparse.ArgumentParser(description='Train YOLO26 model on IGVC dataset')
     
     parser.add_argument(
         '--model', 
         type=str, 
-        default='yolov12n.pt',
-        choices=['yolov12n.pt', 'yolov12s.pt', 'yolov12m.pt', 'yolov12l.pt', 'yolov12x.pt'],
-        help='YOLOv12 model size (n=nano, s=small, m=medium, l=large, x=xlarge)'
+        default='yolo26n.pt',
+        choices=['yolo26n.pt', 'yolo26s.pt', 'yolo26m.pt', 'yolo26l.pt', 'yolo26x.pt'],
+        help='YOLO26 model size (n=nano, s=small, m=medium, l=large, x=xlarge)'
     )
     parser.add_argument(
         '--epochs', 
@@ -79,7 +79,7 @@ def parse_arguments():
     parser.add_argument(
         '--name', 
         type=str, 
-        default=f'yolov12_igvc_{datetime.now().strftime("%Y%m%d_%H%M%S")}',
+        default=f'yolo26_igvc_{datetime.now().strftime("%Y%m%d_%H%M%S")}',
         help='Experiment name'
     )
     parser.add_argument(
@@ -89,10 +89,17 @@ def parse_arguments():
     )
     parser.add_argument(
         '--amp', 
+        dest='amp',
         action='store_true',
-        default=True,
         help='Use Automatic Mixed Precision (AMP)'
     )
+    parser.add_argument(
+        '--no-amp',
+        dest='amp',
+        action='store_false',
+        help='Disable Automatic Mixed Precision (AMP)'
+    )
+    parser.set_defaults(amp=True)
     parser.add_argument(
         '--hsv-h', 
         type=float, 
@@ -151,19 +158,19 @@ def parse_arguments():
     return parser.parse_args()
 
 def download_model(model_name):
-    """Download model if not found locally."""
+    """Resolve the requested model weights.
+
+    Ultralytics can fetch official weight names like ``yolo26n.pt`` on demand,
+    so only local custom paths need to exist ahead of time.
+    """
     model_path = Path(model_name).resolve()
     
     if model_path.exists():
         print(f"✓ Model found locally: {model_path}")
         return model_path
 
-    print(f"⬇ Model not found locally, downloading: {model_name}")
-    url = f"https://github.com/sunsmarterjie/yolov12/releases/download/v1.0/{model_name}"
-    import urllib.request
-    urllib.request.urlretrieve(url, str(model_path))
-    print(f"✓ Downloaded: {model_path}")
-    return model_path
+    print(f"ℹ Using Ultralytics model asset: {model_name}")
+    return model_name
 
 def check_dataset(data_path):
     """Verify dataset configuration and paths."""
@@ -194,7 +201,7 @@ def main():
     
     # Print training configuration
     print("=" * 60)
-    print("YOLOv12 Training Configuration")
+    print("YOLO26 Training Configuration")
     print("=" * 60)
     print(f"Model:              {args.model}")
     print(f"Epochs:             {args.epochs}")
@@ -207,6 +214,7 @@ def main():
     print(f"Project:            {args.project}")
     print(f"Experiment:         {args.name}")
     print(f"Cache Images:       {args.cache}")
+    print(f"AMP:                {args.amp}")
     print(f"Augmentation:")
     print(f"  - HSV-H:          {args.hsv_h}")
     print(f"  - HSV-S:          {args.hsv_s}")
@@ -224,10 +232,10 @@ def main():
     check_dataset(args.data)
     print()
     
-    # Load YOLOv12 model
-    print(f"Loading YOLOv12 model: {args.model}")
-    download_model(args.model)
-    model = YOLO(args.model)
+    # Load YOLO26 model
+    print(f"Loading YOLO26 model: {args.model}")
+    model_source = download_model(args.model)
+    model = YOLO(model_source)
     
     # Training configuration
     train_params = {
@@ -268,7 +276,6 @@ def main():
         print("\n⚠ Resuming training from last checkpoint...\n")
         results = model.train(resume=True, **{k: v for k, v in train_params.items() if k != 'exist_ok'})
     else:
-        # Train model
         print("\n▶ Starting training...\n")
         results = model.train(**train_params)
     
