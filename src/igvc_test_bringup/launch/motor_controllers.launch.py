@@ -70,6 +70,23 @@ def generate_launch_description():
         arguments=["diff_drive_controller", "--controller-manager", "/controller_manager"],
     )
 
+    # ── GPIO / operator-interface nodes ───────────────────────────────────
+    # Blinks pin 13 at 2 Hz in autonomous mode; solid ON otherwise.
+    autonomous_indicator_node = Node(
+        package='igvc_lane_detection',
+        executable='autonomous_indicator_node',
+        name='autonomous_indicator_node',
+        output='screen',
+    )
+
+    # Applies brakes (pins 18+22 HIGH) on B button, releases on A button.
+    brake_control_node = Node(
+        package='igvc_lane_detection',
+        executable='brake_control_node',
+        name='brake_control_node',
+        output='screen',
+    )
+
 
     # Start Rviz2 with basic view
     run_rviz2_node = Node(
@@ -97,5 +114,7 @@ def generate_launch_description():
         node_robot_state_publisher,
         joint_state_broadcaster_spawner,
         diff_drive_spawner,
+        autonomous_indicator_node,
+        brake_control_node,
         # rviz2_delay,
     ])
