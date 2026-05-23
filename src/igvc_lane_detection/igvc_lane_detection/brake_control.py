@@ -39,7 +39,7 @@ except ImportError:
     _GPIO_AVAILABLE = False
 
 # Physical BOARD pin numbers for the brake solenoid outputs.
-_BRAKE_PINS: list[int] = [18, 22]
+_BRAKE_PINS: int = 22
 
 
 class BrakeControlNode(Node):
@@ -56,10 +56,9 @@ class BrakeControlNode(Node):
         # ── GPIO setup ────────────────────────────────────────────────
         if _GPIO_AVAILABLE:
             GPIO.setmode(GPIO.BOARD)
-            for pin in _BRAKE_PINS:
-                GPIO.setup(pin, GPIO.OUT, initial=GPIO.LOW)
+            GPIO.setup(_BRAKE_PINS, GPIO.OUT, initial=GPIO.LOW)
             self.get_logger().info(
-                f'brake_control: GPIO BOARD pins {_BRAKE_PINS} initialised LOW '
+                f'brake_control: GPIO BOARD pin {_BRAKE_PINS} initialised LOW '
                 '(brakes released)')
         else:
             self.get_logger().warn(
@@ -97,8 +96,7 @@ class BrakeControlNode(Node):
         self._brakes_applied = apply
         level = True if apply else False
         if _GPIO_AVAILABLE:
-            for pin in _BRAKE_PINS:
-                GPIO.output(pin, GPIO.HIGH if apply else GPIO.LOW)
+            GPIO.output(_BRAKE_PINS, GPIO.HIGH if apply else GPIO.LOW)
         self.get_logger().info(
             f'brake_control: brakes {"APPLIED" if apply else "RELEASED"} '
             f'(pins {_BRAKE_PINS} → {"HIGH" if apply else "LOW"})')

@@ -79,7 +79,7 @@ def generate_launch_description():
         output='screen',
     )
 
-    # Applies brakes (pins 18+22 HIGH) on B button, releases on A button.
+    # Applies brakes (pins 22 HIGH) on B button, releases on A button.
     brake_control_node = Node(
         package='igvc_lane_detection',
         executable='brake_control_node',
@@ -88,7 +88,7 @@ def generate_launch_description():
     )
 
 
-    # Start Rviz2 with basic view
+    # Start Rviz2 with basic viewb
     run_rviz2_node = Node(
         package='rviz2',
         executable='rviz2',
