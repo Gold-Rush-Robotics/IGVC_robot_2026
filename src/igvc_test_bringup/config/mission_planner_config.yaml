@@ -1,0 +1,23 @@
+mission_planner_node:
+  ros__parameters:
+    frame_id: "odom"
+    gps_topic: "/gps/fix"
+    odom_topic: "/front_zed_camera_x/zed_node/odom"
+    state_topic: "/mission/state"
+    virtual_obstacles_topic: "/mission/virtual_obstacles"
+    clear_virtual_obstacles_topic: "/mission/clear_virtual_obstacles"
+    # Set true to launch the mission as soon as the GPS origin anchors.
+    # Operationally we leave this false and let an operator call the
+    # ~/start_mission service once the robot is on the start line.
+    auto_start: false
+    # Optionally pin the GPS↔odom anchor instead of taking the first fix.
+    # NaN means "use first GPS fix" (default behaviour).
+    origin_lat: .nan
+    origin_lon: .nan
+    arrival_tolerance_m: 1.0
+    # Four-waypoint AutoNav mission.  Replace these with the real survey
+    # values before each run; the second and third waypoints are the
+    # virtual obstacles to avoid.
+    waypoint_lats: [0.0, 0.0, 0.0, 0.0]
+    waypoint_lons: [0.0, 0.0, 0.0, 0.0]
+    waypoint_kinds: ["start", "obstacle", "obstacle", "end"]

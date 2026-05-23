@@ -1,0 +1,25 @@
+obstacle_costmap_node:
+  ros__parameters:
+    # The persistent map lives in the odom frame, matching /lane_map.
+    frame_id: "odom"
+    # 60 m × 60 m around the odom origin, 0.10 m resolution.
+    resolution: 0.10
+    width_m: 60.0
+    height_m: 60.0
+    origin_x: -30.0
+    origin_y: -30.0
+    # How long after the last YOLO detection of a given footprint do we
+    # keep it lethal in the map.  Tune up for a more conservative map.
+    obstacle_lifetime_sec: 5.0
+    publish_rate_hz: 5.0
+    detections_topic: "/yolo/detections_3d"
+    virtual_obstacles_topic: "/mission/virtual_obstacles"
+    clear_virtual_obstacles_topic: "/mission/clear_virtual_obstacles"
+    output_topic: "/obstacle_map"
+    # Mission-injected virtual obstacles are stamped as a square footprint
+    # with full side = 2 × this radius.
+    virtual_obstacle_radius_m: 0.75
+    # Reject obviously broken YOLO boxes.
+    min_box_size_m: 0.20
+    max_box_size_m: 4.0
+    tf_timeout_sec: 0.10

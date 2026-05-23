@@ -2,9 +2,10 @@
 lane_segmentation.launch.py
 
 Runs the YOLOPv2 segmentation-based lane node alongside the usual IGVC
-stack (localization, navigator, Nav2).  This is a drop-in alternative to
-``lane_follower.launch.py`` — it keeps the same navigation pipeline but
-swaps the Hough lane detector for the deep segmentation model.
+stack (static map↔odom, obstacle costmap, mission planner, navigator,
+Nav2).  This is a drop-in alternative to ``lane_follower.launch.py`` —
+it keeps the same navigation pipeline but swaps the Hough lane detector
+for the deep segmentation model.
 
 Typical usage:
 
@@ -108,13 +109,47 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
-    # ── Localization ──────────────────────────────────────────────────
-    localization_node = Node(
+    # ── Static map → odom identity TF ─────────────────────────────────
+    # We treat the odom origin (where the robot booted) as the map
+    # origin. The mission planner is responsible for any GPS↔odom
+    # conversions on top of this anchor.
+    static_map_to_odom = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='static_map_to_odom',
+        output='log',
+        arguments=[
+            '--x', '0', '--y', '0', '--z', '0',
+            '--roll', '0', '--pitch', '0', '--yaw', '0',
+            '--frame-id', 'map', '--child-frame-id', 'odom',
+        ],
+        parameters=[{'use_sim_time': use_sim_time}],
+    )
+
+    # ── Obstacle costmap (YOLO 3D detections → /obstacle_map) ─────────
+    obstacle_costmap_node = Node(
         package='igvc_lane_detection',
-        executable='localization_node',
-        name='igvc_localization',
+        executable='obstacle_costmap_node',
+        name='obstacle_costmap_node',
         output='screen',
-        parameters=[shared_params],
+        parameters=[
+            shared_params,
+            PathJoinSubstitution(
+                [bringup, 'config', 'obstacle_costmap_config.yaml']),
+        ],
+    )
+
+    # ── Mission planner (GPS waypoint mission) ────────────────────────
+    mission_planner_node = Node(
+        package='igvc_lane_detection',
+        executable='mission_planner_node',
+        name='mission_planner_node',
+        output='screen',
+        parameters=[
+            shared_params,
+            PathJoinSubstitution(
+                [bringup, 'config', 'mission_planner_config.yaml']),
+        ],
     )
 
     # ── Navigator ─────────────────────────────────────────────────────
@@ -150,8 +185,9 @@ def generate_launch_description() -> LaunchDescription:
         model_half_arg,
         publish_overlay_arg,
         lane_segmentation_node,
-        localization_node,
-        # static_map_to_odom,
+        static_map_to_odom,
+        obstacle_costmap_node,
+        mission_planner_node,
         navigator_node,
         nav2_launch,
     ])

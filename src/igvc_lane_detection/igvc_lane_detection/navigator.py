@@ -55,7 +55,6 @@ Subscriptions
     /gps/fix              NavSatFix       (GPS mode only)
     /lane_costmap         OccupancyGrid
     /front_zed_camera_x/zed_node/odom                 Odometry
-    /localization_status  std_msgs/String  from igvc_localization
 
 Publications
     /lane_path            nav_msgs/Path    dense centreline for visualisation
@@ -225,13 +224,17 @@ class IGVCNavigatorNode(Node):
         self._current_goal_seq = 0
         self._last_lane_wp: Optional[_Waypoint] = None
         self._last_lane_wp_time = None
-        self._loc_status    = 'sim' if not self._gps_enabled else 'initializing'
         self._last_goal_send_time = None
         self._last_sent_path: Optional[Path] = None
         self._last_lane_path_reason = 'not evaluated yet'
         # Backoff: don't re-send a new goal immediately after an ABORT.
         self._abort_backoff_until = None
         self._consecutive_aborts = 0
+
+        # Mission planner gate: when /mission/state == 'active' the
+        # mission_planner_node owns NavigateToPose and the lane
+        # navigator must hold off.  Default = lane_follow.
+        self._mission_state = 'lane_follow'
 
         # Latest sensor data
         self._grid: Optional[OccupancyGrid] = None
@@ -287,8 +290,16 @@ class IGVCNavigatorNode(Node):
                                  self._on_grid, map_qos)
         self.create_subscription(Odometry, self._odom_topic,
                      self._on_odom, odom_qos)
-        self.create_subscription(String, '/localization_status',
-                                 self._on_loc_status, 10)
+
+        # Mission state from mission_planner_node (latched).
+        mission_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.create_subscription(
+            String, '/mission/state', self._on_mission_state, mission_qos)
 
         if self._gps_enabled:
             self.create_subscription(NavSatFix, self._gps_topic,
@@ -401,8 +412,18 @@ class IGVCNavigatorNode(Node):
         )
         self._odom_stamp = msg.header.stamp
 
-    def _on_loc_status(self, msg: String) -> None:
-        self._loc_status = msg.data
+    def _on_mission_state(self, msg: String) -> None:
+        prev = self._mission_state
+        self._mission_state = msg.data or 'lane_follow'
+        if self._mission_state != prev:
+            self.get_logger().info(
+                f'navigator: mission state {prev} -> {self._mission_state}')
+            if self._mission_state == 'active' and self._goal_handle is not None:
+                # Hand control to mission_planner: cancel our in-flight goal.
+                try:
+                    self._goal_handle.cancel_goal_async()
+                except Exception:
+                    pass
 
     def _on_gps(self, msg: NavSatFix) -> None:
         if msg.status.status < 0:
@@ -436,10 +457,8 @@ class IGVCNavigatorNode(Node):
         lane_path = self._lane_path_from_costmap()
         self._path_pub.publish(lane_path)
 
-        # Don't navigate until TF chain is alive
-        if self._loc_status == 'initializing':
-            self.get_logger().warn(
-                'Waiting for localization...', throttle_duration_sec=3.0)
+        # Mission planner owns Nav2 while a GPS waypoint mission is active.
+        if self._mission_state == 'active':
             return
 
         # Don't spam Nav2 while a goal is being accepted
@@ -1639,7 +1658,7 @@ class IGVCNavigatorNode(Node):
     def _publish_status(self) -> None:
         """Publish a 1 Hz human-readable diagnostic string on /navigator/status."""
         parts = [
-            f'loc={self._loc_status}',
+            f'mission={self._mission_state}',
             f'aborts={self._consecutive_aborts}',
             f'goal_pending={self._goal_pending}',
             f'active_wp={"yes" if self._active_wp is not None else "no"}',

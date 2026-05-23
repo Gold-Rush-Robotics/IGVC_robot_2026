@@ -38,8 +38,9 @@ setup(
         'console_scripts': [
             'lane_detection_node = igvc_lane_detection.lane_detection:main',
             'navigation_node = igvc_lane_detection.navigator:main',
-            'localization_node = igvc_lane_detection.localization:main',
             'odom_tf_bridge_node = igvc_lane_detection.odom_tf_bridge:main',
+            'obstacle_costmap_node = igvc_lane_detection.obstacle_costmap:main',
+            'mission_planner_node = igvc_lane_detection.mission_planner:main',
             'multi_camera_lane_detection_node = igvc_lane_detection.multi_camera_lane_detection:main',
             'lane_segmentation_node = igvc_lane_detection.lane_segmentation:main',
             'constant_cmd_vel_node = igvc_lane_detection.constant_cmd_vel:main',
