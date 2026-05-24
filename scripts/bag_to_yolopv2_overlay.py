@@ -138,11 +138,11 @@ def rotate_image(img: np.ndarray, deg: int) -> np.ndarray:
 
 def make_overlay(bgr: np.ndarray, da: np.ndarray, ll: np.ndarray) -> np.ndarray:
     ov = bgr.copy()
-    colour = np.zeros_like(ov)
-    colour[da > 0] = (0, 255, 0)   # green = drivable area
-    colour[ll > 0] = (0, 0, 255)   # red   = lane lines
+    color = np.zeros_like(ov)
+    color[da > 0] = (0, 255, 0)   # green = drivable area
+    color[ll > 0] = (0, 0, 255)   # red   = lane lines
     mask = (da > 0) | (ll > 0)
-    ov[mask] = cv2.addWeighted(ov, 0.5, colour, 0.5, 0.0)[mask]
+    ov[mask] = cv2.addWeighted(ov, 0.5, color, 0.5, 0.0)[mask]
     return ov
 
 

@@ -85,6 +85,7 @@ from nav2_msgs.action import FollowPath, NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import String
+from std_srvs.srv import SetBool
 from tf2_ros import Buffer, TransformListener
 import tf2_geometry_msgs  # noqa: F401
 
@@ -233,6 +234,11 @@ class IGVCNavigatorNode(Node):
         self._abort_backoff_until = None
         self._consecutive_aborts = 0
 
+        # Brake-control pause flag: set true by ~/set_paused (std_srvs/SetBool)
+        # to prevent the navigator from issuing new Nav2 goals while the
+        # mechanical brakes are applied and the motor controllers are idled.
+        self._paused = False
+
         # Latest sensor data
         self._grid: Optional[OccupancyGrid] = None
         self._robot_xy: Optional[tuple[float, float]] = None  # odom frame
@@ -298,6 +304,18 @@ class IGVCNavigatorNode(Node):
         else:
             self.get_logger().info(
                 'Navigator: sim mode — autonomous lane waypoint generation.')
+
+        # ── Services ──────────────────────────────────────────────────────
+        # Called by brake_control_node: data=True pauses, data=False resumes.
+        self._pause_srv = self.create_service(
+            SetBool, '~/set_paused', self._on_set_paused)
+
+        # ── Autonomous indicator client ────────────────────────────────────
+        self._indicator_srv = self.declare_parameter(
+            'indicator_service', '/autonomous_indicator_node/set_autonomous').value
+        self._indicator_client = self.create_client(SetBool, self._indicator_srv)
+        # Notify the indicator that autonomous mode is active on startup.
+        self._startup_indicator_timer = self.create_timer(1.0, self._startup_indicator_once)
 
         # ── Publishers ────────────────────────────────────────────────────
         self._path_pub = self.create_publisher(Path, '/lane_path', 10)
@@ -404,6 +422,40 @@ class IGVCNavigatorNode(Node):
     def _on_loc_status(self, msg: String) -> None:
         self._loc_status = msg.data
 
+    def _on_set_paused(self, req: SetBool.Request,
+                       resp: SetBool.Response) -> SetBool.Response:
+        self._paused = req.data
+        if self._paused and self._goal_handle is not None:
+            try:
+                self._goal_handle.cancel_goal_async()
+            except Exception:
+                pass
+        resp.success = True
+        resp.message = 'navigator paused' if self._paused else 'navigator resumed'
+        self.get_logger().info(f'Navigator: {resp.message}')
+        # Mirror pause state to the autonomous indicator LED.
+        self._notify_indicator(autonomous=not req.data)
+        return resp
+
+    def _startup_indicator_once(self) -> None:
+        """One-shot timer: tell the indicator we are in autonomous mode."""
+        self._notify_indicator(autonomous=True)
+        # Cancel the timer so it only fires once.
+        self._startup_indicator_timer.cancel()
+
+    def _notify_indicator(self, autonomous: bool) -> None:
+        """Fire-and-forget SetBool call to the autonomous indicator node."""
+        if not self._indicator_client.service_is_ready():
+            return
+        req = SetBool.Request()
+        req.data = autonomous
+        future = self._indicator_client.call_async(req)
+        future.add_done_callback(
+            lambda f: self.get_logger().debug(
+                f'indicator set_autonomous({autonomous}): '
+                + (f'ok={f.result().success}' if f.result() is not None
+                   else 'no response')))
+
     def _on_gps(self, msg: NavSatFix) -> None:
         if msg.status.status < 0:
             return
@@ -442,11 +494,17 @@ class IGVCNavigatorNode(Node):
                 'Waiting for localization...', throttle_duration_sec=3.0)
             return
 
+        # Brakes are applied — hold all navigation goals.
+        if self._paused:
+            self.get_logger().warn(
+                'Navigator paused (brakes applied).', throttle_duration_sec=3.0)
+            return
+
         # Don't spam Nav2 while a goal is being accepted
         if self._goal_pending:
             return
 
-        # Honour ABORT backoff so we don't thrash NavigateToPose at ~3 Hz.
+        # honor ABORT backoff so we don't thrash NavigateToPose at ~3 Hz.
         now = self.get_clock().now()
         if self._abort_backoff_until is not None and now < self._abort_backoff_until:
             return
@@ -1640,6 +1698,7 @@ class IGVCNavigatorNode(Node):
         """Publish a 1 Hz human-readable diagnostic string on /navigator/status."""
         parts = [
             f'loc={self._loc_status}',
+            f'paused={self._paused}',
             f'aborts={self._consecutive_aborts}',
             f'goal_pending={self._goal_pending}',
             f'active_wp={"yes" if self._active_wp is not None else "no"}',
