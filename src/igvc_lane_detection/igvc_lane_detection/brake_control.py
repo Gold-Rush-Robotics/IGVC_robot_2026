@@ -174,6 +174,18 @@ class BrakeControlNode(Node):
         if _GPIO_AVAILABLE:
             GPIO.output(_BRAKE_PIN, GPIO.HIGH if high else GPIO.LOW)
 
+    def _wait_for_future(self, future, timeout: float) -> bool:
+        """Block the calling thread until *future* is done or *timeout* expires.
+
+        Uses threading.Event so this is safe to call from daemon worker threads
+        while the main executor is already spinning the node.  The running
+        executor delivers the response and fires the done-callback, which sets
+        the event.
+        """
+        done = threading.Event()
+        future.add_done_callback(lambda _f: done.set())
+        return done.wait(timeout=timeout)
+
     def _call_nav_pause(self, pause: bool) -> None:
         if not self._nav_client.wait_for_service(timeout_sec=self._srv_timeout):
             self.get_logger().warn(
@@ -182,9 +194,8 @@ class BrakeControlNode(Node):
         req = SetBool.Request()
         req.data = pause
         future = self._nav_client.call_async(req)
-        rclpy.spin_until_future_complete(
-            self, future, timeout_sec=self._srv_timeout)
-        if future.done() and future.result() is not None:
+        completed = self._wait_for_future(future, self._srv_timeout)
+        if completed and future.result() is not None:
             self.get_logger().debug(
                 f'brake_control: navigator {"paused" if pause else "resumed"}: '
                 f'{future.result().message}')
@@ -208,9 +219,8 @@ class BrakeControlNode(Node):
         req.strictness = SwitchController.Request.BEST_EFFORT
         req.activate_asap = True
         future = self._ctrl_client.call_async(req)
-        rclpy.spin_until_future_complete(
-            self, future, timeout_sec=self._srv_timeout)
-        if future.done() and future.result() is not None:
+        completed = self._wait_for_future(future, self._srv_timeout)
+        if completed and future.result() is not None:
             action = 'activated' if activate else 'deactivated'
             ok     = future.result().ok
             self.get_logger().info(
@@ -224,13 +234,14 @@ class BrakeControlNode(Node):
     # ── Shutdown ──────────────────────────────────────────────────────────
 
     def destroy_node(self) -> None:
-        # Safety: release brakes on shutdown so the robot is not locked.
+        # Safety: release GPIO on shutdown so the brakes are not left locked.
+        # Service calls are skipped — the executor is no longer spinning at
+        # this point, so async calls would never be delivered.  The controller
+        # manager and navigator will handle their own shutdown independently.
         if self._brakes_applied:
             self.get_logger().warn(
-                'brake_control: releasing brakes on shutdown (safety)')
+                'brake_control: releasing GPIO brakes on shutdown (safety)')
             self._write_gpio(False)
-            self._call_switch_controller(activate=True)
-            self._call_nav_pause(pause=False)
         if _GPIO_AVAILABLE:
             GPIO.cleanup(_BRAKE_PIN)
         super().destroy_node()
