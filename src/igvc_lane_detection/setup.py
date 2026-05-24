@@ -48,6 +48,8 @@ setup(
             'lane_eval_node = igvc_lane_detection.lane_eval_node:main',
             'midpoint_twist_test_node = igvc_lane_detection.midpoint_twist_test_node:main',
             'gt_nav_bridge_node = igvc_lane_detection.gt_nav_bridge_node:main',
+            'autonomous_indicator_node = igvc_lane_detection.autonomous_indicator:main',
+            'brake_control_node = igvc_lane_detection.brake_control:main',
         ],
     },
 )

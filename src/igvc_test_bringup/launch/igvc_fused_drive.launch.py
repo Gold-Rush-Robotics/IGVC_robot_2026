@@ -10,6 +10,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     bringup = FindPackageShare('igvc_test_bringup')
+    yolo_ros_pkg = FindPackageShare('yolo_bringup')
     ublox_gps_pkg = FindPackageShare('ublox_gps')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -120,6 +121,40 @@ def generate_launch_description() -> LaunchDescription:
             ('cmd_vel_out', '/diff_drive_controller/cmd_vel'),
         ],
     )
+    yolo_ros = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([yolo_ros_pkg, 'launch', 'yolo.launch.py'])
+        ),
+        launch_arguments={
+            'use_sim_time': use_sim_time,
+            'use_3d': 'True',
+            'model': '/home/nitin/Documents/DevEnv/jazzy_ws/IGVC_robot_2026/weights/yolov26n.pt',
+            'target_link': 'map',
+            'imgsz_height': '640',
+            'imgsz_width': '640',
+            'input_image_topic': '/front_zed_camera_x/zed_node/rgb/image_rect_color',
+            'camera_info_topic': '/front_zed_camera_x/zed_node/rgb/camera_info',
+            'input_depth_topic': '/front_zed_camera_x/zed_node/depth/depth_registered',
+        }.items(),
+    )
+    object_detection_to_costmap_node = Node(
+        package='igvc_lane_detection',
+        executable='obstacle_costmap_node',
+        name='obstacle_costmap_node',
+        output='screen',
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            {'costmap_topic': '/obstacle_map'},
+            {'costmap_frame_id': 'map'},
+            {'costmap_size_x': 10.0},
+            {'costmap_size_y': 10.0},
+            {'costmap_resolution': 0.1},
+            {'detection_timeout_sec': 1.0},
+        ],
+        remappings=[
+            ('yolo_detections', '/yolo_ros/detections'),
+        ],
+    )
 
 
     return LaunchDescription([
@@ -144,8 +179,10 @@ def generate_launch_description() -> LaunchDescription:
         motor_controllers,
         # lane_follower,
         lane_segmentation,
-        gps_node,
+        # gps_node,
         odom_tf_bridge_node,
         # zed_f9p_launch,
         twist_stamper_node,
+        object_detection_to_costmap_node,
+        yolo_ros
     ])

@@ -176,7 +176,7 @@ lane_segmentation_node:
     # ── Classical white-paint augmentation (thin-line recovery) ─────
     # IRL IGVC paint is 0.5–2 inches wide vs sim 4 inches; the model
     # often misses these even at lower `lane_threshold`.  Enable this to
-    # ADD bright white-paint pixels (gated by drivable area + colour) to
+    # ADD bright white-paint pixels (gated by drivable area + color) to
     # the lane mask, supplementing the model.  Off in sim where the wider
     # lines already trigger the head reliably; flip to true on hardware.
     lane_color_augment_enabled:       false

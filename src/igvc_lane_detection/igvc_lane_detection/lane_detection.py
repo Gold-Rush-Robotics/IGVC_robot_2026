@@ -374,16 +374,16 @@ class LaneDetectionNode(Node):
     #
     # Design rationale
     # ────────────────
-    # The pipeline is colour-gated: Canny only runs on pixels that already
+    # The pipeline is color-gated: Canny only runs on pixels that already
     # passed the white/yellow HSV filter.  This means asphalt texture, dirt,
     # shadows and painted numbers are suppressed before any edge detection.
     #
     # Pipeline:
     #   chassis mask
     #   → CLAHE on L (clipLimit 2.0 — lifts dim markings without amplifying grain)
-    #   → HSV colour mask (white + yellow) on CLAHE image
+    #   → HSV color mask (white + yellow) on CLAHE image
     #   → dilate mask by 1 px to widen thin distant lines
-    #   → Canny on (colour_mask * L_eq)  ← colour-gated grayscale edges only
+    #   → Canny on (color_mask * L_eq)  ← color-gated grayscale edges only
     #   → ROI trapezoid
     #   → HoughLinesP
     #   → midpoint-based left/right classification
@@ -403,7 +403,7 @@ class LaneDetectionNode(Node):
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         l_eq = clahe.apply(l)
 
-        # ── Step 2: Colour-gated grayscale edges ─────────────────────────
+        # ── Step 2: color-gated grayscale edges ─────────────────────────
         # Gate Canny by a white+yellow HSV mask.  The ROI trapezoid
         # already excludes the sky/horizon, so we can be fairly
         # permissive here: we only need to reject the very dark asphalt
@@ -411,11 +411,11 @@ class LaneDetectionNode(Node):
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         white_mask  = cv2.inRange(hsv, (0,   0, 150), (180,  70, 255))
         yellow_mask = cv2.inRange(hsv, (15, 60,  80), ( 40, 255, 255))
-        colour_mask = cv2.bitwise_or(white_mask, yellow_mask)
-        colour_mask = cv2.dilate(
-            colour_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), 1)
+        color_mask = cv2.bitwise_or(white_mask, yellow_mask)
+        color_mask = cv2.dilate(
+            color_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), 1)
 
-        gated = cv2.bitwise_and(l_eq, l_eq, mask=colour_mask)
+        gated = cv2.bitwise_and(l_eq, l_eq, mask=color_mask)
         blurred = cv2.GaussianBlur(gated, (5, 5), 0)
 
         edges = cv2.Canny(blurred, 40, 120, apertureSize=3)

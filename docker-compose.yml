@@ -27,12 +27,14 @@ services:
       - gid=1000
     command: >-
       /bin/bash -lc "
-      cp -f /root/ros2_ws/src/IGVC_robot_2026/src/igvc_test_bringup/config/common_stereo_real.yaml
+      cp -f /root/ros2_ws/src/IGVC_robot_2026/src/igvc_test_bringup/config/common_stereo_sim.yaml
       /root/ros2_ws/src/zed-ros2-wrapper/zed_wrapper/config/common_stereo.yaml
       && source /opt/ros/jazzy/setup.bash
       && colcon build --symlink-install --packages-select igvc_test_bringup --paths /root/ros2_ws/src/IGVC_robot_2026/src/*
       && source /root/ros2_ws/install/setup.bash
-      && ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i"
+      && ros2 launch igvc_test_bringup simulation_launch.launch.yaml use_sim_time:=true
+      "
+      # && ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedx"
 
   # igvc_humble_fused_drive:
   #   build:
