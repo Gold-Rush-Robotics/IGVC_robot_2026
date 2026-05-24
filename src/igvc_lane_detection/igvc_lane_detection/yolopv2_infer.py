@@ -90,7 +90,7 @@ class YolopV2:
         ``cuda:0``, ``cpu``, ``cuda:N``.  Falls back to CPU with a warning
         if CUDA is requested but not available.
     half:
-        Run inference in FP16.  Only honoured on CUDA.
+        Run inference in FP16.  Only honored on CUDA.
     img_size:
         Letterboxed side length (stride 32).  640 matches the trained
         model; other values are untested.
@@ -128,11 +128,11 @@ class YolopV2:
         # values recover thin / faint lane paint (e.g. IRL 0.5–2 inch
         # markings that activate the head only weakly) at the cost of
         # more salt-and-pepper noise — the caller is expected to clean
-        # up with morphology + colour filtering.
+        # up with morphology + color filtering.
         self.lane_threshold = float(lane_threshold)
 
         # Pre-processing: CLAHE histogram equalisation on the luma channel
-        # (boosts contrast in shadows / bright sun without colour shifts)
+        # (boosts contrast in shadows / bright sun without color shifts)
         # followed by a Gaussian blur (suppresses high-frequency texture
         # noise that otherwise produces speckle in the lane mask).
         self.preprocess_enabled = bool(preprocess)
@@ -260,7 +260,7 @@ class YolopV2:
     def _preprocess(self, bgr: np.ndarray) -> np.ndarray:
         """CLAHE histogram equalisation on Y (YUV) + Gaussian blur.
 
-        Operates on the luma channel only so colour balance is preserved
+        Operates on the luma channel only so color balance is preserved
         and the network still sees a natural-looking RGB image.
         """
         yuv = cv2.cvtColor(bgr, cv2.COLOR_BGR2YUV)

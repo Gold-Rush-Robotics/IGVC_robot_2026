@@ -54,7 +54,7 @@ from .projection_utils import (
 from .yolopv2_infer import YolopV2
 
 
-# Cycle-coloured palette for the MarkerArray debug view.  Keeps the first
+# Cycle-colored palette for the MarkerArray debug view.  Keeps the first
 # few detected lanes visually distinct without drawing the rainbow.
 _LANE_COLORS: Tuple[Tuple[float, float, float], ...] = (
     (0.0, 0.9, 0.9),
@@ -208,7 +208,7 @@ class LaneSegmentationNode(Node):
         #   1. drivable-area gate     → keep only paint that lies inside
         #      (or within ``lane_da_dilate_px`` of) the drivable area, so
         #      curbs / off-road edges are dropped.
-        #   2. white-paint colour gate → keep only pixels whose RGB looks
+        #   2. white-paint color gate → keep only pixels whose RGB looks
         #      like white paint (high V, low S in HSV).  This is what
         #      separates a true lane line from the road-edge texture.
         # Both filters can be disabled independently.
@@ -234,7 +234,7 @@ class LaneSegmentationNode(Node):
         # several inches wide.  IGVC IRL paint is 0.5–2 inches wide and
         # often too thin to trigger the head reliably even at lower
         # ``lane_threshold``.  When this flag is on we add white-paint
-        # pixels (gated by drivable-area + colour) directly to the lane
+        # pixels (gated by drivable-area + color) directly to the lane
         # mask, supplementing the model's response.  The augmentation is
         # restricted to the drivable area so road edges and white sky
         # regions cannot contribute.
@@ -729,7 +729,7 @@ class LaneSegmentationNode(Node):
 
         # ── Lane refinement: drop road edges, recover thin paint ────
         # See ``_refine_lane_mask`` for details.  Runs before the ROI /
-        # chassis crop so the colour gate sees the original RGB.
+        # chassis crop so the color gate sees the original RGB.
         ll_mask = self._refine_lane_mask(bgr, da_mask, ll_mask)
 
         # ── Morphological cleanup of drivable-area mask (removes sim noise) ──
@@ -964,7 +964,7 @@ class LaneSegmentationNode(Node):
           1. Restrict to the drivable area (optionally dilated) — the
              head fires on road-edge texture which is *not* painted; we
              only want lines that lie on or near the road surface.
-          2. Colour-gate: keep only pixels that look like white paint
+          2. color-gate: keep only pixels that look like white paint
              (high V, low S in HSV).  Removes asphalt-vs-grass edges
              that the model still labels as "lane line".
           3. Optional white-paint augmentation: ADD bright white-paint
@@ -1005,14 +1005,14 @@ class LaneSegmentationNode(Node):
         if self.lane_in_drivable_only and da_gate is not None:
             ll = ll & da_gate
 
-        # Pre-compute HSV once if we need it for colour filter / augment.
+        # Pre-compute HSV once if we need it for color filter / augment.
         need_hsv = (
             self.lane_color_filter_enabled
             or self.lane_color_augment_enabled
         )
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV) if need_hsv else None
 
-        # 2) White-paint colour gate on the model's lane mask.
+        # 2) White-paint color gate on the model's lane mask.
         if self.lane_color_filter_enabled and hsv is not None:
             v = hsv[:, :, 2]
             s = hsv[:, :, 1]
@@ -1259,7 +1259,7 @@ class LaneSegmentationNode(Node):
             ``(N, 2) float32`` array of every projected lane point.
         components
             List of per-component ``(M_i, 2) float32`` arrays, sorted by
-            mean lateral offset (most-positive first) so colours are
+            mean lateral offset (most-positive first) so colors are
             stable.
         """
         if ll_mask is None or ll_mask.size == 0:
@@ -1434,12 +1434,12 @@ class LaneSegmentationNode(Node):
         da_mask: np.ndarray, ll_mask: np.ndarray, rgb_msg: Image,
     ) -> None:
         ov = bgr.copy()
-        colour = np.zeros_like(ov)
-        colour[da_mask > 0] = (0, 255, 0)     # green  = drivable area
-        colour[ll_mask > 0] = (0, 0, 255)     # red    = lane lines
+        color = np.zeros_like(ov)
+        color[da_mask > 0] = (0, 255, 0)     # green  = drivable area
+        color[ll_mask > 0] = (0, 0, 255)     # red    = lane lines
         mask_any = (da_mask > 0) | (ll_mask > 0)
         ov[mask_any] = cv2.addWeighted(
-            ov, 0.5, colour, 0.5, 0.0)[mask_any]
+            ov, 0.5, color, 0.5, 0.0)[mask_any]
 
         try:
             msg = self.bridge.cv2_to_imgmsg(ov, 'bgr8')
