@@ -1,0 +1,18 @@
+[Unit]
+Description=Initialize devmem registers
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c "\
+busybox devmem 0x0c303018 w 0x458; \
+busybox devmem 0x0c303010 w 0x400; \
+busybox devmem 0x0c303008 w 0x458; \
+busybox devmem 0x0c303000 w 0x400; \
+busybox devmem 0x2430020 w 0x4; \
+ip link set down can0; \
+ip link set up can0 type can bitrate 250000"
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
