@@ -243,6 +243,7 @@ class IGVCNavigatorNode(Node):
 
         # Latest sensor data
         self._grid: Optional[OccupancyGrid] = None
+        self._obstacle_grid: Optional[OccupancyGrid] = None
         self._robot_xy: Optional[tuple[float, float]] = None  # odom frame
         self._robot_yaw: Optional[float] = None
         self._odom_stamp = None
@@ -293,6 +294,9 @@ class IGVCNavigatorNode(Node):
         # ── Subscriptions ─────────────────────────────────────────────────
         self.create_subscription(OccupancyGrid, '/lane_costmap',
                                  self._on_grid, map_qos)
+        _obstacle_map_topic = self._p('obstacle_map_topic', '/obstacle_map')
+        self.create_subscription(OccupancyGrid, _obstacle_map_topic,
+                                 self._on_obstacle_grid, map_qos)
         self.create_subscription(Odometry, self._odom_topic,
                      self._on_odom, odom_qos)
 
@@ -384,6 +388,7 @@ class IGVCNavigatorNode(Node):
             ('centerline_search_window_m', 8.0),
             ('centerline_reacquire_dist_m', 3.0),
             ('centerline_max_goal_dist_m', 12.0),
+            ('obstacle_map_topic', '/obstacle_map'),
         ]:
             self.declare_parameter(name, default)
 
@@ -413,6 +418,9 @@ class IGVCNavigatorNode(Node):
                 throttle_duration_sec=2.0)
             return
         self._grid = msg
+
+    def _on_obstacle_grid(self, msg: OccupancyGrid) -> None:
+        self._obstacle_grid = msg
 
     def _on_odom(self, msg: Odometry) -> None:
         if self._stamp_age_sec(msg.header.stamp) > self._max_odom_age:
@@ -1102,7 +1110,34 @@ class IGVCNavigatorNode(Node):
         if max_col <= min_col + 2 or max_row <= min_row + 2:
             return []
 
-        roi = data[min_row:max_row, min_col:max_col]
+        roi = data[min_row:max_row, min_col:max_col].copy()
+        roi_h, roi_w = roi.shape
+        # Overlay persistent obstacle map cells onto the local planning grid.
+        # The obstacle map is in odom frame; project each lethal cell into
+        # base_link coordinates using the robot's current odom pose.
+        if (self._obstacle_grid is not None
+                and self._robot_xy is not None
+                and self._robot_yaw is not None):
+            og = self._obstacle_grid
+            og_data = np.frombuffer(
+                bytes(og.data), dtype=np.int8).reshape(og.info.height, og.info.width)
+            lethal_idx = np.argwhere(og_data >= 90)
+            if lethal_idx.size > 0:
+                og_res = og.info.resolution
+                obs_x = og.info.origin.position.x + (lethal_idx[:, 1] + 0.5) * og_res
+                obs_y = og.info.origin.position.y + (lethal_idx[:, 0] + 0.5) * og_res
+                dx = obs_x - self._robot_xy[0]
+                dy = obs_y - self._robot_xy[1]
+                cos_r = math.cos(self._robot_yaw)
+                sin_r = math.sin(self._robot_yaw)
+                fwd = cos_r * dx + sin_r * dy    # odom → base_link forward
+                lat = -sin_r * dx + cos_r * dy   # odom → base_link lateral
+                gc = ((fwd - orig_x) / res).astype(int)
+                gr = ((lat - orig_y) / res).astype(int)
+                rc = gc - min_col
+                rr = gr - min_row
+                valid = (rr >= 0) & (rr < roi_h) & (rc >= 0) & (rc < roi_w)
+                roi[rr[valid], rc[valid]] = 100
         free = roi == 0
         # Camera mode often leaves small UNKNOWN gaps between otherwise good
         # free-space samples.  Treat UNKNOWN as traversable but expensive;
@@ -1716,7 +1751,7 @@ class IGVCNavigatorNode(Node):
         """Publish a 1 Hz human-readable diagnostic string on /navigator/status."""
         parts = [
             f'mission={self._mission_state}',
-            f'loc={self._loc_status}',
+            # f'loc={self._loc_status}',
             f'paused={self._paused}',
             f'aborts={self._consecutive_aborts}',
             f'goal_pending={self._goal_pending}',

@@ -3,19 +3,19 @@ lane_segmentation_node:
     # ── Camera configuration ────────────────────────────────────────
     # All three ZEDs feed the segmentation pipeline in their native
     # orientation — YOLOPv2 performed better without any pre-rotation.
-    num_cameras: 1
+    num_cameras: 3
     camera_topics:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
-      # - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
-      # - "/right_zed_camera_x/zed_node/rgb/color/rect/image"
+      - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
+      - "/right_zed_camera_x/zed_node/rgb/color/rect/image"
     depth_topics:
       - "/front_zed_camera_x/zed_node/depth/depth_registered"
-      # - "/left_zed_camera_x/zed_node/depth/depth_registered"
-      # - "/right_zed_camera_x/zed_node/depth/depth_registered"
+      - "/left_zed_camera_x/zed_node/depth/depth_registered"
+      - "/right_zed_camera_x/zed_node/depth/depth_registered"
     camera_info_topics:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
-      # - "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
-      # - "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+      - "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+      - "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
 
     # ── Frames ──────────────────────────────────────────────────────
     base_frame: "base_link"
@@ -42,9 +42,13 @@ lane_segmentation_node:
     max_detection_depth_m: 8.0
     depth_search_radius_px: 6
 
-    # ── Multi-camera fusion (single-camera for now, left in for future)
-    max_time_offset_sec: 0.1
-    fusion_timeout_sec: 0.1
+    # ── Multi-camera fusion ─────────────────────────────────────────
+    # With 3 cameras and ~200 ms inference each, serial _model_lock
+    # serialisation means camera states are up to 400 ms apart.
+    # Set both limits to 0.8 s so all three cameras are inside the
+    # fusion window when the last one finishes.
+    max_time_offset_sec: 0.8
+    fusion_timeout_sec: 0.8
     keep_last_grid_on_miss: true
 
     # ── Lane-line correlation / map alignment ───────────────────────
@@ -85,7 +89,7 @@ lane_segmentation_node:
 
     # Keep the synchronizer latest-only so YOLO does not chew through
     # a backlog of old RGB+depth pairs when the camera out-runs inference.
-    sync_queue_size: 2
+    sync_queue_size: 5
     # Jetson real-world pipeline latency is often 0.40-0.70s under YOLO load.
     # Keep latest-only queueing but allow those frames through.
     max_frame_age_sec: 2.0
@@ -139,13 +143,13 @@ lane_segmentation_node:
     # Widens each detected lane pixel by ~3 px before projection so the
     # persistent map receives a thicker stamp and small mask gaps fade.
     # Set to 0 to disable.
-    ll_dilation_px: 50
+    ll_dilation_px: 20
 
     # Local /lane_costmap lane (100) inflation radius in metres.
     # Equivalent to a ~1 m wide drivable corridor margin (0.5 m each
     # side) — prevents the navigator from threading through gaps in
     # the raw segmentation.  Set to 0.0 to disable inflation.
-    local_lane_inflation_m: 0.5
+    local_lane_inflation_m: 0.2
 
     # ── Debug ───────────────────────────────────────────────────────
     publish_overlay: false
@@ -165,7 +169,7 @@ lane_segmentation_node:
     # (default torch.round = 0.5) so faint thin paint is recovered.
     # `lane_morph_close_px` bridges 1-2 px gaps along thin lines so the
     # min_lane_component_px filter does not reject dashed segments.
-    lane_threshold:               0.35
+    lane_threshold:               0.15
     lane_in_drivable_only:        true
     lane_da_dilate_px:            30
     lane_color_filter_enabled:    true

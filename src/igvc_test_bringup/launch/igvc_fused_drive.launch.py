@@ -1,8 +1,8 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
 
@@ -16,6 +16,11 @@ def generate_launch_description() -> LaunchDescription:
     use_sim_time = LaunchConfiguration('use_sim_time')
     gps_enabled = LaunchConfiguration('gps_enabled')
     hardware_interface = LaunchConfiguration('hardware_interface')
+    sim_camera_ports = LaunchConfiguration('sim_camera_ports')
+    sim_camera_address = LaunchConfiguration('sim_camera_address')
+    is_isaac_drive = PythonExpression([
+        "'", hardware_interface, "' == 'IsaacDriveHardware'"
+    ])
     gps_config = PathJoinSubstitution([bringup, 'config', 'zed_f9p.yaml'])
     
 
@@ -23,8 +28,20 @@ def generate_launch_description() -> LaunchDescription:
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([bringup, 'launch', 'zed_multi_fused_odom.launch.py'])
         ),
+        condition=UnlessCondition(is_isaac_drive),
         launch_arguments={
             'use_sim_time': use_sim_time,
+        }.items(),
+    )
+
+    zed_multi_sim = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([bringup, 'launch', 'zed_multi_sim.launch.py'])
+        ),
+        condition=IfCondition(is_isaac_drive),
+        launch_arguments={
+            'sim_ports': sim_camera_ports,
+            'sim_address': sim_camera_address,
         }.items(),
     )
 
@@ -127,32 +144,84 @@ def generate_launch_description() -> LaunchDescription:
         ),
         launch_arguments={
             'use_sim_time': use_sim_time,
+            'namespace': 'yolo_ros',
             'use_3d': 'True',
-            'model': '/home/nitin/Documents/DevEnv/jazzy_ws/IGVC_robot_2026/weights/yolov26n.pt',
-            'target_link': 'map',
-            'imgsz_height': '640',
-            'imgsz_width': '640',
-            'input_image_topic': '/front_zed_camera_x/zed_node/rgb/image_rect_color',
-            'camera_info_topic': '/front_zed_camera_x/zed_node/rgb/camera_info',
+            'model': '/home/nitin-5090/Documents/DevEnv/jazzy_ws/IGVC_robot_2026/models/yolov26n.pt',
+            'target_frame': 'map',
+            'input_image_topic': '/front_zed_camera_x/zed_node/rgb/color/rect/image',
             'input_depth_topic': '/front_zed_camera_x/zed_node/depth/depth_registered',
+            'input_depth_info_topic': '/front_zed_camera_x/zed_node/depth/camera_info',
+            'depth_image_units_divisor': '1',
         }.items(),
     )
-    object_detection_to_costmap_node = Node(
+    # YOLO bounding-box obstacle costmap disabled — large merged boxes were
+    # covering the entire track.  Replaced by lidar + depth-based costmaps.
+    # object_detection_to_costmap_node = Node(
+    #     package='igvc_lane_detection',
+    #     executable='obstacle_costmap_node',
+    #     name='obstacle_costmap_node',
+    #     output='screen',
+    #     parameters=[
+    #         {'use_sim_time': use_sim_time},
+    #         {'frame_id': 'odom'},
+    #         {'width_m': 100.0},
+    #         {'height_m': 100.0},
+    #         {'resolution': 0.2},
+    #         {'obstacle_lifetime_sec': 300.0},
+    #         {'detections_topic': '/yolo_ros/detections_3d'},
+    #     ],
+    # )
+
+    depth_obstacle_costmap_node = Node(
         package='igvc_lane_detection',
-        executable='obstacle_costmap_node',
-        name='obstacle_costmap_node',
+        executable='depth_obstacle_costmap_node',
+        name='depth_obstacle_costmap_node',
         output='screen',
         parameters=[
             {'use_sim_time': use_sim_time},
-            {'costmap_topic': '/obstacle_map'},
-            {'costmap_frame_id': 'map'},
-            {'costmap_size_x': 10.0},
-            {'costmap_size_y': 10.0},
-            {'costmap_resolution': 0.1},
-            {'detection_timeout_sec': 1.0},
+            {'frame_id': 'odom'},
+            {'depth_topic': '/front_zed_camera_x/zed_node/depth/depth_registered'},
+            {'info_topic': '/front_zed_camera_x/zed_node/depth/camera_info'},
+            {'output_topic': '/depth_obstacle_map'},
+            {'width_m': 100.0},
+            {'height_m': 100.0},
+            {'origin_x': -50.0},
+            {'origin_y': -50.0},
+            {'resolution': 0.10},
+            {'min_depth_m': 0.40},
+            {'max_depth_m': 8.0},
+            {'min_height_m': 0.10},
+            {'max_height_m': 2.20},
+            {'stride': 4},
+            {'hit_weight': 2.0},
+            {'hit_threshold': 8.0},
+            {'inflate_radius_m': 0.20},
+            {'publish_hz': 5.0},
         ],
-        remappings=[
-            ('yolo_detections', '/yolo_ros/detections'),
+    )
+    lidar_obstacle_costmap_node = Node(
+        package='igvc_lane_detection',
+        executable='lidar_obstacle_costmap_node',
+        name='lidar_obstacle_costmap_node',
+        output='screen',
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            {'frame_id': 'odom'},
+            {'scan_topic': '/scan'},
+            {'output_topic': '/lidar_obstacle_map'},
+            {'width_m': 100.0},
+            {'height_m': 100.0},
+            {'origin_x': -50.0},
+            {'origin_y': -50.0},
+            {'resolution': 0.10},
+            {'min_range_m': 0.15},
+            {'max_range_m': 10.0},
+            {'hit_weight': 5.0},
+            {'free_weight': 0.5},
+            {'hit_threshold': 4.0},
+            {'free_threshold': 3.0},
+            {'inflate_radius_m': 0.20},
+            {'publish_hz': 5.0},
         ],
     )
 
@@ -183,6 +252,8 @@ def generate_launch_description() -> LaunchDescription:
         odom_tf_bridge_node,
         # zed_f9p_launch,
         twist_stamper_node,
-        object_detection_to_costmap_node,
-        yolo_ros
+        # object_detection_to_costmap_node,  # disabled: YOLO bbox obstacles
+        # yolo_ros,  # disabled: only fed obstacle_costmap_node
+        lidar_obstacle_costmap_node,
+        # depth_obstacle_costmap_node,  # disabled: using LiDAR only
     ])

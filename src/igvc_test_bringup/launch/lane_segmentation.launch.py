@@ -126,18 +126,20 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{'use_sim_time': use_sim_time}],
     )
 
-    # ── Obstacle costmap (YOLO 3D detections → /obstacle_map) ─────────
-    obstacle_costmap_node = Node(
-        package='igvc_lane_detection',
-        executable='obstacle_costmap_node',
-        name='obstacle_costmap_node',
-        output='screen',
-        parameters=[
-            shared_params,
-            PathJoinSubstitution(
-                [bringup, 'config', 'obstacle_costmap_config.yaml']),
-        ],
-    )
+    # ── Obstacle costmap: YOLO 3D detections disabled (large merged bounding
+    #    boxes were covering the entire track). Now using lidar_obstacle_costmap
+    #    and depth_obstacle_costmap nodes launched from igvc_fused_drive.launch.py.
+    # obstacle_costmap_node = Node(
+    #     package='igvc_lane_detection',
+    #     executable='obstacle_costmap_node',
+    #     name='obstacle_costmap_node',
+    #     output='screen',
+    #     parameters=[
+    #         shared_params,
+    #         PathJoinSubstitution(
+    #             [bringup, 'config', 'obstacle_costmap_config.yaml']),
+    #     ],
+    # )
 
     # ── Mission planner (GPS waypoint mission) ────────────────────────
     mission_planner_node = Node(
@@ -186,7 +188,7 @@ def generate_launch_description() -> LaunchDescription:
         publish_overlay_arg,
         lane_segmentation_node,
         static_map_to_odom,
-        obstacle_costmap_node,
+        # obstacle_costmap_node,  # disabled: YOLO bbox obstacles
         mission_planner_node,
         navigator_node,
         nav2_launch,

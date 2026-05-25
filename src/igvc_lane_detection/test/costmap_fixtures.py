@@ -78,11 +78,11 @@ def make_corridor_costmap(
         if forward < sensed_start_m or forward > sensed_end_m:
             continue
 
-        centre = centerline(forward) if callable(centerline) else centerline
+        center = centerline(forward) if callable(centerline) else centerline
         lane_width = (
             lane_width_m(forward) if callable(lane_width_m) else lane_width_m)
-        left_col = lateral_to_col(grid, centre + lane_width / 2.0)
-        right_col = lateral_to_col(grid, centre - lane_width / 2.0)
+        left_col = lateral_to_col(grid, center + lane_width / 2.0)
+        right_col = lateral_to_col(grid, center - lane_width / 2.0)
         lo = max(0, min(left_col, right_col))
         hi = min(grid.info.width - 1, max(left_col, right_col))
         if lo >= hi:

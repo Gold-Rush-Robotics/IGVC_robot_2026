@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import array
 import math
+import threading
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import cv2
@@ -31,6 +32,7 @@ from message_filters import ApproximateTimeSynchronizer, Subscriber
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
@@ -295,6 +297,18 @@ class LaneSegmentationNode(Node):
 
         self._init_persistent_map()
 
+        # ── Multi-camera threading ────────────────────────────────────
+        # YOLOPv2 GPU inference is not thread-safe for concurrent calls, so
+        # a lock serialises inference while allowing all camera callbacks to
+        # be scheduled in parallel by the MultiThreadedExecutor.
+        self._model_lock = threading.Lock()
+        # _state_lock guards _cam_state, _phits, _pfree, latest_grid and all
+        # derived publish calls so concurrent post-inference writes are safe.
+        self._state_lock = threading.Lock()
+        # ReentrantCallbackGroup lets the executor run camera callbacks
+        # concurrently instead of forcing a single-active-callback policy.
+        self._cam_cb_group = ReentrantCallbackGroup()
+
         # ── Camera subscriptions ─────────────────────────────────────
         num_cameras  = p('num_cameras',        1)
         cam_topics   = p('camera_topics',      ['/camera/image_raw'])
@@ -304,18 +318,28 @@ class LaneSegmentationNode(Node):
         num_cameras = min(
             num_cameras, len(cam_topics), len(depth_topics), len(info_topics))
 
+        self._camera_topic_pairs = {
+            i: (str(cam_topics[i]), str(depth_topics[i]))
+            for i in range(num_cameras)
+        }
+        self._got_frame = False
+        self._got_frame_by_cam = {i: False for i in range(num_cameras)}
+
         self._sync_handles: list = []
         self.overlay_pubs: dict = {}
 
         for i in range(num_cameras):
             self.create_subscription(
                 CameraInfo, info_topics[i],
-                lambda msg, idx=i: self._on_info(msg, idx), 10)
+                lambda msg, idx=i: self._on_info(msg, idx), 10,
+                callback_group=self._cam_cb_group)
 
             rgb_sub = Subscriber(
-                self, Image, cam_topics[i], qos_profile=qos_profile_sensor_data)
+                self, Image, cam_topics[i], qos_profile=qos_profile_sensor_data,
+                callback_group=self._cam_cb_group)
             depth_sub = Subscriber(
-                self, Image, depth_topics[i], qos_profile=qos_profile_sensor_data)
+                self, Image, depth_topics[i], qos_profile=qos_profile_sensor_data,
+                callback_group=self._cam_cb_group)
             sync = ApproximateTimeSynchronizer(
                 [rgb_sub, depth_sub],
                 queue_size=self.sync_queue_size,
@@ -327,6 +351,10 @@ class LaneSegmentationNode(Node):
             if self.publish_overlay:
                 self.overlay_pubs[i] = self.create_publisher(
                     Image, f'/lane_debug/cam{i}/overlay', 10)
+
+            self.get_logger().info(
+                f'Configured cam[{i}]: rgb={cam_topics[i]} depth={depth_topics[i]} '
+                f'info={info_topics[i]}')
 
         # ── Publishers ───────────────────────────────────────────────
         map_qos = QoSProfile(
@@ -370,7 +398,6 @@ class LaneSegmentationNode(Node):
             1.0 / max(self.persist_pub_hz, 0.1),
             self._publish_persistent_map)
 
-        self._got_frame = False
         self.create_timer(2.0, self._watchdog)
 
     # ═══════════════════════════════════════════════════════════════════
@@ -608,35 +635,36 @@ class LaneSegmentationNode(Node):
         ):
             return
 
-        stamp = self._last_persistent_stamp
-        if stamp is None:
-            stamp = self.get_clock().now().to_msg()
+        with self._state_lock:
+            stamp = self._last_persistent_stamp
+            if stamp is None:
+                stamp = self.get_clock().now().to_msg()
 
-        rebuild_msg = (
-            self._persistent_msg is None
-            or self._persistent_msg_dirty
-            or self.persist_publish_clear_robot
-        )
-        if rebuild_msg:
-            n = self._pN
-            g = OccupancyGrid()
-            g.header.frame_id           = self.persist_frame
-            g.info.resolution           = self.persist_res
-            g.info.width                = n
-            g.info.height               = n
-            g.info.origin.position.x    = self._p_ox
-            g.info.origin.position.y    = self._p_oy
-            g.info.origin.orientation.w = 1.0
+            rebuild_msg = (
+                self._persistent_msg is None
+                or self._persistent_msg_dirty
+                or self.persist_publish_clear_robot
+            )
+            if rebuild_msg:
+                n = self._pN
+                g = OccupancyGrid()
+                g.header.frame_id           = self.persist_frame
+                g.info.resolution           = self.persist_res
+                g.info.width                = n
+                g.info.height               = n
+                g.info.origin.position.x    = self._p_ox
+                g.info.origin.position.y    = self._p_oy
+                g.info.origin.orientation.w = 1.0
 
-            data = self._persistent_grid_data(
-                stamp, clear_robot=self.persist_publish_clear_robot)
-            g.data = array.array('b', data.tobytes())
-            self._persistent_msg = g
-            self._persistent_msg_dirty = False
-        else:
-            g = self._persistent_msg
+                data = self._persistent_grid_data(
+                    stamp, clear_robot=self.persist_publish_clear_robot)
+                g.data = array.array('b', data.tobytes())
+                self._persistent_msg = g
+                self._persistent_msg_dirty = False
+            else:
+                g = self._persistent_msg
 
-        g.header.stamp = stamp
+            g.header.stamp = stamp
         self.persist_pub.publish(g)
 
     def _clear_persistent_robot_footprint(self, data: np.ndarray, stamp) -> None:
@@ -676,7 +704,9 @@ class LaneSegmentationNode(Node):
     # ═══════════════════════════════════════════════════════════════════
 
     def _on_images(self, rgb_msg: Image, depth_msg: Image, cam_idx: int) -> None:
-        self._got_frame = True
+        with self._state_lock:
+            self._got_frame = True
+            self._got_frame_by_cam[cam_idx] = True
 
         process_time = self.get_clock().now()
         process_stamp = process_time.to_msg()
@@ -706,7 +736,8 @@ class LaneSegmentationNode(Node):
 
         # ── Run segmentation model ──
         try:
-            da_mask, ll_mask = self.model.infer(bgr)
+            with self._model_lock:
+                da_mask, ll_mask = self.model.infer(bgr)
         except Exception as e:
             self.get_logger().error(
                 f'YOLOPv2 inference error: {e}',
@@ -797,29 +828,31 @@ class LaneSegmentationNode(Node):
         if self.publish_overlay and cam_idx in self.overlay_pubs:
             self._publish_overlay(cam_idx, bgr, da_mask, ll_mask, rgb_msg)
 
-        # ── Cache per-camera state for multi-camera fusion ──
-        self._cam_state[cam_idx] = {
-            'stamp':    process_stamp,
-            'free':     free_pts,
-            'lane':     lane_pts,
-        }
+        # ── Cache per-camera state + fuse + publish (serialised) ──
+        with self._state_lock:
+            self._cam_state[cam_idx] = {
+                'stamp':    process_stamp,
+                'free':     free_pts,
+                'lane':     lane_pts,
+            }
 
-        fused_free, fused_lane = self._fuse_points(process_stamp)
+            fused_free, fused_lane = self._fuse_points(process_stamp)
 
-        if fused_free.shape[0] > 0 or fused_lane.shape[0] > 0:
-            self.latest_grid = self._build_grid(
-                fused_free, fused_lane, process_stamp)
-            self._update_persistent_map(
-                fused_free, fused_lane, rgb_msg.header.stamp)
-            if self.local_from_persistent:
-                self._publish_local_costmap_from_persistent()
+            if fused_free.shape[0] > 0 or fused_lane.shape[0] > 0:
+                self.latest_grid = self._build_grid(
+                    fused_free, fused_lane, process_stamp)
+                self._update_persistent_map(
+                    fused_free, fused_lane, rgb_msg.header.stamp)
+                if self.local_from_persistent:
+                    self._publish_local_costmap_from_persistent()
+                else:
+                    self.grid_pub.publish(self.latest_grid)
+            elif self.keep_last_grid_on_miss:
+                self._republish_grid()
             else:
+                self.latest_grid = self._empty_grid(process_stamp)
                 self.grid_pub.publish(self.latest_grid)
-        elif self.keep_last_grid_on_miss:
-            self._republish_grid()
-        else:
-            self.latest_grid = self._empty_grid(process_stamp)
-            self.grid_pub.publish(self.latest_grid)
+            active_cam_count = len(self._active_cam_states(process_stamp))
 
         # ── Publish per-component lane markers ──
         self._publish_lane_markers(lane_components, process_stamp)
@@ -827,7 +860,7 @@ class LaneSegmentationNode(Node):
         self.get_logger().info(
             f'cam[{cam_idx}] free={free_pts.shape[0]} lane={lane_pts.shape[0]} '
             f'components={len(lane_components)} '
-            f'active_cams={len(self._active_cam_states(process_stamp))}',
+            f'active_cams={active_cam_count}',
             throttle_duration_sec=1.0)
 
     def _active_cam_states(self, stamp) -> List[dict]:
@@ -1576,27 +1609,40 @@ class LaneSegmentationNode(Node):
         return True
 
     def _watchdog(self) -> None:
-        if not self._got_frame:
+        with self._state_lock:
+            got_any = self._got_frame
+            missing = [
+                idx for idx, got_frame in self._got_frame_by_cam.items()
+                if not got_frame
+            ]
+            self._got_frame = False
+            for idx in self._got_frame_by_cam:
+                self._got_frame_by_cam[idx] = False
+
+        if not got_any:
             self.get_logger().warn(
                 'No synced RGB+Depth frames. Check topics and slop.',
                 throttle_duration_sec=5.0)
-        self._got_frame = False
+        elif missing:
+            missing_text = ', '.join(
+                f'cam[{idx}] rgb={self._camera_topic_pairs[idx][0]} '
+                f'depth={self._camera_topic_pairs[idx][1]}'
+                for idx in missing)
+            self.get_logger().warn(
+                f'No synced RGB+Depth frames for configured camera(s): '
+                f'{missing_text}. Check that these topics are publishing.',
+                throttle_duration_sec=5.0)
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = LaneSegmentationNode()
     try:
-        try:
-            from rclpy.experimental import EventsExecutor
-            executor = EventsExecutor()
-        except ImportError:
-            from rclpy.executors import SingleThreadedExecutor
-            node.get_logger().warn(
-                'EventsExecutor is not available in this rclpy install; '
-                'falling back to SingleThreadedExecutor.')
-            executor = SingleThreadedExecutor()
-
+        from rclpy.executors import MultiThreadedExecutor
+        # Allocate enough threads for all camera callbacks to be in flight
+        # simultaneously (each camera needs one thread for its callback, plus
+        # headroom for timers and service callbacks).
+        executor = MultiThreadedExecutor(num_threads=8)
         executor.add_node(node)
         executor.spin()
     finally:

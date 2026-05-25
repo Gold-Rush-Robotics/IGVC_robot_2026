@@ -198,7 +198,7 @@ class GTNavBridgeNode(Node):
             total_r_m = obs_r_m + self._inflate_r
             total_r_cells = total_r_m / res
 
-            # Grid centre cell of this obstacle
+            # Grid center cell of this obstacle
             cx = (world_x - ox) / res
             cy = (world_y - oy) / res
 

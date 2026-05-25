@@ -40,6 +40,8 @@ setup(
             'navigation_node = igvc_lane_detection.navigator:main',
             'odom_tf_bridge_node = igvc_lane_detection.odom_tf_bridge:main',
             'obstacle_costmap_node = igvc_lane_detection.obstacle_costmap:main',
+            'lidar_obstacle_costmap_node = igvc_lane_detection.lidar_obstacle_costmap:main',
+            'depth_obstacle_costmap_node = igvc_lane_detection.depth_obstacle_costmap:main',
             'mission_planner_node = igvc_lane_detection.mission_planner:main',
             'multi_camera_lane_detection_node = igvc_lane_detection.multi_camera_lane_detection:main',
             'lane_segmentation_node = igvc_lane_detection.lane_segmentation:main',

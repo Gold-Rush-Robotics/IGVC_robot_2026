@@ -128,7 +128,7 @@ class LaneDetectionNode(Node):
         self._pN = N
         self._phits = np.zeros((N, N), dtype=np.float32)
         # Grid origin: bottom-left corner in persistent_frame coordinates.
-        # We centre the grid on the world origin so the robot starts near
+        # We center the grid on the world origin so the robot starts near
         # the middle and can drive in any direction.
         half = self.persist_size_m / 2.0
         self._p_ox = -half   # world-x of grid column 0
@@ -248,7 +248,7 @@ class LaneDetectionNode(Node):
         # --- Erosion ---
         padded = np.pad(u8, 1, mode='constant', constant_values=0)
         windows = np.lib.stride_tricks.sliding_window_view(padded, (3, 3))
-        neighbour_sum = windows.sum(axis=(-2, -1))          # includes centre
+        neighbour_sum = windows.sum(axis=(-2, -1))          # includes center
         eroded = lethal & (neighbour_sum >= 3)
 
         # --- Dilation of eroded mask ---
@@ -497,7 +497,7 @@ class LaneDetectionNode(Node):
 
             # ── Left / right classification by ROI-bottom intercept ──────
             # Midpoint-based classification breaks on sharp turns because a
-            # real boundary can cross the image centre while still being the
+            # real boundary can cross the image center while still being the
             # same physical lane edge.  Instead, classify by where the line
             # hits the *bottom* of the ROI (closest / highest-confidence
             # part of the image), then require it to lean inward toward the

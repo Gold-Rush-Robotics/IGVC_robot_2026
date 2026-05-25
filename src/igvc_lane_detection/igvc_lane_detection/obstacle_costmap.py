@@ -69,7 +69,7 @@ except ImportError:  # pragma: no cover - dev convenience
 class _Obstacle:
     """Footprint of a single obstacle expressed in the ``odom`` frame."""
     stamp: float          # node-clock seconds when accepted
-    x: float              # centre, odom frame [m]
+    x: float              # center, odom frame [m]
     y: float
     yaw: float            # box yaw in odom frame [rad]
     size_x: float         # full extent along box +x [m]
