@@ -188,6 +188,26 @@ lane_segmentation_node:
     lane_color_augment_s_max:         50
     lane_color_augment_min_area_px:   25
 
+    # ── Canny white-edge augmentation ────────────────────────────────
+    # Runs Canny edge detection on the grayscale image inside the
+    # drivable area, then keeps only edges that also pass an HSV white-
+    # paint gate.  The surviving edges are OR-ed into the lane mask so
+    # thin lines that YOLOPv2 missed (but have a clear brightness edge)
+    # still reach the costmap.  Safe to enable alongside
+    # lane_color_augment_enabled — they are additive.
+    #
+    # Tune lane_canny_low / lane_canny_high for the scene contrast:
+    #   - lower  = more sensitive, more noise
+    #   - higher = cleaner but may miss faint paint
+    # lane_canny_dilate_px thickens each detected edge before merging so
+    # single-pixel Canny responses project as small regions, not points.
+    lane_canny_augment_enabled:   true
+    lane_canny_low:               30    # Canny lower hysteresis threshold
+    lane_canny_high:              100   # Canny upper hysteresis threshold
+    lane_canny_v_min:             170   # HSV V ≥ this (same as color filter)
+    lane_canny_s_max:             70    # HSV S ≤ this (same as color filter)
+    lane_canny_dilate_px:         5     # edge thickening before merge (px)
+
     # ── Depth-based obstacle masking ─────────────────────────────────
     # After YOLOPv2 inference, pixels whose 3-D base_link height lands in the
     # obstacle band are zeroed out of both the drivable-area and lane-line masks.

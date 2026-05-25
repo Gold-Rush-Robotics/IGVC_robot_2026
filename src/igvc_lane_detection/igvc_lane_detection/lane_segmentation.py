@@ -247,6 +247,26 @@ class LaneSegmentationNode(Node):
         self.lane_color_augment_min_area_px = int(
             p('lane_color_augment_min_area_px', 25))
 
+        # ── Canny edge augmentation (white-edge recovery) ─────────────
+        # Runs Canny on the grayscale image inside the drivable area,
+        # then keeps only edges that also pass the white-paint HSV gate.
+        # The surviving edge pixels are OR-ed into the lane mask so thin
+        # lines that YOLOPv2 missed but have a clear brightness edge are
+        # still sent to the costmap.
+        # `lane_canny_dilate_px` thickens the detected edges before
+        # merging so individual Canny pixels project reliably.
+        self.lane_canny_augment_enabled = bool(
+            p('lane_canny_augment_enabled', False))
+        self.lane_canny_low             = int(p('lane_canny_low',  30))
+        self.lane_canny_high            = int(p('lane_canny_high', 100))
+        self.lane_canny_v_min           = int(p('lane_canny_v_min', 170))
+        self.lane_canny_s_max           = int(p('lane_canny_s_max',  70))
+        self.lane_canny_dilate_px       = int(p('lane_canny_dilate_px', 5))
+        _kce = self.lane_canny_dilate_px | 1
+        self._lane_canny_dilate_kernel = (
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_kce, _kce))
+            if self.lane_canny_dilate_px > 0 else None)
+
         if not self.model_weights:
             raise RuntimeError(
                 "Parameter 'model_weights' must be set to the path of "
@@ -1072,7 +1092,29 @@ class LaneSegmentationNode(Node):
                 paint = keep
             ll = ((ll | paint) > 0).astype(np.uint8)
 
-        # 4) Morphological close to bridge thin-line gaps.
+        # 4) Canny white-edge augmentation: recover thin lines the model missed.
+        if self.lane_canny_augment_enabled and da_gate is not None:
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+            # Restrict Canny to the drivable area so road boundaries/walls
+            # outside it cannot contribute edge pixels.
+            gray_gated = gray.copy()
+            gray_gated[da_gate == 0] = 0
+            edges = cv2.Canny(gray_gated,
+                              self.lane_canny_low, self.lane_canny_high,
+                              apertureSize=3, L2gradient=True)
+            # Keep only edges that also look like white paint in HSV.
+            if hsv is None:
+                hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+            white_gate = ((hsv[:, :, 2] >= self.lane_canny_v_min) &
+                          (hsv[:, :, 1] <= self.lane_canny_s_max)).astype(np.uint8)
+            white_edges = cv2.bitwise_and(edges, edges, mask=white_gate)
+            # Thicken edges before merging so single-pixel Canny responses
+            # project as small regions rather than individual points.
+            if self._lane_canny_dilate_kernel is not None and np.any(white_edges):
+                white_edges = cv2.dilate(white_edges, self._lane_canny_dilate_kernel)
+            ll = ((ll | (white_edges > 0)) > 0).astype(np.uint8)
+
+        # 5) Morphological close to bridge thin-line gaps.
         if self._lane_close_kernel is not None and np.any(ll):
             ll = cv2.morphologyEx(ll, cv2.MORPH_CLOSE, self._lane_close_kernel)
 
