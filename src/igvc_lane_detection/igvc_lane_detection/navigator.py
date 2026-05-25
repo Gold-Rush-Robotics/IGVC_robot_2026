@@ -310,6 +310,13 @@ class IGVCNavigatorNode(Node):
         self._pause_srv = self.create_service(
             SetBool, '~/set_paused', self._on_set_paused)
 
+        # ── Autonomous indicator client ────────────────────────────────────
+        self._indicator_srv = self.declare_parameter(
+            'indicator_service', '/autonomous_indicator_node/set_autonomous').value
+        self._indicator_client = self.create_client(SetBool, self._indicator_srv)
+        # Notify the indicator that autonomous mode is active on startup.
+        self._startup_indicator_timer = self.create_timer(1.0, self._startup_indicator_once)
+
         # ── Publishers ────────────────────────────────────────────────────
         self._path_pub = self.create_publisher(Path, '/lane_path', 10)
         self._status_pub = self.create_publisher(String, '/navigator/status', 10)
@@ -426,7 +433,28 @@ class IGVCNavigatorNode(Node):
         resp.success = True
         resp.message = 'navigator paused' if self._paused else 'navigator resumed'
         self.get_logger().info(f'Navigator: {resp.message}')
+        # Mirror pause state to the autonomous indicator LED.
+        self._notify_indicator(autonomous=not req.data)
         return resp
+
+    def _startup_indicator_once(self) -> None:
+        """One-shot timer: tell the indicator we are in autonomous mode."""
+        self._notify_indicator(autonomous=True)
+        # Cancel the timer so it only fires once.
+        self._startup_indicator_timer.cancel()
+
+    def _notify_indicator(self, autonomous: bool) -> None:
+        """Fire-and-forget SetBool call to the autonomous indicator node."""
+        if not self._indicator_client.service_is_ready():
+            return
+        req = SetBool.Request()
+        req.data = autonomous
+        future = self._indicator_client.call_async(req)
+        future.add_done_callback(
+            lambda f: self.get_logger().debug(
+                f'indicator set_autonomous({autonomous}): '
+                + (f'ok={f.result().success}' if f.result() is not None
+                   else 'no response')))
 
     def _on_gps(self, msg: NavSatFix) -> None:
         if msg.status.status < 0:
@@ -476,7 +504,7 @@ class IGVCNavigatorNode(Node):
         if self._goal_pending:
             return
 
-        # Honour ABORT backoff so we don't thrash NavigateToPose at ~3 Hz.
+        # honor ABORT backoff so we don't thrash NavigateToPose at ~3 Hz.
         now = self.get_clock().now()
         if self._abort_backoff_until is not None and now < self._abort_backoff_until:
             return
