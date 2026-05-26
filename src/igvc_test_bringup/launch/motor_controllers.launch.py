@@ -114,7 +114,7 @@ def generate_launch_description():
         node_robot_state_publisher,
         joint_state_broadcaster_spawner,
         diff_drive_spawner,
-        # autonomous_indicator_node,
-        # brake_control_node,
+        autonomous_indicator_node,
+        brake_control_node,
         # rviz2_delay,
     ])

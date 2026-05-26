@@ -95,9 +95,9 @@ class YolopV2:
         Letterboxed side length (stride 32).  640 matches the trained
         model; other values are untested.
     resize_hw:
-        Intermediate resize applied before letterboxing.  YOLOPv2's demo
-        resizes to 1280×720 first; we keep that for parity with the
-        reference implementation.
+        Optional intermediate resize ``(H, W)`` applied before
+        letterboxing.  ``None`` keeps the native input resolution and
+        avoids aspect-ratio distortion on non-4:3 cameras.
     """
 
     # Crop offsets used by YOLOPv2 to strip the stride-32 padding on the
@@ -111,7 +111,7 @@ class YolopV2:
         device: str = "cuda:0",
         half: bool = True,
         img_size: int = 640,
-        resize_hw: Tuple[int, int] = (720, 1280),
+        resize_hw: Optional[Tuple[int, int]] = None,
         preprocess: bool = True,
         clahe_clip: float = 2.0,
         clahe_tile: Tuple[int, int] = (8, 8),
@@ -123,7 +123,7 @@ class YolopV2:
         self.requested_device = device
         self.half = bool(half)
         self.img_size = int(img_size)
-        self.resize_hw = tuple(resize_hw)  # (H, W)
+        self.resize_hw = tuple(resize_hw) if resize_hw is not None else None  # (H, W)
         # Probability threshold applied to the lane-line head.  Lower
         # values recover thin / faint lane paint (e.g. IRL 0.5–2 inch
         # markings that activate the head only weakly) at the cost of
@@ -207,11 +207,13 @@ class YolopV2:
 
         src_h, src_w = bgr.shape[:2]
 
-        # 1) YOLOPv2 demo resizes to 1280×720 first.  Matching this keeps
-        #    model behaviour consistent with the training / demo data.
-        resized = cv2.resize(
-            bgr, (self.resize_hw[1], self.resize_hw[0]),
-            interpolation=cv2.INTER_LINEAR)
+        # 1) Optionally resize before letterbox.
+        if self.resize_hw is None:
+            resized = bgr
+        else:
+            resized = cv2.resize(
+                bgr, (self.resize_hw[1], self.resize_hw[0]),
+                interpolation=cv2.INTER_LINEAR)
 
         # 1b) Optional contrast/denoise preprocessor.
         if self.preprocess_enabled:

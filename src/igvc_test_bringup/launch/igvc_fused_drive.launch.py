@@ -12,6 +12,7 @@ def generate_launch_description() -> LaunchDescription:
     bringup = FindPackageShare('igvc_test_bringup')
     yolo_ros_pkg = FindPackageShare('yolo_bringup')
     ublox_gps_pkg = FindPackageShare('ublox_gps')
+    lidar_pkg = FindPackageShare('sllidar_ros2')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     gps_enabled = LaunchConfiguration('gps_enabled')
@@ -77,6 +78,15 @@ def generate_launch_description() -> LaunchDescription:
     lane_follower = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([bringup, 'launch', 'lane_follower.launch.py'])
+        ),
+        launch_arguments={
+            'gps_enabled': gps_enabled,
+            'use_sim_time': use_sim_time,
+        }.items(),
+    )
+    lidar_node = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([lidar_pkg, 'launch', 'sllidar_c1_launch.py'])
         ),
         launch_arguments={
             'gps_enabled': gps_enabled,
@@ -248,12 +258,13 @@ def generate_launch_description() -> LaunchDescription:
         motor_controllers,
         # lane_follower,
         lane_segmentation,
-        # gps_node,
+        gps_node,
         odom_tf_bridge_node,
         # zed_f9p_launch,
         twist_stamper_node,
         # object_detection_to_costmap_node,  # disabled: YOLO bbox obstacles
         # yolo_ros,  # disabled: only fed obstacle_costmap_node
         lidar_obstacle_costmap_node,
-        # depth_obstacle_costmap_node,  # disabled: using LiDAR only
+        depth_obstacle_costmap_node,  # disabled: using LiDAR only
+        lidar_node
     ])

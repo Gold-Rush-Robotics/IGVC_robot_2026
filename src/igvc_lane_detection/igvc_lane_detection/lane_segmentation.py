@@ -103,6 +103,8 @@ class LaneSegmentationNode(Node):
         # if the wider FOV starts producing spurious detections on the
         # sky / buildings in a specific venue.
         self.roi_enabled            = bool(p('roi_enabled',         False))
+        self.roi_left_frac          = float(p('roi_left_frac',      0.05))
+        self.roi_right_frac         = float(p('roi_right_frac',     0.95))
         self.roi_bottom_frac        = p('roi_bottom_frac',          0.95)
         self.roi_top_frac           = p('roi_top_frac',             0.55)
         self.min_detection_depth_m  = p('min_detection_depth_m',    0.5)
@@ -1142,11 +1144,30 @@ class LaneSegmentationNode(Node):
         roi = np.zeros((h, w), dtype=np.uint8)
         bot = self.roi_bottom_frac
         top = self.roi_top_frac
+
+        left = float(np.clip(self.roi_left_frac, 0.0, 1.0))
+        right = float(np.clip(self.roi_right_frac, 0.0, 1.0))
+        if right <= left:
+            self.get_logger().warn(
+                'Invalid ROI bounds: roi_right_frac must be greater than '
+                'roi_left_frac. Falling back to defaults (0.95, 0.05).',
+                throttle_duration_sec=2.0)
+            left, right = 0.05, 0.95
+
+        # Keep the historical top-width proportion (0.4 of full image when
+        # defaults are used) while allowing left/right ROI bounds to shift.
+        top_width_ratio = 0.4 / 0.9
+        center = 0.5 * (left + right)
+        half_span = 0.5 * (right - left)
+        top_half_span = half_span * top_width_ratio
+        top_left = center - top_half_span
+        top_right = center + top_half_span
+
         pts = np.array([[
-            [w * 0.05, h * bot],
-            [w * 0.30, h * top],
-            [w * 0.70, h * top],
-            [w * 0.95, h * bot],
+            [w * left, h * bot],
+            [w * top_left, h * top],
+            [w * top_right, h * top],
+            [w * right, h * bot],
         ]], dtype=np.int32)
         cv2.fillPoly(roi, pts, 255)
         out = cv2.bitwise_and(out, out, mask=roi)
@@ -1159,7 +1180,61 @@ class LaneSegmentationNode(Node):
         fy = K[1, 1] if K is not None else fx
         cx = K[0, 2] if K is not None else w_d / 2.0
         cy = K[1, 2] if K is not None else h_d / 2.0
+        info_size = self.camera_info_size.get(cam_idx)
+        if info_size is not None and info_size[0] > 0 and info_size[1] > 0:
+            sx = w_d / float(info_size[0])
+            sy = h_d / float(info_size[1])
+            fx, fy = fx * sx, fy * sy
+            cx, cy = cx * sx, cy * sy
         return fx, fy, cx, cy
+
+    def _sample_depth_with_fallback(
+        self,
+        depth: np.ndarray,
+        yd: np.ndarray,
+        xd: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        d = depth[yd, xd].astype(np.float32, copy=False)
+        direct_valid = (
+            np.isfinite(d)
+            & (d > self.min_detection_depth_m)
+            & (d < self.max_detection_depth_m)
+        )
+
+        radius = max(0, int(self.depth_search_radius_px))
+        if radius == 0 or np.all(direct_valid):
+            return d, direct_valid
+
+        valid_depth = (
+            np.isfinite(depth)
+            & (depth > self.min_detection_depth_m)
+            & (depth < self.max_detection_depth_m)
+        )
+        if not np.any(valid_depth):
+            return d, direct_valid
+
+        k = 2 * radius + 1
+        depth32 = depth.astype(np.float32, copy=False)
+        depth_sum = cv2.boxFilter(
+            np.where(valid_depth, depth32, 0.0), cv2.CV_32F, (k, k),
+            normalize=False, borderType=cv2.BORDER_CONSTANT)
+        depth_count = cv2.boxFilter(
+            valid_depth.astype(np.float32), cv2.CV_32F, (k, k),
+            normalize=False, borderType=cv2.BORDER_CONSTANT)
+
+        fallback = np.zeros_like(d, dtype=np.float32)
+        sample_count = depth_count[yd, xd]
+        has_fallback = sample_count > 0.0
+        fallback[has_fallback] = (
+            depth_sum[yd[has_fallback], xd[has_fallback]]
+            / sample_count[has_fallback]
+        )
+
+        use_fallback = ~direct_valid & has_fallback
+        if np.any(use_fallback):
+            d = d.copy()
+            d[use_fallback] = fallback[use_fallback]
+        return d, direct_valid | has_fallback
 
     def _cam_tf_components(self, cam_tf):
         if cam_tf is None:
@@ -1229,17 +1304,7 @@ class LaneSegmentationNode(Node):
         xd = xd[idx0]
         yd = yd[idx0]
 
-        # Direct depth lookup.  We rely on the YOLOPv2 lane mask being
-        # spatially extensive enough that direct sampling captures the
-        # geometry; the previous per-pixel ``np.median`` patch was the
-        # main Python-loop bottleneck and produced only marginally
-        # different points for ZED depth.
-        d = depth[yd, xd].astype(np.float32, copy=False)
-        gate = (
-            np.isfinite(d)
-            & (d > self.min_detection_depth_m)
-            & (d < self.max_detection_depth_m)
-        )
+        d, gate = self._sample_depth_with_fallback(depth, yd, xd)
         if not np.any(gate):
             return (np.empty((0, 2), dtype=np.float32),
                     np.empty((0,), dtype=np.int64))

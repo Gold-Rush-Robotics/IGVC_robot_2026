@@ -31,16 +31,21 @@ lane_segmentation_node:
     # bag-replay overlay which produced the cleanest masks).  Flip to
     # true to re-enable the trapezoidal crop defined by the two
     # *_frac params below.
-    chassis_mask_frac: 0.15
+    chassis_mask_frac: 0.0
     roi_enabled:      false
     roi_bottom_frac:  0.95
     roi_top_frac:     0.55
+    roi_left_frac:    0.0
+    roi_right_frac:   0.8
 
     # ── Depth sampling ──────────────────────────────────────────────
     depth_scale: 1.0
     min_detection_depth_m: 0.3
-    max_detection_depth_m: 8.0
-    depth_search_radius_px: 6
+    # Aggressive mapping mode: preserve almost every detected lane pixel by
+    # accepting farther ZED samples and searching a wide neighborhood for
+    # valid registered depth around thin paint.
+    max_detection_depth_m: 20.0
+    depth_search_radius_px: 40
 
     # ── Multi-camera fusion ─────────────────────────────────────────
     # With 3 cameras and ~200 ms inference each, serial _model_lock
@@ -55,8 +60,8 @@ lane_segmentation_node:
     # Pose deduplication: skip persistent map write if the robot hasn't moved
     # enough since the last write (prevents lane cells stacking on top of each
     # other when YOLO frames are slower than the robot motion). 
-    min_pose_change_m:   0.05
-    min_pose_change_rad: 0.02
+    min_pose_change_m:   0.0
+    min_pose_change_rad: 0.0
 
     # ── Persistent (fixed-frame) lane map ─────────────────────────────
     # Use odom frame (not map) so TF lookup goes directly to ZED odom
@@ -66,11 +71,13 @@ lane_segmentation_node:
     persistent_pose_source:    "odom"
     odom_topic:                "/front_zed_camera_x/zed_node/odom"
     persistent_map_size_m:    100.0
-    persistent_map_resolution: 0.20
+    persistent_map_resolution: 0.10
     persistent_map_decay:      0.998
-    persistent_hit_weight:     5.0
+    persistent_hit_weight:     10.0
     persistent_free_hit_weight: 1.0
-    persistent_threshold:     6.0
+    # Single-hit lane publishing: use the detector/color/depth gates as the
+    # filter and do not hide visible image detections behind accumulation.
+    persistent_threshold:     1.0
     persistent_free_threshold: 3.0
     persistent_max_value:    200.0
     persistent_publish_hz:     4.0
@@ -85,7 +92,7 @@ lane_segmentation_node:
     # than this (rad/s).  During tight in-place turns the depth-projected
     # lane points smear in odom; pausing writes (decay still runs) lets
     # the map self-correct as the robot settles.
-    max_yaw_rate_for_persist_update_rad_s: 0.6
+    max_yaw_rate_for_persist_update_rad_s: 0.0
 
     # Keep the synchronizer latest-only so YOLO does not chew through
     # a backlog of old RGB+depth pairs when the camera out-runs inference.
@@ -103,10 +110,9 @@ lane_segmentation_node:
     # model_weights: ""
     model_device:  "cuda:0"
     model_half:    true
-    # 384 is ~2.7× fewer FLOPs than the YOLOPv2 reference 640 with negligible
-    # accuracy loss for low-frequency lane / drivable-area features.  Raise
-    # back to 640 if far-field thin markings start dropping out.
-    model_img_size: 384
+    # 640 matches YOLOPv2 training/reference scale and improves thin/far-field
+    # lane retention versus lower runtime resolutions.
+    model_img_size: 640
 
     # ── Preprocessor (CLAHE + Gaussian blur, applied before letterbox) ──
     # Aggressive values tuned for Isaac Sim domain gap:
@@ -136,20 +142,22 @@ lane_segmentation_node:
     # Lowered from 150 → 60 px: the 150 threshold was silently dropping
     # thin / far-field lane evidence (dashed markings, oblique cameras)
     # producing visually-correct overlays but a near-empty /lane_map.
-    min_lane_component_px: 10
-    max_points_per_frame:  10000    # per-mask hard cap
+    min_lane_component_px: 1
+    max_points_per_frame:  150000   # per-mask hard cap
 
     # Lane mask dilation (kernel px in YOLOPv2 input resolution).
-    # Widens each detected lane pixel by ~3 px before projection so the
+    # Widens each detected lane pixel before projection so the
     # persistent map receives a thicker stamp and small mask gaps fade.
+    # Keep small — large values bleed the two lane lines together,
+    # filling the freespace corridor between them with lethal cells.
     # Set to 0 to disable.
-    ll_dilation_px: 20
+    ll_dilation_px: 5
 
     # Local /lane_costmap lane (100) inflation radius in metres.
     # Equivalent to a ~1 m wide drivable corridor margin (0.5 m each
     # side) — prevents the navigator from threading through gaps in
     # the raw segmentation.  Set to 0.0 to disable inflation.
-    local_lane_inflation_m: 0.2
+    local_lane_inflation_m: 0.5
 
     # ── Debug ───────────────────────────────────────────────────────
     publish_overlay: false
@@ -201,7 +209,7 @@ lane_segmentation_node:
     #   - higher = cleaner but may miss faint paint
     # lane_canny_dilate_px thickens each detected edge before merging so
     # single-pixel Canny responses project as small regions, not points.
-    lane_canny_augment_enabled:   true
+    lane_canny_augment_enabled:   false
     lane_canny_low:               30    # Canny lower hysteresis threshold
     lane_canny_high:              100   # Canny upper hysteresis threshold
     lane_canny_v_min:             170   # HSV V ≥ this (same as color filter)

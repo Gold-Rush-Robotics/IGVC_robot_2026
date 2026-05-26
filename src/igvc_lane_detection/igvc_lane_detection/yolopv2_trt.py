@@ -61,7 +61,7 @@ class YolopV2TRT:
         self,
         engine_path: str,
         img_size: int = 384,
-        resize_hw: Tuple[int, int] = (720, 1280),
+        resize_hw: Optional[Tuple[int, int]] = None,
         preprocess: bool = True,
         clahe_clip: float = 2.0,
         clahe_tile: Tuple[int, int] = (8, 8),
@@ -75,7 +75,7 @@ class YolopV2TRT:
                 "packages.  On Jetson both ship with JetPack.")
         self.engine_path = engine_path
         self.img_size = int(img_size)
-        self.resize_hw = tuple(resize_hw)
+        self.resize_hw = tuple(resize_hw) if resize_hw is not None else None
         self.preprocess_enabled = bool(preprocess)
         self.blur_ksize = tuple(blur_ksize)
         self.blur_sigma = float(blur_sigma)
@@ -194,9 +194,12 @@ class YolopV2TRT:
             raise RuntimeError("YolopV2TRT.load() must be called before infer().")
 
         src_h, src_w = bgr.shape[:2]
-        resized = cv2.resize(
-            bgr, (self.resize_hw[1], self.resize_hw[0]),
-            interpolation=cv2.INTER_LINEAR)
+        if self.resize_hw is None:
+            resized = bgr
+        else:
+            resized = cv2.resize(
+                bgr, (self.resize_hw[1], self.resize_hw[0]),
+                interpolation=cv2.INTER_LINEAR)
         if self.preprocess_enabled:
             resized = self._preprocess(resized)
 
