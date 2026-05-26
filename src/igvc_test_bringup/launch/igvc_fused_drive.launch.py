@@ -2,7 +2,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
 
@@ -12,12 +12,14 @@ def generate_launch_description() -> LaunchDescription:
     bringup = FindPackageShare('igvc_test_bringup')
     yolo_ros_pkg = FindPackageShare('yolo_bringup')
     ublox_gps_pkg = FindPackageShare('ublox_gps')
+    lidar_pkg = FindPackageShare('sllidar_ros2')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     gps_enabled = LaunchConfiguration('gps_enabled')
     hardware_interface = LaunchConfiguration('hardware_interface')
     sim_camera_ports = LaunchConfiguration('sim_camera_ports')
     sim_camera_address = LaunchConfiguration('sim_camera_address')
+    model_weights = LaunchConfiguration('model_weights')
     is_isaac_drive = PythonExpression([
         "'", hardware_interface, "' == 'IsaacDriveHardware'"
     ])
@@ -71,6 +73,7 @@ def generate_launch_description() -> LaunchDescription:
             'gps_enabled': gps_enabled,
             'force_identity_map_to_odom': 'true',
             'use_sim_time': use_sim_time,
+            'model_weights': model_weights,
         }.items(),
     )
 
@@ -224,6 +227,14 @@ def generate_launch_description() -> LaunchDescription:
             {'publish_hz': 5.0},
         ],
     )
+    lidar_node = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([lidar_pkg, 'launch', 'sllidar_c1_launch.py'])
+        ),
+        launch_arguments={
+            'frame_id': 'top_rplidar_c1_link',
+        }.items(),
+    )
 
 
     return LaunchDescription([
@@ -243,6 +254,13 @@ def generate_launch_description() -> LaunchDescription:
             default_value='CanInterface',
             description='Hardware interface used by motor controllers.',
         ),
+        DeclareLaunchArgument(
+            'model_weights',
+            default_value=EnvironmentVariable(
+                'YOLOPV2_WEIGHTS',
+                default_value='/root/ros2_ws/src/IGVC_robot_2026/models/yolopv2_384.engine'),
+            description='Absolute path to YOLOPv2 weights (.engine for TensorRT, .pt for TorchScript).'
+        ),
         # zed_multi_fused_odom,
         # teleop,
         motor_controllers,
@@ -254,6 +272,6 @@ def generate_launch_description() -> LaunchDescription:
         twist_stamper_node,
         # object_detection_to_costmap_node,  # disabled: YOLO bbox obstacles
         # yolo_ros,  # disabled: only fed obstacle_costmap_node
-        lidar_obstacle_costmap_node,
-        # depth_obstacle_costmap_node,  # disabled: using LiDAR only
+        # lidar_obstacle_costmap_node,  # disabled: obstacles shorter than lidar plane
+        depth_obstacle_costmap_node,
     ])

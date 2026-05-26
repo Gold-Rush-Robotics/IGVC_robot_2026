@@ -189,6 +189,13 @@ class IGVCNavigatorNode(Node):
         self._path_change_tolerance_rad = self._p('path_change_tolerance_rad', 0.25)
         self._max_path_lateral_jump_m = self._p('max_path_lateral_jump_m', 0.35)
         self._centreline_gap_tolerance_m = self._p('centreline_gap_tolerance_m', 0.25)
+        # Hysteresis: discount Dijkstra edge cost for cells lying near the
+        # previously chosen centreline so the planner commits to a side of
+        # an obstacle instead of flipping each frame when both sides are
+        # nearly equal cost.  Small enough that genuinely better routes
+        # still win.
+        self._prev_path_bias_weight   = float(self._p('prev_path_bias_weight',   0.4))
+        self._prev_path_bias_radius_m = float(self._p('prev_path_bias_radius_m', 0.30))
         self._fallback_path_length_m = self._p('fallback_path_length_m', 2.0)
         self._allow_straight_fallback = self._p('allow_straight_fallback', False)
         self._max_odom_age = self._p('max_odom_age_sec', self._max_costmap_age)
@@ -227,6 +234,10 @@ class IGVCNavigatorNode(Node):
         self._last_lane_wp_time = None
         self._last_goal_send_time = None
         self._last_sent_path: Optional[Path] = None
+        # Cached previous accepted centreline in odom frame.  Used by
+        # _extract_centreline() as a soft cost bias so the planner sticks
+        # with its chosen pass side instead of flipping each cycle.
+        self._prev_centreline_odom: Optional[np.ndarray] = None
         self._last_lane_path_reason = 'not evaluated yet'
         # Backoff: don't re-send a new goal immediately after an ABORT.
         self._abort_backoff_until = None
@@ -373,6 +384,8 @@ class IGVCNavigatorNode(Node):
             ('path_change_tolerance_rad', 0.10),  # tightened from 0.25
             ('max_path_lateral_jump_m', 0.35),
             ('centreline_gap_tolerance_m', 0.25),
+            ('prev_path_bias_weight',   0.4),
+            ('prev_path_bias_radius_m', 0.30),
             ('fallback_path_length_m', 2.0),
             ('allow_straight_fallback', False),
             ('max_costmap_age_sec', 2.0),

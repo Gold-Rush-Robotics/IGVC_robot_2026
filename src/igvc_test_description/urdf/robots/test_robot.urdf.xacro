@@ -10,7 +10,7 @@
     <xacro:robot_body />
 
     <xacro:zed_camera_x parent="chassis_link" prefix="left">
-        <origin xyz="0.361 0.18 0.248" rpy="0 ${3.14/18} ${3.14*95/180}"/>
+        <origin xyz="0.361 0.18 0.248" rpy="0 ${3.14/18} ${3.14/4}"/>
     </xacro:zed_camera_x>
 
     <xacro:zed_camera_x parent="chassis_link" prefix="front">
@@ -18,7 +18,7 @@
     </xacro:zed_camera_x>
 
     <xacro:zed_camera_x parent="chassis_link" prefix="right">
-        <origin xyz="0.359 -0.195 0.251" rpy="0 ${3.14/18} -${3.14*95/180}"/>
+        <origin xyz="0.359 -0.195 0.251" rpy="0 ${3.14/18} -${3.14/4}"/>
     </xacro:zed_camera_x>
 
     <xacro:rplidar_c1 parent="chassis_link" prefix="top">

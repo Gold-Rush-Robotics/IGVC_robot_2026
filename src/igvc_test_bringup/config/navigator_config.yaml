@@ -29,10 +29,25 @@ igvc_navigator:
     allow_straight_fallback: false
 
     # Obstacle map for centreline extraction overlay.
-    # Switched from /obstacle_map (YOLO bbox) to /lidar_obstacle_map (/scan).
-    obstacle_map_topic: "/lidar_obstacle_map"
+    obstacle_map_topic: "/depth_obstacle_map"
 
     # Legacy fallback if direct FollowPath bringup needs to be disabled.
     waypoint_horizon_m: 1.8
-    replan_dist_m: 0.6
+    # Increased from 0.6 m: replanning every 0.6 m let the planner keep
+    # switching sides on each trigger.  At 2.0 m the robot travels further
+    # along the committed route before it can pick a different side.
+    replan_dist_m: 2.0
+    # Raised from 0.25 m: small path deviations near obstacle inflation no
+    # longer trigger a full replan — prevents flip-flopping when both side
+    # paths have similar cost at the edge of the inflation gradient.
+    path_change_tolerance_m: 0.8
+    path_change_tolerance_rad: 0.4
     lane_hold_sec: 1.0
+
+    # Centreline hysteresis: soft Dijkstra cost discount for cells near the
+    # previously chosen centreline.  Keeps the planner committed to a chosen
+    # obstacle-pass side while still consuming fresh lane evidence every
+    # cycle.  Weight is small relative to clearance/unknown penalties so a
+    # genuinely better route still wins.
+    prev_path_bias_weight: 0.4
+    prev_path_bias_radius_m: 0.30

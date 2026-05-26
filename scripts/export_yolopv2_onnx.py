@@ -50,7 +50,9 @@ def main() -> int:
     ap.add_argument("--weights", required=True, help="Path to yolopv2.pt (TorchScript)")
     ap.add_argument("--output",  required=True, help="Output .onnx path")
     ap.add_argument("--img-size", type=int, default=384,
-                    help="Square input side length (stride 32). Default 384.")
+                    help="Input height in pixels (stride 32). Default 384.")
+    ap.add_argument("--img-width", type=int, default=None,
+                    help="Input width in pixels (stride 32). Defaults to --img-size (square).")
     ap.add_argument("--opset", type=int, default=17)
     ap.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--half", action="store_true",
@@ -63,19 +65,22 @@ def main() -> int:
         print(f"weights not found: {weights}", file=sys.stderr)
         return 1
     output.parent.mkdir(parents=True, exist_ok=True)
-    if args.img_size % 32 != 0:
-        print(f"img-size must be a multiple of 32 (got {args.img_size})", file=sys.stderr)
-        return 1
+    img_h = args.img_size
+    img_w = args.img_width if args.img_width is not None else img_h
+    for dim, name in ((img_h, 'img-size'), (img_w, 'img-width')):
+        if dim % 32 != 0:
+            print(f"{name} must be a multiple of 32 (got {dim})", file=sys.stderr)
+            return 1
 
     device = torch.device(args.device)
-    print(f"[export] device={device}  half={args.half}  size={args.img_size}")
+    print(f"[export] device={device}  half={args.half}  size={img_h}x{img_w}")
 
     jit = torch.jit.load(str(weights), map_location=device).eval()
     if args.half and device.type == "cuda":
         jit = jit.half()
     model = _SegOnly(jit).to(device).eval()
 
-    dummy = torch.zeros(1, 3, args.img_size, args.img_size, device=device)
+    dummy = torch.zeros(1, 3, img_h, img_w, device=device)
     if args.half and device.type == "cuda":
         dummy = dummy.half()
 
@@ -84,8 +89,17 @@ def main() -> int:
         seg, ll = model(dummy)
     print(f"[export] seg shape={tuple(seg.shape)}  ll shape={tuple(ll.shape)}")
 
+    # torch.onnx.export's internal ONNXTracedModule cannot re-enter a
+    # torch.jit.ScriptModule that is nested inside an nn.Module wrapper.
+    # Fix: pre-trace with torch.jit.trace first (which CAN descend into
+    # ScriptModules), then pass the resulting ScriptModule to onnx.export.
+    # The exporter detects a ScriptModule and converts its TorchScript IR
+    # to ONNX directly instead of trying to re-trace it.
+    with torch.no_grad():
+        traced = torch.jit.trace(model, dummy, check_trace=False)
+
     torch.onnx.export(
-        model,
+        traced,
         dummy,
         str(output),
         input_names=["images"],

@@ -9,6 +9,9 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogI
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, TextSubstitution
 
+lidar_pkg = FindPackageShare('sllidar_ros2')
+
+
 
 def _parse_array_param(raw_value: str):
     value = raw_value.replace('[', '').replace(']', '').replace(' ', '')
@@ -215,7 +218,28 @@ def launch_setup(context, *args, **kwargs):
         )
 
     return actions
+    lidar_node = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([lidar_pkg, 'launch', 'sllidar_c1_launch.py'])
+        ),
+        launch_arguments={
+            'frame_id': 'top_rplidar_c1_link',
+        }.items(),
+    )
 
+    gps_node = Node(
+        package='ublox_gps',
+        executable='ublox_gps_node',
+        name='ublox_gps_node',
+        output='screen',
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            {'publish_odom': False},
+            # {'publish_tf': True},
+            gps_config,
+        ],
+    )
+    
 
 def generate_launch_description():
     return LaunchDescription(
@@ -288,5 +312,7 @@ def generate_launch_description():
                 description='Directory for per-camera ZED area-memory files when area memory is enabled.',
             ),
             OpaqueFunction(function=launch_setup),
+            lidar_node,
+            gps_node,
         ]
     )

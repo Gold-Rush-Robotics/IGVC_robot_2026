@@ -68,6 +68,7 @@ class YolopV2TRT:
         blur_ksize: Tuple[int, int] = (5, 5),
         blur_sigma: float = 0.0,
         lane_threshold: float = 0.5,
+        _shared_engine=None,
     ) -> None:
         if trt is None or cudart is None:
             raise RuntimeError(
@@ -83,6 +84,12 @@ class YolopV2TRT:
         self._clahe = cv2.createCLAHE(
             clipLimit=float(clahe_clip), tileGridSize=tuple(clahe_tile))
         self._stride = 32
+
+        # If a pre-deserialised engine object is supplied the file-read step
+        # in load() is skipped — this lets multiple YolopV2TRT instances share
+        # one set of engine weights in GPU memory while each gets its own
+        # execution context and CUDA stream.
+        self._shared_engine = _shared_engine  # type: ignore[name-defined]
 
         self._logger: Optional[trt.Logger] = None
         self._engine: Optional[trt.ICudaEngine] = None
@@ -100,13 +107,40 @@ class YolopV2TRT:
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def deserialize_engine(engine_path: str) -> object:
+        """Deserialise a TRT engine file and return the raw engine object.
+
+        The returned engine can be passed as ``_shared_engine`` to multiple
+        ``YolopV2TRT`` instances so the weights occupy GPU memory only once.
+        """
+        if trt is None or cudart is None:
+            raise RuntimeError(
+                "TensorRT runtime requires the 'tensorrt' and 'cuda-python' "
+                "packages.  On Jetson both ship with JetPack.")
+        logger = trt.Logger(trt.Logger.WARNING)
+        runtime = trt.Runtime(logger)
+        with open(engine_path, "rb") as f:
+            engine = runtime.deserialize_cuda_engine(f.read())
+        if engine is None:
+            raise RuntimeError(f"Failed to load engine: {engine_path}")
+        return engine
+
     def load(self) -> None:
+        if trt is None or cudart is None:
+            raise RuntimeError(
+                "TensorRT runtime requires the 'tensorrt' and 'cuda-python' "
+                "packages.  On Jetson both ship with JetPack.")
         self._logger = trt.Logger(trt.Logger.WARNING)
-        runtime = trt.Runtime(self._logger)
-        with open(self.engine_path, "rb") as f:
-            self._engine = runtime.deserialize_cuda_engine(f.read())
-        if self._engine is None:
-            raise RuntimeError(f"Failed to load engine: {self.engine_path}")
+        if self._shared_engine is not None:
+            # Reuse a pre-deserialised engine — weights stay in GPU memory once.
+            self._engine = self._shared_engine
+        else:
+            runtime = trt.Runtime(self._logger)
+            with open(self.engine_path, "rb") as f:
+                self._engine = runtime.deserialize_cuda_engine(f.read())
+            if self._engine is None:
+                raise RuntimeError(f"Failed to load engine: {self.engine_path}")
         self._context = self._engine.create_execution_context()
 
         err, self._stream = cudart.cudaStreamCreate()

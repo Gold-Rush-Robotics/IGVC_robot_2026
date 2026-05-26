@@ -274,69 +274,93 @@ class LaneSegmentationNode(Node):
                 "$(repo)/models/yolopv2.pt — fetch with "
                 "src/igvc_lane_detection/scripts/fetch_yolopv2_weights.sh.")
 
-        # ── Initialise segmentation model ────────────────────────────
-        # Backend dispatch: ``.engine`` → TensorRT runtime; anything else
-        # → TorchScript via the YolopV2 wrapper.
+        # ── Read camera count now so we can build one model per camera ────
+        # These are also used later for the subscription setup; storing them
+        # as instance variables avoids a second declare_parameter call.
+        self._num_cameras_param  = p('num_cameras',        1)
+        self._cam_topics_param   = p('camera_topics',      ['/camera/image_raw'])
+        self._depth_topics_param = p('depth_topics',       ['/camera/depth/image_raw'])
+        self._info_topics_param  = p('camera_info_topics', ['/camera/camera_info'])
+        _num_cams = min(
+            self._num_cameras_param,
+            len(self._cam_topics_param),
+            len(self._depth_topics_param),
+            len(self._info_topics_param))
+
+        # ── Initialise segmentation models (one per camera, truly parallel) ─
+        # Backend dispatch: ``.engine`` → TensorRT; anything else → TorchScript.
+        # TRT path: engine weights are deserialised once; each camera gets its
+        # own IExecutionContext + cudaStream so all three can overlap on the GPU.
+        # TorchScript path: three separate model instances (JIT forwards are not
+        # re-entrant on a shared instance) each loaded independently.
         weights_lower = str(self.model_weights).lower()
         use_trt = weights_lower.endswith('.engine') or weights_lower.endswith('.trt')
         self.get_logger().info(
             f"Loading YOLOPv2 from '{self.model_weights}' "
             f"(backend={'tensorrt' if use_trt else 'torchscript'}, "
-            f"half={self.model_half})…")
+            f"half={self.model_half}, instances={_num_cams})…")
         if use_trt:
             from .yolopv2_trt import YolopV2TRT
-            self.model = YolopV2TRT(
-                engine_path=self.model_weights,
-                img_size=self.model_img_size,
-                preprocess=self.model_preprocess,
-                clahe_clip=self.model_clahe_clip,
-                clahe_tile=tuple(self.model_clahe_tile),
-                blur_ksize=tuple(self.model_blur_ksize),
-                blur_sigma=self.model_blur_sigma,
-                lane_threshold=self.lane_threshold,
-            )
+            # Deserialise once — weights live in GPU memory once regardless
+            # of the number of cameras.
+            self.get_logger().info("Deserialising TRT engine (shared across cameras)…")
+            _shared_engine = YolopV2TRT.deserialize_engine(self.model_weights)
+            self._models = []
+            for _i in range(_num_cams):
+                _m = YolopV2TRT(
+                    engine_path=self.model_weights,
+                    img_size=self.model_img_size,
+                    preprocess=self.model_preprocess,
+                    clahe_clip=self.model_clahe_clip,
+                    clahe_tile=tuple(self.model_clahe_tile),
+                    blur_ksize=tuple(self.model_blur_ksize),
+                    blur_sigma=self.model_blur_sigma,
+                    lane_threshold=self.lane_threshold,
+                    _shared_engine=_shared_engine,
+                )
+                _m.load()
+                self._models.append(_m)
         else:
-            self.model = YolopV2(
-                weights_path=self.model_weights,
-                device=self.model_device,
-                half=self.model_half,
-                img_size=self.model_img_size,
-                preprocess=self.model_preprocess,
-                clahe_clip=self.model_clahe_clip,
-                clahe_tile=tuple(self.model_clahe_tile),
-                blur_ksize=tuple(self.model_blur_ksize),
-                blur_sigma=self.model_blur_sigma,
-                lane_threshold=self.lane_threshold,
-            )
-        self.model.load()
-        if self.model.fallback_warning:
-            self.get_logger().warn(self.model.fallback_warning)
+            self._models = []
+            for _i in range(_num_cams):
+                _m = YolopV2(
+                    weights_path=self.model_weights,
+                    device=self.model_device,
+                    half=self.model_half,
+                    img_size=self.model_img_size,
+                    preprocess=self.model_preprocess,
+                    clahe_clip=self.model_clahe_clip,
+                    clahe_tile=tuple(self.model_clahe_tile),
+                    blur_ksize=tuple(self.model_blur_ksize),
+                    blur_sigma=self.model_blur_sigma,
+                    lane_threshold=self.lane_threshold,
+                )
+                _m.load()
+                if _m.fallback_warning:
+                    self.get_logger().warn(_m.fallback_warning)
+                self._models.append(_m)
+        _m0 = self._models[0]
         self.get_logger().info(
-            f"YOLOPv2 ready on {self.model.device} "
-            f"(half={self.model.half}, img_size={self.model_img_size}).")
+            f"YOLOPv2 ready — {_num_cams} instance(s) on {_m0.device} "
+            f"(half={_m0.half}, img_size={self.model_img_size}).")
 
         self._init_persistent_map()
 
         # ── Multi-camera threading ────────────────────────────────────
-        # YOLOPv2 GPU inference is not thread-safe for concurrent calls, so
-        # a lock serialises inference while allowing all camera callbacks to
-        # be scheduled in parallel by the MultiThreadedExecutor.
-        self._model_lock = threading.Lock()
-        # _state_lock guards _cam_state, _phits, _pfree, latest_grid and all
-        # derived publish calls so concurrent post-inference writes are safe.
+        # Each camera has its own YOLOPv2 instance + CUDA stream, so
+        # inference runs concurrently with no serialisation lock needed.
+        # _state_lock still guards the shared map / grid state.
         self._state_lock = threading.Lock()
         # ReentrantCallbackGroup lets the executor run camera callbacks
         # concurrently instead of forcing a single-active-callback policy.
         self._cam_cb_group = ReentrantCallbackGroup()
 
         # ── Camera subscriptions ─────────────────────────────────────
-        num_cameras  = p('num_cameras',        1)
-        cam_topics   = p('camera_topics',      ['/camera/image_raw'])
-        depth_topics = p('depth_topics',       ['/camera/depth/image_raw'])
-        info_topics  = p('camera_info_topics', ['/camera/camera_info'])
-
-        num_cameras = min(
-            num_cameras, len(cam_topics), len(depth_topics), len(info_topics))
+        # Topic lists were already read during model init above.
+        num_cameras  = _num_cams
+        cam_topics   = self._cam_topics_param
+        depth_topics = self._depth_topics_param
+        info_topics  = self._info_topics_param
 
         self._camera_topic_pairs = {
             i: (str(cam_topics[i]), str(depth_topics[i]))
@@ -754,10 +778,9 @@ class LaneSegmentationNode(Node):
             self.get_logger().error(f'Decode error: {e}')
             return
 
-        # ── Run segmentation model ──
+        # ── Run segmentation model (this camera's dedicated instance + stream) ──
         try:
-            with self._model_lock:
-                da_mask, ll_mask = self.model.infer(bgr)
+            da_mask, ll_mask = self._models[cam_idx].infer(bgr)
         except Exception as e:
             self.get_logger().error(
                 f'YOLOPv2 inference error: {e}',
@@ -861,8 +884,16 @@ class LaneSegmentationNode(Node):
             if fused_free.shape[0] > 0 or fused_lane.shape[0] > 0:
                 self.latest_grid = self._build_grid(
                     fused_free, fused_lane, process_stamp)
+                # Write only THIS camera's freshly-projected points to the
+                # persistent map, stamped with the original capture time so
+                # the TF lookup recovers the exact robot pose at that moment.
+                # Writing the full fused set here was the bug: with 3 cameras
+                # serialised through the model lock (~200 ms each), camera 0's
+                # points would be written 3× — once per callback — each time
+                # with a different robot pose, creating the spiral artefact in
+                # the persistent map.
                 self._update_persistent_map(
-                    fused_free, fused_lane, rgb_msg.header.stamp)
+                    free_pts, lane_pts, rgb_msg.header.stamp)
                 if self.local_from_persistent:
                     self._publish_local_costmap_from_persistent()
                 else:

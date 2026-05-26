@@ -6,16 +6,16 @@ lane_segmentation_node:
     num_cameras: 3
     camera_topics:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
-      - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
-      - "/right_zed_camera_x/zed_node/rgb/color/rect/image"
+      # - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
+      # - "/right_zed_camera_x/zed_node/rgb/color/rect/image"
     depth_topics:
       - "/front_zed_camera_x/zed_node/depth/depth_registered"
-      - "/left_zed_camera_x/zed_node/depth/depth_registered"
-      - "/right_zed_camera_x/zed_node/depth/depth_registered"
+      # - "/left_zed_camera_x/zed_node/depth/depth_registered"
+      # - "/right_zed_camera_x/zed_node/depth/depth_registered"
     camera_info_topics:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
-      - "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
-      - "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+      # - "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+      # - "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
 
     # ── Frames ──────────────────────────────────────────────────────
     base_frame: "base_link"
@@ -98,15 +98,16 @@ lane_segmentation_node:
     # model_weights is intentionally empty — the launch file fills it
     # in from $YOLOPV2_WEIGHTS or the model_weights launch argument so
     # the absolute path stays out of source control.
-    # model_weights: "/ros2_ws/src/IGVC_robot_2026/models/yolopv2.pt"
-    model_weights: "/home/nitin-5090/Documents/DevEnv/jazzy_ws/IGVC_robot_2026/models/yolopv2.pt"
-    # model_weights: ""
+    # TensorRT engine (FP16, built with trtexec --fp16 --onnx=yolopv2_384.onnx).
+    # Extension .engine triggers the TRT backend in lane_segmentation.py.
+    # To revert to TorchScript, point this at yolopv2.pt instead.
+    model_weights: "/root/ros2_ws/src/IGVC_robot_2026/models/yolopv2_640x480.engine"
+    # model_weights: "/root/ros2_ws/src/IGVC_robot_2026/models/yolopv2.pt"
     model_device:  "cuda:0"
     model_half:    true
-    # 384 is ~2.7× fewer FLOPs than the YOLOPv2 reference 640 with negligible
-    # accuracy loss for low-frequency lane / drivable-area features.  Raise
-    # back to 640 if far-field thin markings start dropping out.
-    model_img_size: 384
+    # Must match the --img-size used when building the engine (640x480).
+    # Changing this without rebuilding the engine will crash at load time.
+    model_img_size: 640
 
     # ── Preprocessor (CLAHE + Gaussian blur, applied before letterbox) ──
     # Aggressive values tuned for Isaac Sim domain gap:
@@ -143,13 +144,13 @@ lane_segmentation_node:
     # Widens each detected lane pixel by ~3 px before projection so the
     # persistent map receives a thicker stamp and small mask gaps fade.
     # Set to 0 to disable.
-    ll_dilation_px: 20
+    ll_dilation_px: 50
 
     # Local /lane_costmap lane (100) inflation radius in metres.
     # Equivalent to a ~1 m wide drivable corridor margin (0.5 m each
     # side) — prevents the navigator from threading through gaps in
     # the raw segmentation.  Set to 0.0 to disable inflation.
-    local_lane_inflation_m: 0.2
+    local_lane_inflation_m: 0.5
 
     # ── Debug ───────────────────────────────────────────────────────
     publish_overlay: false
@@ -169,7 +170,7 @@ lane_segmentation_node:
     # (default torch.round = 0.5) so faint thin paint is recovered.
     # `lane_morph_close_px` bridges 1-2 px gaps along thin lines so the
     # min_lane_component_px filter does not reject dashed segments.
-    lane_threshold:               0.15
+    lane_threshold:               0.35
     lane_in_drivable_only:        true
     lane_da_dilate_px:            30
     lane_color_filter_enabled:    true
@@ -201,7 +202,7 @@ lane_segmentation_node:
     #   - higher = cleaner but may miss faint paint
     # lane_canny_dilate_px thickens each detected edge before merging so
     # single-pixel Canny responses project as small regions, not points.
-    lane_canny_augment_enabled:   true
+    lane_canny_augment_enabled:   false  # disabled: not validated on real hardware
     lane_canny_low:               30    # Canny lower hysteresis threshold
     lane_canny_high:              100   # Canny upper hysteresis threshold
     lane_canny_v_min:             170   # HSV V ≥ this (same as color filter)
