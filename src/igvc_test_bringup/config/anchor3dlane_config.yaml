@@ -1,0 +1,95 @@
+anchor3dlane_node:
+  ros__parameters:
+
+    # ── Model ─────────────────────────────────────────────────────────────
+    # Full path to the Anchor3DLane++ mmcv config .py and checkpoint .pth.
+    # The config must live inside the cloned Anchor3DLane repo so the custom
+    # mmseg ops are importable.  Set anchor3dlane_root to the repo root.
+    #
+    # Quick start (camera-only, ResNet-18, 360×480):
+    #   git clone -b anchor3dlane++ https://github.com/tusen-ai/Anchor3DLane ~/anchor3dlane
+    #   huggingface-cli download nowherespyfly/anchor3dlane \
+    #       anchor3dlane_plusplus_r18_360x480.pth --local-dir ~/anchor3dlane_weights/
+    # ResNet-18 + SECOND (recommended — best latency on Orin, F1=59.8)
+    anchor3dlane_root: "/root/anchor3dlane"
+    # config_path:       "/root/anchor3dlane/configs/openlane/anchor3dlane_mf.py"
+    # checkpoint_path:   "/root/anchor3dlane_weights/openlane_anchor3dlane++_r18_se.pth"
+
+    # ResNet-50 camera-only (recommended for Jetson/Python3.12: no spconv)
+    config_path:     "/root/anchor3dlane/configs/openlane/anchor3dlane_iter_r50_mf.py"
+    checkpoint_path: "/root/anchor3dlane_weights/openlane_anchor3dlane++_r50_se.pth"
+   # e.g. /home/user/anchor3dlane_weights/anchor3dlane_plusplus_r18_360x480.pth
+    model_device: "cuda:0"
+    model_half:   true
+    input_h: 360
+    input_w: 480
+    # Confidence gate — lower for thin IGVC paint (0.3), higher for fewer FP (0.5)
+    score_threshold: 0.4
+
+    # ── Camera configuration ───────────────────────────────────────────────
+    # Front ZED X only (one camera is sufficient for the lane task; add more if needed)
+    num_cameras: 1
+    camera_topics:
+      - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
+    camera_info_topics:
+      - "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+
+    # Optional: explicitly name the TF frames for each camera.
+    # If empty the node falls back to the frame_id in the CameraInfo message.
+    camera_frames:
+      - ""    # e.g. "front_zed_camera_x_left_camera_optical_frame"
+
+    # ── Frames ────────────────────────────────────────────────────────────
+    base_frame:           "base_link"
+    occupancy_grid_frame: "base_link"
+
+    # ── Local rolling costmap ──────────────────────────────────────────────
+    grid_resolution: 0.05   # m/cell
+    grid_width:     10.0    # lateral extent (m), centred on robot
+    grid_height:    10.0    # forward extent (m)
+
+    # ── Detection range filter (applied in base_link after TF) ────────────
+    min_fwd_m:  0.3     # discard points closer than this (m)
+    max_fwd_m: 30.0     # discard points farther than this (m)
+    max_lat_m: 12.0     # discard points laterally beyond this (m)
+
+    # ── Frame staleness gate ───────────────────────────────────────────────
+    # Frames older than this are dropped before inference.
+    # At 15 fps the model produces a frame every 67 ms; allow 1.5 s leeway
+    # for startup / GPU warm-up.
+    max_frame_age_sec: 1.5
+    keep_last_grid_on_miss: true
+
+    # ── Persistent (fixed-frame) lane map ─────────────────────────────────
+    # Mirror the lane_segmentation_config settings so both nodes produce
+    # compatible maps when run interchangeably.
+    persistent_map_frame:      "odom"
+    persistent_pose_source:    "odom"
+    odom_topic:                "/front_zed_camera_x/zed_node/odom"
+    persistent_map_size_m:    100.0
+    persistent_map_resolution: 0.20
+    persistent_map_decay:      0.998
+    persistent_hit_weight:     5.0
+    persistent_free_hit_weight: 0.0    # anchor3dlane has no free-space head
+    persistent_threshold:      6.0
+    persistent_free_threshold:  3.0
+    persistent_max_value:    200.0
+    persistent_publish_hz:     2.0
+    persistent_clear_radius_m: 0.8
+    persistent_publish_clear_robot: false
+    persistent_skip_publish_without_subscribers: true
+    local_costmap_from_persistent: true
+    local_costmap_publish_hz: 10.0
+    local_back_nogo_buffer_m: 0.30
+    local_lane_inflation_m:   0.0
+
+    # Pose deduplication: skip persistent write if not moved enough
+    min_pose_change_m:   0.05
+    min_pose_change_rad: 0.02
+
+    # Skip writes during fast in-place turns (rad/s)
+    max_yaw_rate_for_persist_update_rad_s: 0.6
+
+    # ── Visualisation ─────────────────────────────────────────────────────
+    publish_overlay: true
+    lane_marker_topic: "/lane_segmentation/lanes"

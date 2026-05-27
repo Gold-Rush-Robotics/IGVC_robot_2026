@@ -7,9 +7,15 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, TextSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, TextSubstitution
+from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
+
 
 lidar_pkg = FindPackageShare('sllidar_ros2')
+bringup = FindPackageShare('igvc_test_bringup')
+gps_config = PathJoinSubstitution([bringup, 'config', 'zed_f9p.yaml'])
+
 
 
 
@@ -218,6 +224,10 @@ def launch_setup(context, *args, **kwargs):
         )
 
     return actions
+
+    
+
+def generate_launch_description():
     lidar_node = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([lidar_pkg, 'launch', 'sllidar_c1_launch.py'])
@@ -233,15 +243,11 @@ def launch_setup(context, *args, **kwargs):
         name='ublox_gps_node',
         output='screen',
         parameters=[
-            {'use_sim_time': use_sim_time},
             {'publish_odom': False},
             # {'publish_tf': True},
             gps_config,
         ],
     )
-    
-
-def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument(

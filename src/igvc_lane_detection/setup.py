@@ -45,6 +45,7 @@ setup(
             'mission_planner_node = igvc_lane_detection.mission_planner:main',
             'multi_camera_lane_detection_node = igvc_lane_detection.multi_camera_lane_detection:main',
             'lane_segmentation_node = igvc_lane_detection.lane_segmentation:main',
+            'anchor3dlane_node = igvc_lane_detection.anchor3dlane_node:main',
             'constant_cmd_vel_node = igvc_lane_detection.constant_cmd_vel:main',
             'track_ground_truth_node = igvc_lane_detection.track_ground_truth_node:main',
             'lane_eval_node = igvc_lane_detection.lane_eval_node:main',

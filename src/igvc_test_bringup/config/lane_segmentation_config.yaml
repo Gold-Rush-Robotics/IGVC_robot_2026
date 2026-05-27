@@ -101,8 +101,8 @@ lane_segmentation_node:
     # TensorRT engine (FP16, built with trtexec --fp16 --onnx=yolopv2_384.onnx).
     # Extension .engine triggers the TRT backend in lane_segmentation.py.
     # To revert to TorchScript, point this at yolopv2.pt instead.
-    model_weights: "/root/ros2_ws/src/IGVC_robot_2026/models/yolopv2_640x480.engine"
-    # model_weights: "/root/ros2_ws/src/IGVC_robot_2026/models/yolopv2.pt"
+    # model_weights: "/root/ros2_ws/src/IGVC_robot_2026/models/yolopv2_640x480.engine"
+    model_weights: "/root/ros2_ws/src/IGVC_robot_2026/models/yolopv2.pt"
     model_device:  "cuda:0"
     model_half:    true
     # Must match the --img-size used when building the engine (640x480).
@@ -216,8 +216,8 @@ lane_segmentation_node:
     #
     # Tune obstacle_z_min_m upward if ground reflections still trigger false mask.
     # Tune obstacle_dilation_px upward if silhouette halo edges remain visible.
-    obstacle_mask_enabled:    false
-    obstacle_z_min_m:         0.20    # base_link Z above this → obstacle (not ground)
+    obstacle_mask_enabled:    true
+    obstacle_z_min_m:         0.10    # base_link Z above this → obstacle (not ground)
     obstacle_z_max_m:         2.5     # above this → sky/ceiling, ignore
     obstacle_depth_min_m:     0.3     # ignore very-close depth noise
     obstacle_depth_max_m:     6.0     # ignore distant background objects

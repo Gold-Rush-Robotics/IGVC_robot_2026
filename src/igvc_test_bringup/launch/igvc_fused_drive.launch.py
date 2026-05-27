@@ -23,7 +23,6 @@ def generate_launch_description() -> LaunchDescription:
     is_isaac_drive = PythonExpression([
         "'", hardware_interface, "' == 'IsaacDriveHardware'"
     ])
-    gps_config = PathJoinSubstitution([bringup, 'config', 'zed_f9p.yaml'])
     
 
     zed_multi_fused_odom = IncludeLaunchDescription(
@@ -114,18 +113,7 @@ def generate_launch_description() -> LaunchDescription:
             {'warn_odom_age_sec': 0.5},
         ],
     )
-    gps_node = Node(
-        package='ublox_gps',
-        executable='ublox_gps_node',
-        name='ublox_gps_node',
-        output='screen',
-        parameters=[
-            {'use_sim_time': use_sim_time},
-            {'publish_odom': True},
-            # {'publish_tf': True},
-            gps_config,
-        ],
-    )
+
      # Bridge Nav2 Twist output to the stamped cmd_vel expected by ros2_control.
     twist_stamper_node = Node(
         package='twist_stamper',
@@ -226,14 +214,6 @@ def generate_launch_description() -> LaunchDescription:
             {'inflate_radius_m': 0.20},
             {'publish_hz': 5.0},
         ],
-    )
-    lidar_node = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution([lidar_pkg, 'launch', 'sllidar_c1_launch.py'])
-        ),
-        launch_arguments={
-            'frame_id': 'top_rplidar_c1_link',
-        }.items(),
     )
 
 

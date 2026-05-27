@@ -196,7 +196,7 @@ collision_monitor:
       max_obstacle_height: 2.0
       min_obstacle_points: 3
       visualize: false
-      enabled: true
+      enabled: false
 
 velocity_smoother:
   ros__parameters:
