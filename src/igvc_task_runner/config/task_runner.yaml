@@ -10,3 +10,18 @@ igvc_task_runner:
     safe_stop_topics:
       - /cmd_vel_nav
       - /diff_drive_controller/cmd_vel
+    # YOLO-based task prediction and runtime override
+    yolo_enabled: true
+    yolo_detection_topic: /detections
+    # Minimum detection confidence to count toward prediction/overrides
+    yolo_confidence_threshold: 0.65
+    # Sliding window (seconds) over which detections are accumulated
+    yolo_prediction_window_sec: 3.0
+    # Publish /igvc/yolo_prediction while READY/ARMED
+    yolo_startup_prediction: true
+    # Allow YOLO detections to inject temporary maneuver overrides while RUNNING
+    yolo_runtime_overrides: true
+    # How long (seconds) a YOLO override maneuver stays active
+    yolo_override_duration_sec: 4.0
+    # Minimum gap (seconds) between successive YOLO overrides on the same step
+    yolo_override_cooldown_sec: 8.0
