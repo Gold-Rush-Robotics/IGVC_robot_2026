@@ -73,6 +73,7 @@ def generate_launch_description() -> LaunchDescription:
         'use_sim_time': use_sim_time,
         'gps_enabled':  gps_enabled,
         'force_identity_map_to_odom': force_identity_map_to_odom,
+        'max_odom_age_sec': 0.75,
     }
 
     # ── Lane detection ────────────────────────────────────────────────────
@@ -125,7 +126,10 @@ def generate_launch_description() -> LaunchDescription:
         executable='navigation_autonav_node',
         name='igvc_navigator',
         output='screen',
-        parameters=[shared_params],
+        parameters=[
+            shared_params,
+            PathJoinSubstitution([bringup, 'config', 'navigator_config.yaml']),
+        ],
         condition=IfCondition(PythonExpression([
             "'", navigator_profile, "' == 'autonav'"
         ])),
@@ -136,7 +140,10 @@ def generate_launch_description() -> LaunchDescription:
         executable='navigation_fsd_node',
         name='igvc_navigator',
         output='screen',
-        parameters=[shared_params],
+        parameters=[
+            shared_params,
+            PathJoinSubstitution([bringup, 'config', 'navigator_config.yaml']),
+        ],
         condition=IfCondition(PythonExpression([
             "'", navigator_profile, "' == 'fsd'"
         ])),

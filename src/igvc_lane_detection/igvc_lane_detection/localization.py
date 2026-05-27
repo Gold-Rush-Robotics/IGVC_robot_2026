@@ -30,6 +30,7 @@ Parameters
     odom_frame            str     odom
     gps_topic             str     /gps/fix
     odom_topic            str     /odom
+    max_odom_age_sec      float   0.1
 
 Publications
     /tf                       TransformStamped    map→odom  (fallback / sim only)
@@ -79,6 +80,7 @@ class IGVCLocalizationNode(Node):
         odom_frame  = self._p('odom_frame',         'odom')
         gps_topic   = self._p('gps_topic',          '/gps/fix')
         odom_topic  = self._p('odom_topic',         '/odom')
+        self._max_odom_age = self._p('max_odom_age_sec', 0.1)
 
         self._map_frame  = map_frame
         self._odom_frame = odom_frame
@@ -138,6 +140,7 @@ class IGVCLocalizationNode(Node):
             ('odom_frame',       'odom'),
             ('gps_topic',        '/gps/fix'),
             ('odom_topic',       '/odom'),
+            ('max_odom_age_sec',  0.1),
         ]:
             self.declare_parameter(name, default)
 
@@ -164,12 +167,23 @@ class IGVCLocalizationNode(Node):
     # ── Odometry callback ─────────────────────────────────────────────────
 
     def _on_odom(self, msg: Odometry) -> None:
+        if self._stamp_age_sec(msg.header.stamp) > self._max_odom_age:
+            self.get_logger().warn(
+                f'Ignoring unstamped/stale odom older than {self._max_odom_age:.3f}s.',
+                throttle_duration_sec=2.0)
+            return
         xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
         if self._prev_odom_xy is not None and self._status == _STATUS_DR:
             self._dr_distance += math.hypot(
                 xy[0] - self._prev_odom_xy[0],
                 xy[1] - self._prev_odom_xy[1])
         self._prev_odom_xy = xy
+
+    def _stamp_age_sec(self, stamp) -> float:
+        stamp_t = Time.from_msg(stamp)
+        if stamp_t.nanoseconds == 0:
+            return float('inf')
+        return abs((self.get_clock().now() - stamp_t).nanoseconds / 1e9)
 
     # ── Broadcast timer ───────────────────────────────────────────────────
 

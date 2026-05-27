@@ -26,7 +26,6 @@ def generate_launch_description():
     # Get Local Files
     description_pkg_path = os.path.join(get_package_share_directory('igvc_test_description'))
     config_pkg_path = os.path.join(get_package_share_directory('igvc_test_bringup'))
-    joystick_file = os.path.join(config_pkg_path, 'config', 'xbox-holonomic.config.yaml')
     xacro_file = os.path.join(description_pkg_path, 'urdf', 'robots','test_robot.urdf.xacro')
     controllers_file = os.path.join(config_pkg_path, 'config', 'controllers.yaml')
     rviz_file = os.path.join(config_pkg_path, 'config', 'config.rviz')
@@ -71,8 +70,25 @@ def generate_launch_description():
         arguments=["diff_drive_controller", "--controller-manager", "/controller_manager"],
     )
 
+    # ── GPIO / operator-interface nodes ───────────────────────────────────
+    # Blinks pin 13 at 2 Hz in autonomous mode; solid ON otherwise.
+    autonomous_indicator_node = Node(
+        package='igvc_lane_detection',
+        executable='autonomous_indicator_node',
+        name='autonomous_indicator_node',
+        output='screen',
+    )
 
-    # Start Rviz2 with basic view
+    # Applies brakes (pins 22 HIGH) on B button, releases on A button.
+    brake_control_node = Node(
+        package='igvc_lane_detection',
+        executable='brake_control_node',
+        name='brake_control_node',
+        output='screen',
+    )
+
+
+    # Start Rviz2 with basic viewb
     run_rviz2_node = Node(
         package='rviz2',
         executable='rviz2',
@@ -90,29 +106,6 @@ def generate_launch_description():
     )
 
 
-    # Start Joystick Node
-    joy = Node(
-            package='joy', 
-            executable='joy_node', 
-            name='joy_node',
-            parameters=[{
-                'dev': '/dev/input/js0',
-                'deadzone': 0.3,
-                'autorepeat_rate': 20.0,
-            }])
-
-
-    # Start Teleop Node to translate joystick commands to robot commands
-    joy_teleop = Node(
-        package='teleop_twist_joy', 
-        executable='teleop_node',
-        name='teleop_twist_joy_node', 
-        parameters=[joystick_file],
-        remappings=[('/cmd_vel', '/diff_drive_controller/cmd_vel')]
-        )
-
-
-
     # Launch!
     return LaunchDescription([
         hardware_interface_arg,
@@ -121,7 +114,7 @@ def generate_launch_description():
         node_robot_state_publisher,
         joint_state_broadcaster_spawner,
         diff_drive_spawner,
+        autonomous_indicator_node,
+        brake_control_node,
         # rviz2_delay,
-        joy,
-        joy_teleop,
     ])

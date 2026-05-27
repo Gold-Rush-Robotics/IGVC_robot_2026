@@ -1,0 +1,63 @@
+{
+  // IGVC Robot 2026 — Zenoh RMW configuration
+  //
+  // Used by rmw_zenoh_cpp (ROS 2 Jazzy native Zenoh RMW).
+  // This config keeps all traffic local by default (no external router).
+  // For cross-host comms (Jetson ↔ dev machine), set ZENOH_ROUTER_CONNECT
+  // or add a connect endpoint below.
+  //
+  // Reference: https://github.com/ros2/rmw_zenoh
+
+  mode: "peer",
+
+  connect: {
+    endpoints: [
+      // Uncomment to bridge across hosts (e.g. Jetson ↔ x86 dev box):
+      // "tcp/<jetson-ip>:7447"
+    ]
+  },
+
+  listen: {
+    endpoints: [
+      // Accept inbound connections from other Zenoh peers on this host
+      "tcp/localhost:7447"
+    ]
+  },
+
+  scouting: {
+    multicast: {
+      // Multicast scouting for automatic peer discovery on the local subnet.
+      // Disable if running air-gapped or on a network that blocks multicast.
+      enabled: true,
+      address: "224.0.0.224:7446",
+      interface: "auto"
+    },
+    gossip: {
+      enabled: true,
+      multihop: false
+    }
+  },
+
+  transport: {
+    unicast: {
+      // Shared-memory transport: zero-copy for intra-host communication.
+      // All nodes in the same Docker network_mode:host share this segment.
+      lowlatency: false,
+      qos: {
+        enabled: true
+      }
+    },
+    shared_memory: {
+      // Enable SHM: intra-host topics (lane_costmap, /tf, /odom) bypass
+      // the network stack entirely — zero serialization overhead.
+      enabled: true
+    },
+    link: {
+      tx: {
+        sequence_number_resolution: 268435456,
+        // Raise batch size to amortize per-message overhead on high-Hz topics
+        batch_size: 65535
+      }
+    }
+  }
+}

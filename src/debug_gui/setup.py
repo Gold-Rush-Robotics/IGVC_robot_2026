@@ -20,7 +20,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'debugger = debug_gui.gui:main'
+            'debugger = debug_gui.gui:main',
+            'lane_compare_ui = debug_gui.lane_compare_ui:main',
         ],
     },
 )

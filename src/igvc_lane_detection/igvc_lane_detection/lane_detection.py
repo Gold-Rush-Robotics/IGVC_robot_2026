@@ -58,12 +58,12 @@ class LaneDetectionNode(Node):
         self.persist_frame      = p('persistent_map_frame',      'odom')
         self.persist_res        = p('persistent_map_resolution',  0.10)   # m/cell – coarser saves RAM
         self.persist_size_m     = p('persistent_map_size_m',     100.0)   # square side length
-        self.persist_decay      = p('persistent_map_decay',       0.998)  # multiplied each update
-        self.persist_hit_w      = p('persistent_hit_weight',      12.0)    # added per observed point
-        self.persist_threshold  = p('persistent_threshold',       15.0)   # publish as boundary
+        self.persist_decay      = p('persistent_map_decay',       0.990)  # multiplied each update — halves in ~35 s at 2 Hz
+        self.persist_hit_w      = p('persistent_hit_weight',       6.0)   # added per observed point
+        self.persist_threshold  = p('persistent_threshold',       20.0)   # publish as boundary (≥4 consistent hits)
         self.persist_max        = p('persistent_max_value',      200.0)   # clamp to prevent blowup
         self.persist_pub_hz     = p('persistent_publish_hz',       2.0)   # how often to publish map
-        self.persist_clear_radius = p('persistent_clear_radius_m', 0.8)
+        self.persist_clear_radius = p('persistent_clear_radius_m', 1.2)   # fully covers robot footprint
 
         self._init_persistent_map()
 
@@ -198,7 +198,10 @@ class LaneDetectionNode(Node):
         # Cells above threshold → lethal boundary (100); else unknown (-1)
         data = np.where(self._phits >= self.persist_threshold, 100, -1).astype(np.int8)
         self._clear_persistent_robot_footprint(data)
-        g.data = data.flatten().tolist()
+        # Remove single-cell noise islands (erosion) then bridge real lane
+        # gaps (dilation) before publishing.
+        data = self._morphological_clean(data)
+        g.data = data.ravel().tolist()
         self.persist_pub.publish(g)
 
     def _clear_persistent_robot_footprint(self, data):
@@ -224,6 +227,40 @@ class LaneDetectionNode(Node):
         rows, cols = np.ogrid[row_lo:row_hi, col_lo:col_hi]
         mask = (rows - row_c) ** 2 + (cols - col_c) ** 2 <= radius_cells ** 2
         data[row_lo:row_hi, col_lo:col_hi][mask] = 0
+
+    def _morphological_clean(self, data: np.ndarray) -> np.ndarray:
+        """
+        Apply a one-pass erosion then dilation to the lethal (100) cells:
+          - Erosion:  a cell must have ≥3 lethal cells in its 3×3 neighbourhood
+            (including itself) to survive → kills isolated single-cell noise.
+          - Dilation: any non-lethal cell adjacent to an eroded-lethal cell
+            is promoted to lethal → bridges small gaps in real lane lines.
+
+        Pure numpy — no scipy dependency.  Uses sliding_window_view
+        (numpy ≥ 1.20, available in all supported ROS 2 Humble/Jazzy envs).
+        """
+        lethal = (data == 100)
+        if not lethal.any():
+            return data
+
+        u8 = lethal.astype(np.uint8)
+
+        # --- Erosion ---
+        padded = np.pad(u8, 1, mode='constant', constant_values=0)
+        windows = np.lib.stride_tricks.sliding_window_view(padded, (3, 3))
+        neighbour_sum = windows.sum(axis=(-2, -1))          # includes centre
+        eroded = lethal & (neighbour_sum >= 3)
+
+        # --- Dilation of eroded mask ---
+        e_u8 = eroded.astype(np.uint8)
+        padded2 = np.pad(e_u8, 1, mode='constant', constant_values=0)
+        windows2 = np.lib.stride_tricks.sliding_window_view(padded2, (3, 3))
+        dilated = windows2.max(axis=(-2, -1)).astype(bool)
+
+        result = data.copy()
+        result[lethal & ~dilated] = -1    # noise removed → unknown
+        result[~lethal & dilated] = 100   # gap bridged  → lethal
+        return result
 
     # ═══════════════════════════════════════════════════════════════════════
     # Camera info
@@ -337,16 +374,16 @@ class LaneDetectionNode(Node):
     #
     # Design rationale
     # ────────────────
-    # The pipeline is colour-gated: Canny only runs on pixels that already
+    # The pipeline is color-gated: Canny only runs on pixels that already
     # passed the white/yellow HSV filter.  This means asphalt texture, dirt,
     # shadows and painted numbers are suppressed before any edge detection.
     #
     # Pipeline:
     #   chassis mask
     #   → CLAHE on L (clipLimit 2.0 — lifts dim markings without amplifying grain)
-    #   → HSV colour mask (white + yellow) on CLAHE image
+    #   → HSV color mask (white + yellow) on CLAHE image
     #   → dilate mask by 1 px to widen thin distant lines
-    #   → Canny on (colour_mask * L_eq)  ← colour-gated grayscale edges only
+    #   → Canny on (color_mask * L_eq)  ← color-gated grayscale edges only
     #   → ROI trapezoid
     #   → HoughLinesP
     #   → midpoint-based left/right classification
@@ -366,7 +403,7 @@ class LaneDetectionNode(Node):
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         l_eq = clahe.apply(l)
 
-        # ── Step 2: Colour-gated grayscale edges ─────────────────────────
+        # ── Step 2: color-gated grayscale edges ─────────────────────────
         # Gate Canny by a white+yellow HSV mask.  The ROI trapezoid
         # already excludes the sky/horizon, so we can be fairly
         # permissive here: we only need to reject the very dark asphalt
@@ -374,11 +411,11 @@ class LaneDetectionNode(Node):
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         white_mask  = cv2.inRange(hsv, (0,   0, 150), (180,  70, 255))
         yellow_mask = cv2.inRange(hsv, (15, 60,  80), ( 40, 255, 255))
-        colour_mask = cv2.bitwise_or(white_mask, yellow_mask)
-        colour_mask = cv2.dilate(
-            colour_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), 1)
+        color_mask = cv2.bitwise_or(white_mask, yellow_mask)
+        color_mask = cv2.dilate(
+            color_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), 1)
 
-        gated = cv2.bitwise_and(l_eq, l_eq, mask=colour_mask)
+        gated = cv2.bitwise_and(l_eq, l_eq, mask=color_mask)
         blurred = cv2.GaussianBlur(gated, (5, 5), 0)
 
         edges = cv2.Canny(blurred, 40, 120, apertureSize=3)
@@ -764,24 +801,27 @@ class LaneDetectionNode(Node):
             lpts = [(fwd, lat + W) for fwd, lat in rpts]
 
         W_grid, H, res = g.info.width, g.info.height, self.grid_res
+        # ROS OccupancyGrid convention: data[row=y_idx, col=x_idx].
+        # info.width  = forward cells (+x), info.height = lateral cells (+y).
+        nx, ny = W_grid, H
         data = list(g.data)
 
-        for row in range(H):
-            fwd = row * res
+        for col in range(nx):
+            fwd = col * res
             ll = self._interp(lpts, fwd)
             rl = self._interp(rpts, fwd)
             if ll is None or rl is None:
                 continue
 
-            left_col = max(0, min(W_grid - 1, int((ll + self.grid_width_m / 2) / res)))
-            right_col = max(0, min(W_grid - 1, int((rl + self.grid_width_m / 2) / res)))
-            lo, hi = min(left_col, right_col), max(left_col, right_col)
+            left_row  = max(0, min(ny - 1, int((ll + self.grid_width_m / 2) / res)))
+            right_row = max(0, min(ny - 1, int((rl + self.grid_width_m / 2) / res)))
+            lo, hi = min(left_row, right_row), max(left_row, right_row)
 
-            for col in range(W_grid):
-                if lo < col < hi:
-                    data[row * W_grid + col] = 0      # free
-                elif col == lo or col == hi:
-                    data[row * W_grid + col] = 100    # lethal boundary
+            for row in range(ny):
+                if lo < row < hi:
+                    data[row * nx + col] = 0      # free
+                elif row == lo or row == hi:
+                    data[row * nx + col] = 100    # lethal boundary
 
         g.data = data
         return g
@@ -789,11 +829,12 @@ class LaneDetectionNode(Node):
         g = OccupancyGrid()
         g.header.stamp    = self.get_clock().now().to_msg() if stamp is None else stamp
         g.header.frame_id = self.occupancy_grid_frame
-        W = int(self.grid_width_m  / self.grid_res)
-        H = int(self.grid_height_m / self.grid_res)
+        # ROS convention: info.width = forward cells, info.height = lateral cells.
+        nx = int(self.grid_height_m / self.grid_res)  # forward cells
+        ny = int(self.grid_width_m / self.grid_res)   # lateral cells
         g.info.resolution = self.grid_res
-        g.info.width      = W
-        g.info.height     = H
+        g.info.width      = nx
+        g.info.height     = ny
 
         if self.occupancy_grid_frame == self.base_frame:
             g.info.origin.position.x = 0.0
@@ -818,7 +859,7 @@ class LaneDetectionNode(Node):
                 g.info.origin.position.z = tf.transform.translation.z
                 g.info.origin.orientation = q
 
-        g.data = [-1] * (W * H)
+        g.data = [-1] * (nx * ny)
         return g
 
     # ═══════════════════════════════════════════════════════════════════════

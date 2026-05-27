@@ -90,7 +90,7 @@ class YolopV2:
         ``cuda:0``, ``cpu``, ``cuda:N``.  Falls back to CPU with a warning
         if CUDA is requested but not available.
     half:
-        Run inference in FP16.  Only honoured on CUDA.
+        Run inference in FP16.  Only honored on CUDA.
     img_size:
         Letterboxed side length (stride 32).  640 matches the trained
         model; other values are untested.
@@ -117,15 +117,22 @@ class YolopV2:
         clahe_tile: Tuple[int, int] = (8, 8),
         blur_ksize: Tuple[int, int] = (5, 5),
         blur_sigma: float = 0.0,
+        lane_threshold: float = 0.5,
     ) -> None:
         self.weights_path = weights_path
         self.requested_device = device
         self.half = bool(half)
         self.img_size = int(img_size)
         self.resize_hw = tuple(resize_hw)  # (H, W)
+        # Probability threshold applied to the lane-line head.  Lower
+        # values recover thin / faint lane paint (e.g. IRL 0.5–2 inch
+        # markings that activate the head only weakly) at the cost of
+        # more salt-and-pepper noise — the caller is expected to clean
+        # up with morphology + color filtering.
+        self.lane_threshold = float(lane_threshold)
 
         # Pre-processing: CLAHE histogram equalisation on the luma channel
-        # (boosts contrast in shadows / bright sun without colour shifts)
+        # (boosts contrast in shadows / bright sun without color shifts)
         # followed by a Gaussian blur (suppresses high-frequency texture
         # noise that otherwise produces speckle in the lane mask).
         self.preprocess_enabled = bool(preprocess)
@@ -253,7 +260,7 @@ class YolopV2:
     def _preprocess(self, bgr: np.ndarray) -> np.ndarray:
         """CLAHE histogram equalisation on Y (YUV) + Gaussian blur.
 
-        Operates on the luma channel only so colour balance is preserved
+        Operates on the luma channel only so color balance is preserved
         and the network still sees a natural-looking RGB image.
         """
         yuv = cv2.cvtColor(bgr, cv2.COLOR_BGR2YUV)
@@ -276,11 +283,15 @@ class YolopV2:
         return da_mask.squeeze(0).detach().cpu().numpy()
 
     def _postprocess_ll(self, ll) -> np.ndarray:
-        """Lane-line mask at the pre-letterbox resolution (uint8)."""
+        """Lane-line mask at the pre-letterbox resolution (uint8).
+
+        Uses ``self.lane_threshold`` instead of a hard 0.5 round so faint
+        / thin lane responses can be recovered.
+        """
         crop_top = self._SEG_CROP_TOP
         crop_bot = self._SEG_CROP_BOTTOM
         ll_predict = ll[:, :, crop_top:crop_bot, :]
         ll_up = torch.nn.functional.interpolate(
             ll_predict, scale_factor=2, mode="bilinear", align_corners=False)
-        ll_mask = torch.round(ll_up).to(torch.uint8)
+        ll_mask = (ll_up > self.lane_threshold).to(torch.uint8)
         return ll_mask.squeeze(0).squeeze(0).detach().cpu().numpy()

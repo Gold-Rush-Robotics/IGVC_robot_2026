@@ -44,6 +44,13 @@ setup(
             'odom_tf_bridge_node = igvc_lane_detection.odom_tf_bridge:main',
             'multi_camera_lane_detection_node = igvc_lane_detection.multi_camera_lane_detection:main',
             'lane_segmentation_node = igvc_lane_detection.lane_segmentation:main',
+            'constant_cmd_vel_node = igvc_lane_detection.constant_cmd_vel:main',
+            'track_ground_truth_node = igvc_lane_detection.track_ground_truth_node:main',
+            'lane_eval_node = igvc_lane_detection.lane_eval_node:main',
+            'midpoint_twist_test_node = igvc_lane_detection.midpoint_twist_test_node:main',
+            'gt_nav_bridge_node = igvc_lane_detection.gt_nav_bridge_node:main',
+            'autonomous_indicator_node = igvc_lane_detection.autonomous_indicator:main',
+            'brake_control_node = igvc_lane_detection.brake_control:main',
         ],
     },
 )

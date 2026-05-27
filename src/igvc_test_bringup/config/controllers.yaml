@@ -1,6 +1,6 @@
 controller_manager:
   ros__parameters:
-    update_rate: 10  # Hz
+    update_rate: 30  # Hz — raised from 10 to match EKF fusion rate
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
@@ -31,7 +31,7 @@ diff_drive_controller:
     enable_odom_tf: false
     publish_odom: false
 
-    cmd_vel_timeout: 0.5 # seconds
+    cmd_vel_timeout: 0.3 # seconds — tightened from 0.5 to reduce emergency-stop lag
     use_stamped_vel: true
     publish_limited_velocity: true
     velocity_rolling_window_size: 10

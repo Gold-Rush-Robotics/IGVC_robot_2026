@@ -1,8 +1,11 @@
 import os
+import re
+
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, TextSubstitution
 
@@ -13,6 +16,50 @@ def _parse_array_param(raw_value: str):
     if len(items) == 1 and items[0] == '':
         return []
     return items
+
+
+def _safe_path_component(value: str) -> str:
+    safe_value = re.sub(r'[^A-Za-z0-9_.-]+', '_', value).strip('._')
+    return safe_value or 'camera'
+
+
+def _is_front_camera(camera_name: str) -> bool:
+    return camera_name.strip().lower() == 'front_zed_camera_x'
+
+
+def _camera_params_path(
+    base_params_path: str,
+    camera_name: str,
+    area_memory_path: str,
+    enable_front_gnss: bool,
+) -> str:
+    with open(base_params_path, 'r', encoding='utf-8') as params_file:
+        params = yaml.safe_load(params_file)
+
+    ros_parameters = params.get('/**', {}).get('ros__parameters', {})
+    pos_tracking = ros_parameters.get('pos_tracking', {})
+    gnss_fusion = ros_parameters.get('gnss_fusion', {})
+
+    # Keep GNSS fusion active only for the front camera when explicitly enabled.
+    gnss_fusion['gnss_fusion_enabled'] = enable_front_gnss and _is_front_camera(camera_name)
+
+    if pos_tracking.get('area_memory', False):
+        os.makedirs(area_memory_path, exist_ok=True)
+        area_memory_file = os.path.join(area_memory_path, f'{_safe_path_component(camera_name)}.area')
+        pos_tracking['area_memory_db_path'] = area_memory_file
+        pos_tracking['area_file_path'] = area_memory_file
+        pos_tracking['save_area_memory_on_closing'] = True
+
+    generated_params_dir = '/tmp/igvc_zed_params'
+    os.makedirs(generated_params_dir, exist_ok=True)
+    generated_params_path = os.path.join(
+        generated_params_dir,
+        f'{_safe_path_component(camera_name)}_common_stereo.yaml',
+    )
+    with open(generated_params_path, 'w', encoding='utf-8') as params_file:
+        yaml.safe_dump(params, params_file, sort_keys=False)
+
+    return generated_params_path
 
 
 def launch_setup(context, *args, **kwargs):
@@ -27,15 +74,20 @@ def launch_setup(context, *args, **kwargs):
     namespace = LaunchConfiguration('namespace').perform(context)
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
     sim_mode = LaunchConfiguration('sim_mode').perform(context)
+    sim_address = LaunchConfiguration('sim_address').perform(context)
     disable_tf = LaunchConfiguration('disable_tf').perform(context).lower() == 'true'
+    enable_front_gnss = LaunchConfiguration('enable_front_gnss').perform(context).lower() == 'true'
     ros_params_override_path = LaunchConfiguration('ros_params_override_path').perform(context)
+    area_memory_path = LaunchConfiguration('area_memory_path').perform(context)
 
-    # Resolve the override YAML path (defaults to our local common_stereo.yaml)
+    # Resolve the override YAML path. Real hardware uses common_stereo_real.yaml;
+    # Isaac Sim uses common_stereo_sim.yaml unless explicitly overridden.
     if not ros_params_override_path:
+        default_config = 'common_stereo_sim.yaml' if sim_mode.lower() == 'true' else 'common_stereo_real.yaml'
         ros_params_override_path = os.path.join(
             get_package_share_directory('igvc_test_bringup'),
             'config',
-            'common_stereo.yaml',
+            default_config,
         )
 
     if not os.path.isfile(ros_params_override_path):
@@ -107,6 +159,7 @@ def launch_setup(context, *args, **kwargs):
         serial_number = cam_serials[idx] if len(cam_serials) == num_cams else '0'
         camera_id = cam_ids[idx] if len(cam_ids) == num_cams else '-1'
         sim_port = sim_ports[idx] if len(sim_ports) == num_cams else ''
+        enable_gnss = 'true' if (enable_front_gnss and _is_front_camera(camera_name)) else 'false'
 
         publish_tf = 'false'
         publish_map_tf = 'false'
@@ -116,9 +169,16 @@ def launch_setup(context, *args, **kwargs):
 
         info = (
             f'* Starting ZED camera: {camera_name} ({camera_model}), '
-            f'publish_tf={publish_tf}, use_sim_time={use_sim_time}'
+            f'publish_tf={publish_tf}, enable_gnss={enable_gnss}, use_sim_time={use_sim_time}'
         )
         actions.append(LogInfo(msg=TextSubstitution(text=info)))
+
+        camera_params_path = _camera_params_path(
+            ros_params_override_path,
+            camera_name,
+            area_memory_path,
+            enable_front_gnss,
+        )
 
         launch_arguments = {
             'camera_name': camera_name,
@@ -127,20 +187,30 @@ def launch_setup(context, *args, **kwargs):
             'camera_id': camera_id,
             'use_sim_time': use_sim_time,
             'sim_mode': sim_mode,
+            'enable_ipc': 'false',
             'publish_tf': publish_tf,
             'publish_map_tf': publish_map_tf,
-            'ros_params_override_path': ros_params_override_path,
+            'enable_gnss': enable_gnss,
+            'ros_params_override_path': camera_params_path,
         }
 
         if namespace:
             launch_arguments['namespace'] = namespace
+        if sim_address:
+            launch_arguments['sim_address'] = sim_address
         if sim_port:
             launch_arguments['sim_port'] = sim_port
 
+        startup_delay_sec = float(idx) * 3.0
         actions.append(
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(zed_camera_launch),
-                launch_arguments=launch_arguments.items(),
+            TimerAction(
+                period=startup_delay_sec,
+                actions=[
+                    IncludeLaunchDescription(
+                        PythonLaunchDescriptionSource(zed_camera_launch),
+                        launch_arguments=launch_arguments.items(),
+                    )
+                ],
             )
         )
 
@@ -162,7 +232,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 'cam_serials',
-                default_value='[46941578,40636496,43593214]',
+                default_value='[46941578,43593214,40636496]',
                 description='Optional camera serials array (or empty).',
             ),
             DeclareLaunchArgument(
@@ -191,15 +261,31 @@ def generate_launch_description():
                 description='Enable ZED simulation mode if true.',
             ),
             DeclareLaunchArgument(
+                'sim_address',
+                default_value='',
+                description='Optional simulation server address. Leave empty to use the YAML default.',
+            ),
+            DeclareLaunchArgument(
                 'disable_tf',
                 default_value='true',
                 description='Disable ZED odom/map TF publishing for all cameras.',
             ),
             DeclareLaunchArgument(
+                'enable_front_gnss',
+                default_value='false',
+                description='Enable GNSS ingestion/fusion only for front_zed_camera_x when true.',
+            ),
+            DeclareLaunchArgument(
                 'ros_params_override_path',
                 default_value='',
                 description='Path to a YAML file whose parameters override the ZED wrapper defaults. '
-                            'If empty, igvc_test_bringup/config/common_stereo.yaml is used.',
+                            'If empty, common_stereo_real.yaml is used for real mode and '
+                            'common_stereo_sim.yaml is used for sim mode.',
+            ),
+            DeclareLaunchArgument(
+                'area_memory_path',
+                default_value='/tmp/zed_area_memory',
+                description='Directory for per-camera ZED area-memory files when area memory is enabled.',
             ),
             OpaqueFunction(function=launch_setup),
         ]

@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
@@ -9,6 +10,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     bringup = FindPackageShare('igvc_test_bringup')
+    ublox_gps_pkg = FindPackageShare('ublox_gps')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     gps_enabled = LaunchConfiguration('gps_enabled')
@@ -34,11 +36,22 @@ def generate_launch_description() -> LaunchDescription:
             'use_sim_time': use_sim_time,
         }.items(),
     )
+    teleop = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([bringup, 'launch', 'teleop.launch.py'])
+        ),
+        launch_arguments={
+            'hardware_interface': hardware_interface,
+            'use_sim_time': use_sim_time,
+        }.items(),
+    )
     lane_segmentation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([bringup, 'launch', 'lane_segmentation.launch.py'])
         ),
         launch_arguments={
+            'gps_enabled': gps_enabled,
+            'force_identity_map_to_odom': 'true',
             'use_sim_time': use_sim_time,
         }.items(),
     )
@@ -53,17 +66,31 @@ def generate_launch_description() -> LaunchDescription:
         }.items(),
     )
 
-    odom_to_tf_ros2 = Node(
-        package="odom_to_tf_ros2",
-        executable="odom_to_tf",
-        name="odom_to_tf",
+    # zed_f9p_launch = IncludeLaunchDescription(
+    #     PythonLaunchDescriptionSource(
+    #         PathJoinSubstitution(
+    #             [ublox_gps_pkg, 'launch', 'ublox_gps_node_zedf9p-launch.py']
+    #         )
+    #     ),
+    #     condition=IfCondition(gps_enabled),
+    # )
+
+    odom_tf_bridge_node = Node(
+        package="igvc_lane_detection",
+        executable="odom_tf_bridge_node",
+        name="odom_tf_bridge",
         output="screen",
         parameters=[
             {'use_sim_time': use_sim_time},
             {'odom_topic': '/front_zed_camera_x/zed_node/odom'},
-            {'frame_id': 'odom'},
-            {'child_frame_id': 'base_link'},
-            {'use_original_timestamp': True},
+            {'odom_frame_id': 'odom'},
+            {'base_frame_id': 'base_link'},
+            {'publish_rate_hz': 100.0},
+            # Match isaac_nav_test: publish TF at the current ROS time so
+            # RViz/Nav2 can transform base_link-framed /lane_costmap even
+            # when the ZED odom message timestamp lags under sim/YOLO load.
+            {'use_original_timestamp': False},
+            {'warn_odom_age_sec': 0.5},
         ],
     )
     gps_node = Node(
@@ -113,10 +140,12 @@ def generate_launch_description() -> LaunchDescription:
             description='Hardware interface used by motor controllers.',
         ),
         # zed_multi_fused_odom,
+        # teleop,
         motor_controllers,
         # lane_follower,
         lane_segmentation,
-        odom_to_tf_ros2,
-        # gps_node,
+        gps_node,
+        odom_tf_bridge_node,
+        # zed_f9p_launch,
         twist_stamper_node,
     ])

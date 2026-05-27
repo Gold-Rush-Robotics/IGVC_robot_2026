@@ -9,7 +9,7 @@
 #     export YOLOPV2_WEIGHTS=$PWD/models/yolopv2.pt
 #
 # Jetson AGX Orin users: PyTorch itself must be installed separately from
-# the NVIDIA JetPack wheel index — see TRAINING_GUIDE.md.
+# the NVIDIA JetPack wheel index — see training/README.md.
 
 set -euo pipefail
 
