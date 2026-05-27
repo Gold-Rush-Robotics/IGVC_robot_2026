@@ -1,17 +1,19 @@
 lane_segmentation_node:
   ros__parameters:
     # ── Camera configuration ────────────────────────────────────────
-    # All three ZEDs feed the segmentation pipeline in their native
-    # orientation — YOLOPv2 performed better without any pre-rotation.
-    num_cameras: 3
+    # The pointcloud_merger_node fuses all three ZED point clouds into a
+    # single base_link cloud.  The lane detector still keeps one front RGB
+    # subscription for sync/fallback overlay only; PC2 RGB drives detection.
+    num_cameras: 1
     camera_topics:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
       # - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
       # - "/right_zed_camera_x/zed_node/rgb/color/rect/image"
-    depth_topics:
-      - "/front_zed_camera_x/zed_node/depth/depth_registered"
-      # - "/left_zed_camera_x/zed_node/depth/depth_registered"
-      # - "/right_zed_camera_x/zed_node/depth/depth_registered"
+    pc2_topics:
+      # - "/zed/point_cloud/merged_registered"
+      - "/front_zed_camera_x/zed_node/point_cloud/cloud_registered"
+      # - "/left_zed_camera_x/zed_node/point_cloud/cloud_registered"
+      # - "/right_zed_camera_x/zed_node/point_cloud/cloud_registered"
     camera_info_topics:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
       # - "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
@@ -36,11 +38,61 @@ lane_segmentation_node:
     roi_bottom_frac:  0.95
     roi_top_frac:     0.55
 
-    # ── Depth sampling ──────────────────────────────────────────────
-    depth_scale: 1.0
+    # ── PC2 range gates ──────────────────────────────────────────────
     min_detection_depth_m: 0.3
     max_detection_depth_m: 8.0
-    depth_search_radius_px: 6
+
+    # ── Detection mode ───────────────────────────────────────────────
+    # pc2_color_ground skips YOLOPv2 and uses the fused ZED PointCloud2:
+    # lane = white/yellow ground-plane cloud points;
+    # free = other ground-plane cloud points between the detected lines.
+    # Set to "yolopv2" to return to the YOLOPv2 model-mask pipeline.
+    # Set to "ufldv2" to use Ultra-Fast-Lane-Detection-v2 lane masks.
+    detection_mode: "pc2_color_ground"
+
+    # Ground-plane gate in base_link Z.  Widen if the map reports color
+    # pixels but drops them before projection; tighten if obstacle colors
+    # leak into the lane map.
+    pc2_ground_z_min_m: -0.35
+    pc2_ground_z_max_m:  0.35
+    pc2_lane_z_min_m:   -0.18
+    pc2_lane_z_max_m:    0.18
+
+    # Remove obstacle silhouettes from the PC2-only lane/free masks before
+    # projection.  This prevents white/yellow barrels and their halos from
+    # bleeding into /lane_map when obstacle clusters are dense.
+    pc2_obstacle_exclusion_enabled: true
+    pc2_obstacle_z_min_m:       0.12
+    pc2_obstacle_z_max_m:       2.5
+    pc2_obstacle_depth_min_m:   0.3
+    pc2_obstacle_depth_max_m:   8.0
+    pc2_obstacle_dilation_px:   35
+
+    # PointCloud2 color gates in OpenCV HSV units (H: 0-179, S/V: 0-255).
+    pc2_white_v_min: 180
+    pc2_white_s_max: 90
+    pc2_yellow_h_min: 12
+    pc2_yellow_h_max: 45
+    pc2_yellow_s_min: 45
+    pc2_yellow_v_min: 110
+    pc2_lane_morph_close_px: 3
+    pc2_lane_subsample_px: 1
+
+    # Free-space corridor fill.  For each forward-distance bin, the
+    # detector estimates right/left lane boundaries from the lateral
+    # spread of white/yellow points, then samples non-lane ground points
+    # between those boundaries.
+    pc2_free_subsample_px: 4
+    pc2_free_bin_size_m: 0.25
+    pc2_free_boundary_percentile: 10.0
+    pc2_free_min_lane_points_per_bin: 4
+    pc2_free_min_lane_width_m: 0.6
+    pc2_free_max_lane_width_m: 6.0
+    pc2_free_lane_margin_m: 0.10
+    pc2_free_max_gap_m: 1.0
+    pc2_free_single_boundary_enabled: true
+    pc2_free_nominal_lane_width_m: 2.4
+    pc2_free_single_boundary_min_abs_lat_m: 0.10
 
     # ── Multi-camera fusion ─────────────────────────────────────────
     # With 3 cameras and ~200 ms inference each, serial _model_lock
@@ -52,11 +104,11 @@ lane_segmentation_node:
     keep_last_grid_on_miss: true
 
     # ── Lane-line correlation / map alignment ───────────────────────
-    # Pose deduplication: skip persistent map write if the robot hasn't moved
-    # enough since the last write (prevents lane cells stacking on top of each
-    # other when YOLO frames are slower than the robot motion). 
-    min_pose_change_m:   0.05
-    min_pose_change_rad: 0.02
+    # PC2 color-ground mode is cheap and synchronized, so write every
+    # detection frame to /lane_map.  The old YOLO path used nonzero
+    # dedup thresholds to avoid stacking slow repeated inferences.
+    min_pose_change_m:   0.0
+    min_pose_change_rad: 0.0
 
     # ── Persistent (fixed-frame) lane map ─────────────────────────────
     # Use odom frame (not map) so TF lookup goes directly to ZED odom
@@ -81,33 +133,59 @@ lane_segmentation_node:
     local_costmap_publish_hz: 10.0
     local_back_nogo_buffer_m: 0.30
 
-    # Skip persistent-map writes when the robot is spinning faster
-    # than this (rad/s).  During tight in-place turns the depth-projected
-    # lane points smear in odom; pausing writes (decay still runs) lets
-    # the map self-correct as the robot settles.
-    max_yaw_rate_for_persist_update_rad_s: 0.6
+    # 0 disables the yaw-rate write gate.  With PC2 color-ground mode we
+    # do not have the YOLO latency that made this guard necessary.
+    max_yaw_rate_for_persist_update_rad_s: 0.0
 
     # Keep the synchronizer latest-only so YOLO does not chew through
     # a backlog of old RGB+depth pairs when the camera out-runs inference.
     sync_queue_size: 5
+    sync_slop_sec: 0.20
     # Jetson real-world pipeline latency is often 0.40-0.70s under YOLO load.
     # Keep latest-only queueing but allow those frames through.
     max_frame_age_sec: 2.0
 
     # ── YOLOPv2 segmentation model ──────────────────────────────────
-    # model_weights is intentionally empty — the launch file fills it
-    # in from $YOLOPV2_WEIGHTS or the model_weights launch argument so
-    # the absolute path stays out of source control.
+    # Ignored while detection_mode is "pc2_color_ground".
+    # model_weights is intentionally empty; pass model_weights:=... or
+    # export $UFLDV2_WEIGHTS / $YOLOPV2_WEIGHTS for the selected
+    # detection_mode so the absolute path stays out of source control.
     # TensorRT engine (FP16, built with trtexec --fp16 --onnx=yolopv2_384.onnx).
     # Extension .engine triggers the TRT backend in lane_segmentation.py.
     # To revert to TorchScript, point this at yolopv2.pt instead.
     # model_weights: "/root/ros2_ws/src/IGVC_robot_2026/models/yolopv2_640x480.engine"
-    model_weights: "/root/ros2_ws/src/IGVC_robot_2026/models/yolopv2.pt"
+    model_weights: ""
     model_device:  "cuda:0"
     model_half:    true
     # Must match the --img-size used when building the engine (640x480).
     # Changing this without rebuilding the engine will crash at load time.
     model_img_size: 640
+
+    # ── Ultra-Fast-Lane-Detection-v2 model ──────────────────────────
+    # Set detection_mode: "ufldv2" and point model_weights at the .pth
+    # checkpoint downloaded by scripts/fetch_ufldv2_weights.sh.
+    # ufldv2_config may be absolute or relative to ufldv2_root.
+    ufldv2_root: ""
+    ufldv2_config: "configs/culane_res18.py"
+    ufldv2_lane_width_px: 8
+    ufldv2_drivable_fill: true
+    ufldv2_drivable_lane_dilation_px: 45
+    ufldv2_min_points_per_lane: 4
+    ufldv2_refine_lane_mask: false
+    # UFLDv2 predicts lane geometry even when the visible paint is weak.
+    # Require projected lane pixels to sit near white/yellow ground-plane
+    # paint before they can enter /lane_map; this removes structural false
+    # positives that are nowhere close to the painted lines.
+    ufldv2_paint_refine_enabled: true
+    ufldv2_paint_refine_dilation_px: 15
+    ufldv2_paint_refine_ground_gate: true
+    ufldv2_paint_refine_min_component_px: 35
+    # UFLDv2 can miss IGVC/sim frames even when the checkpoint is valid.
+    # Keep the PC2 white/yellow ground-plane detector as a fallback so the
+    # map does not go completely empty while diagnostics report the raw mask
+    # and projection counts.
+    model_pc2_fallback_enabled: true
+    model_debug_stats: true
 
     # ── Preprocessor (CLAHE + Gaussian blur, applied before letterbox) ──
     # Aggressive values tuned for Isaac Sim domain gap:
@@ -137,20 +215,16 @@ lane_segmentation_node:
     # Lowered from 150 → 60 px: the 150 threshold was silently dropping
     # thin / far-field lane evidence (dashed markings, oblique cameras)
     # producing visually-correct overlays but a near-empty /lane_map.
-    min_lane_component_px: 10
+    min_lane_component_px: 3
     max_points_per_frame:  10000    # per-mask hard cap
 
-    # Lane mask dilation (kernel px in YOLOPv2 input resolution).
-    # Widens each detected lane pixel by ~3 px before projection so the
-    # persistent map receives a thicker stamp and small mask gaps fade.
-    # Set to 0 to disable.
-    ll_dilation_px: 50
+    # Lane mask dilation after UFLDv2/YOLO cleanup. Keep this modest: large
+    # kernels amplify single bad lane pixels into map-visible false lanes.
+    ll_dilation_px: 9
 
     # Local /lane_costmap lane (100) inflation radius in metres.
-    # Equivalent to a ~1 m wide drivable corridor margin (0.5 m each
-    # side) — prevents the navigator from threading through gaps in
-    # the raw segmentation.  Set to 0.0 to disable inflation.
-    local_lane_inflation_m: 0.5
+    # Inflates cleaned lane cells only enough to keep the corridor readable.
+    local_lane_inflation_m: 0.30
 
     # ── Debug ───────────────────────────────────────────────────────
     publish_overlay: false

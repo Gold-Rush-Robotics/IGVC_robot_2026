@@ -242,21 +242,21 @@ local_costmap:
       resolution: 0.05
       track_unknown_space: true
       footprint: "[[0.50, 0.35], [0.50, -0.35], [-0.50, -0.35], [-0.50, 0.35]]"
-      plugins: ["depth_obstacle_layer", "lane_layer", "inflation_layer"]
+      plugins: ["lane_layer", "inflation_layer"]
 
       # Depth-camera-based persistent obstacle map from depth_obstacle_costmap_node.
       # Uses front ZED depth image; min_height_m=0.10 to catch short obstacles
       # that fall below the 2-D LiDAR scan plane.
-      depth_obstacle_layer:
-        plugin: "nav2_costmap_2d::StaticLayer"
-        map_subscribe_transient_local: true
-        subscribe_to_updates: true
-        map_topic: "/depth_obstacle_map"
-        lethal_cost_threshold: 90
-        unknown_cost_value: 255
-        track_unknown_space: false
-        use_maximum: true
-        trinary_costmap: false
+      # depth_obstacle_layer:
+      #   plugin: "nav2_costmap_2d::StaticLayer"
+      #   map_subscribe_transient_local: true
+      #   subscribe_to_updates: true
+      #   map_topic: "/depth_obstacle_map"
+      #   lethal_cost_threshold: 90
+      #   unknown_cost_value: 255
+      #   track_unknown_space: false
+      #   use_maximum: true
+      #   trinary_costmap: false
 
       # Lane lines from the persistent fixed-frame map (/lane_map).
       # Using the persistent map (not the rolling /lane_costmap) avoids the
@@ -304,18 +304,18 @@ global_costmap:
       resolution: 0.10
       track_unknown_space: true
       footprint: "[[0.50, 0.35], [0.50, -0.35], [-0.50, -0.35], [-0.50, 0.35]]"
-      plugins: ["depth_obstacle_layer", "lane_layer", "inflation_layer"]
+      plugins: [ "lane_layer", "inflation_layer"]
       # Depth-camera-based obstacle map (same source as local costmap).
-      depth_obstacle_layer:
-        plugin: "nav2_costmap_2d::StaticLayer"
-        map_subscribe_transient_local: true
-        subscribe_to_updates: true
-        map_topic: "/depth_obstacle_map"
-        lethal_cost_threshold: 90
-        unknown_cost_value: 255
-        track_unknown_space: false
-        use_maximum: true
-        trinary_costmap: false
+      # depth_obstacle_layer:
+      #   plugin: "nav2_costmap_2d::StaticLayer"
+      #   map_subscribe_transient_local: true
+      #   subscribe_to_updates: true
+      #   map_topic: "/depth_obstacle_map"
+      #   lethal_cost_threshold: 90
+      #   unknown_cost_value: 255
+      #   track_unknown_space: false
+      #   use_maximum: true
+      #   trinary_costmap: false
       lane_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
@@ -330,4 +330,9 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 1.5
-        inflation_radius: 0.75
+        # SmacPlanner2D's optimized non-circular collision checker expects
+        # the planner costmap inflation radius to be comfortably larger than
+        # half the robot's largest cross-section.  The robot footprint is
+        # 1.0m x 0.7m (diagonal ~= 1.22m), so 1.0m clears the warning while
+        # still leaving the local costmap's tighter 0.75m corridor behavior.
+        inflation_radius: 1.00

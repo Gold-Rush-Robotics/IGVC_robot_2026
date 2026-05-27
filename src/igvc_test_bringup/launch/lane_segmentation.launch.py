@@ -22,9 +22,11 @@ Arguments
     gps_enabled                  true | false       default: false
     force_identity_map_to_odom   true | false       default: true
     use_sim_time                 true | false       default: false
-    model_weights                absolute path      default: $YOLOPV2_WEIGHTS
+    model_weights                absolute path      default: $LANE_MODEL_WEIGHTS
     model_device                 cpu | cuda:N       default: cuda:0
     model_half                   true | false       default: true
+    ufldv2_root                  path to upstream repo, default: $UFLDV2_ROOT
+    ufldv2_config                upstream config, default: $UFLDV2_CONFIG
     publish_overlay              true | false       default: true
 """
 
@@ -55,17 +57,26 @@ def generate_launch_description() -> LaunchDescription:
 
     model_weights_arg = DeclareLaunchArgument(
         'model_weights',
-        default_value=EnvironmentVariable('YOLOPV2_WEIGHTS', default_value=''),
+        default_value=EnvironmentVariable('LANE_MODEL_WEIGHTS', default_value=''),
         description=(
-            'Absolute path to yolopv2.pt TorchScript weights. Falls back to '
-            '$YOLOPV2_WEIGHTS. Fetch with '
-            'src/igvc_lane_detection/scripts/fetch_yolopv2_weights.sh.'))
+            'Absolute path to the selected lane model checkpoint. If empty, '
+            'the node uses $UFLDV2_WEIGHTS for detection_mode=ufldv2 or '
+            '$YOLOPV2_WEIGHTS for detection_mode=yolopv2.'))
     model_device_arg = DeclareLaunchArgument(
         'model_device', default_value='cuda:0',
         description='Torch device string (cpu, cuda:0, …).')
     model_half_arg = DeclareLaunchArgument(
         'model_half', default_value='true', choices=['true', 'false'],
         description='Run the network in FP16 on CUDA devices.')
+    ufldv2_root_arg = DeclareLaunchArgument(
+        'ufldv2_root',
+        default_value=EnvironmentVariable('UFLDV2_ROOT', default_value=''),
+        description='Path to the cloned Ultra-Fast-Lane-Detection-v2 repo.')
+    ufldv2_config_arg = DeclareLaunchArgument(
+        'ufldv2_config',
+        default_value=EnvironmentVariable(
+            'UFLDV2_CONFIG', default_value='configs/culane_res18.py'),
+        description='UFLDv2 config path, absolute or relative to ufldv2_root.')
     publish_overlay_arg = DeclareLaunchArgument(
         'publish_overlay', default_value='true', choices=['true', 'false'])
 
@@ -75,6 +86,8 @@ def generate_launch_description() -> LaunchDescription:
     model_weights = LaunchConfiguration('model_weights')
     model_device  = LaunchConfiguration('model_device')
     model_half    = LaunchConfiguration('model_half')
+    ufldv2_root   = LaunchConfiguration('ufldv2_root')
+    ufldv2_config = LaunchConfiguration('ufldv2_config')
     publish_overlay = LaunchConfiguration('publish_overlay')
 
     bringup = FindPackageShare('igvc_test_bringup')
@@ -87,6 +100,28 @@ def generate_launch_description() -> LaunchDescription:
     }
 
     # ── YOLOPv2 lane segmentation ─────────────────────────────────────
+    pointcloud_merger_node = Node(
+        package='igvc_pointcloud_tools',
+        executable='pointcloud_merger_node',
+        name='zed_pointcloud_merger',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'input_topics': [
+                '/front_zed_camera_x/zed_node/point_cloud/cloud_registered',
+                '/left_zed_camera_x/zed_node/point_cloud/cloud_registered',
+                '/right_zed_camera_x/zed_node/point_cloud/cloud_registered',
+            ],
+            'output_topic': '/zed/point_cloud/merged_registered',
+            'target_frame': 'base_link',
+            'max_stamp_delta_sec': 0.25,
+            'transform_timeout_sec': 0.05,
+            'publish_hz': 15.0,
+            'drop_invalid': False,
+            'preserve_organized': True,
+        }],
+    )
+
     lane_segmentation_node = Node(
         package='igvc_lane_detection',
         executable='lane_segmentation_node',
@@ -104,6 +139,8 @@ def generate_launch_description() -> LaunchDescription:
                 'model_weights': model_weights,
                 'model_device': model_device,
                 'model_half': model_half,
+                'ufldv2_root': ufldv2_root,
+                'ufldv2_config': ufldv2_config,
                 'publish_overlay': publish_overlay,
             },
         ],
@@ -185,7 +222,10 @@ def generate_launch_description() -> LaunchDescription:
         model_weights_arg,
         model_device_arg,
         model_half_arg,
+        ufldv2_root_arg,
+        ufldv2_config_arg,
         publish_overlay_arg,
+        pointcloud_merger_node,
         lane_segmentation_node,
         static_map_to_odom,
         # obstacle_costmap_node,  # disabled: YOLO bbox obstacles

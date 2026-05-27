@@ -31,10 +31,19 @@ hit_weight            (float, 2.0)   Evidence added per valid hit cell.
 decay                 (float, 0.995) Per-frame multiplicative decay.
 decay_every_n_frames  (int,   3)     Apply decay once every N depth frames.
 hit_threshold         (float, 8.0)   Accumulated evidence for lethal.
+min_points_per_cell   (int,   1)     Per-frame returns required in a grid cell.
+min_component_cells   (int,   1)     Remove lethal blobs smaller than this.
 max_value             (float, 200.0) Clamp for accumulator grid.
 inflate_radius_m      (float, 0.20)  Inflate lethal cells at publish time.
 publish_hz            (float, 5.0)   OccupancyGrid publish frequency.
 tf_timeout_sec        (float, 0.10)  TF lookup timeout.
+use_latest_tf         (bool,  True)  Use latest TF instead of depth stamp.
+max_frame_age_sec     (float, 2.0)   Drop stale depth frames.
+depth_frame_convention (str, 'auto') 'optical', 'flu', or 'auto'.
+use_odom_pose         (bool,  True)  Stamp base-frame points using odom topic.
+odom_topic            (str,   '/front_zed_camera_x/zed_node/odom')
+camera_x/y/z_m        (float) Camera body frame origin in base_link.
+camera_roll/pitch/yaw_rad (float) Camera body frame rotation in base_link.
 """
 
 from __future__ import annotations
@@ -58,7 +67,7 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import CameraInfo, Image
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -69,6 +78,30 @@ except ImportError:  # pragma: no cover
 
 
 class DepthObstacleCostmapNode(Node):
+
+    @staticmethod
+    def _quat_to_rot(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
+        return np.array([
+            [1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy - qz * qw), 2.0 * (qx * qz + qy * qw)],
+            [2.0 * (qx * qy + qz * qw), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz - qx * qw)],
+            [2.0 * (qx * qz - qy * qw), 2.0 * (qy * qz + qx * qw), 1.0 - 2.0 * (qx * qx + qy * qy)],
+        ], dtype=np.float64)
+
+    @staticmethod
+    def _yaw_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:
+        return math.atan2(
+            2.0 * (qw * qz + qx * qy),
+            1.0 - 2.0 * (qy * qy + qz * qz))
+
+    @staticmethod
+    def _rpy_to_rot(roll: float, pitch: float, yaw: float) -> np.ndarray:
+        cr, sr = math.cos(roll), math.sin(roll)
+        cp, sp = math.cos(pitch), math.sin(pitch)
+        cy, sy = math.cos(yaw), math.sin(yaw)
+        rot_x = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]], dtype=np.float64)
+        rot_y = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]], dtype=np.float64)
+        rot_z = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+        return rot_z @ rot_y @ rot_x
 
     def __init__(self) -> None:
         super().__init__('depth_obstacle_costmap_node')
@@ -98,10 +131,38 @@ class DepthObstacleCostmapNode(Node):
         self._decay        = float(p('decay',        0.995))
         self._decay_n      = max(1, int(p('decay_every_n_frames', 3)))
         self._hit_thresh   = float(p('hit_threshold', 8.0))
+        self._min_points_per_cell = max(1, int(p('min_points_per_cell', 1)))
+        self._min_component_cells = max(1, int(p('min_component_cells', 1)))
         self._max_value    = float(p('max_value',   200.0))
         self._inflate_r    = float(p('inflate_radius_m', 0.20))
         self._publish_hz   = float(p('publish_hz',   5.0))
         self._tf_timeout   = float(p('tf_timeout_sec', 0.10))
+        self._use_latest_tf = bool(p('use_latest_tf', True))
+        self._max_frame_age_sec = float(p('max_frame_age_sec', 2.0))
+        self._use_odom_pose = bool(p('use_odom_pose', True))
+        self._odom_topic = p('odom_topic', '/front_zed_camera_x/zed_node/odom')
+        self._max_odom_age_sec = float(p('max_odom_age_sec', 2.0))
+        # Defaults match front_zed_camera_x_left_camera_frame from the robot URDF:
+        # base_link -> camera_link (0.45, 0, 0.194), camera_center z +0.016,
+        # left_camera_frame (-0.01, +0.06, 0).
+        self._camera_xyz = np.array([
+            float(p('camera_x_m', 0.44)),
+            float(p('camera_y_m', 0.06)),
+            float(p('camera_z_m', 0.21)),
+        ], dtype=np.float64)
+        self._camera_rpy = np.array([
+            float(p('camera_roll_rad', 0.0)),
+            float(p('camera_pitch_rad', 0.0)),
+            float(p('camera_yaw_rad', 0.0)),
+        ], dtype=np.float64)
+        self._camera_rot = self._rpy_to_rot(*self._camera_rpy)
+        self._depth_frame_convention = str(
+            p('depth_frame_convention', 'auto')).lower()
+        if self._depth_frame_convention not in ('auto', 'optical', 'flu'):
+            raise ValueError(
+                "depth_frame_convention must be one of: 'auto', 'optical', 'flu'")
+        self._logged_depth_frame_convention = False
+        self._logged_projection_source = False
 
         # ── Grid state ────────────────────────────────────────────────
         self._nx = int(round(self._width_m  / self._res))
@@ -111,6 +172,7 @@ class DepthObstacleCostmapNode(Node):
 
         self._hits = np.zeros((self._ny, self._nx), dtype=np.float32)
         self._frame_count = 0
+        self._latest_odom: Optional[Odometry] = None
 
         # ── Camera intrinsics (set on first CameraInfo message) ───────
         self._fx: Optional[float] = None
@@ -133,10 +195,6 @@ class DepthObstacleCostmapNode(Node):
         else:
             self._dilate_kernel = None
 
-        # ── TF ────────────────────────────────────────────────────────
-        self._tf_buffer   = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, self)
-
         # ── QoS / I-O ─────────────────────────────────────────────────
         map_qos = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
@@ -153,6 +211,16 @@ class DepthObstacleCostmapNode(Node):
         self.create_subscription(
             Image, self._depth_topic,
             self._on_depth, qos_profile_sensor_data)
+        if self._use_odom_pose:
+            odom_qos = QoSProfile(
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1)
+            self.create_subscription(
+                Odometry, self._odom_topic, self._on_odom, odom_qos)
+        else:
+            self._tf_buffer = Buffer()
+            self._tf_listener = TransformListener(self._tf_buffer, self)
 
         period = 1.0 / max(self._publish_hz, 0.5)
         self.create_timer(period, self._publish)
@@ -177,44 +245,111 @@ class DepthObstacleCostmapNode(Node):
             f'fx={self._fx:.1f} fy={self._fy:.1f} cx={self._cx:.1f} cy={self._cy:.1f} '
             f'frame={self._cam_frame}')
 
+    def _on_odom(self, msg: Odometry) -> None:
+        self._latest_odom = msg
+
+    def _resolve_depth_frame_convention(self, frame_id: str) -> str:
+        if self._depth_frame_convention != 'auto':
+            return self._depth_frame_convention
+        return 'optical' if 'optical' in frame_id.lower() else 'flu'
+
     # ── Depth callback ────────────────────────────────────────────────────
 
     def _on_depth(self, msg: Image) -> None:
         if self._fx is None:
             return  # Waiting for camera_info
 
+        now = self.get_clock().now()
+        frame_age = (now - rclpy.time.Time.from_msg(msg.header.stamp)).nanoseconds / 1e9
+        if self._max_frame_age_sec > 0.0 and frame_age > self._max_frame_age_sec:
+            self.get_logger().warn(
+                f'Dropping stale depth frame (age={frame_age:.2f}s > '
+                f'{self._max_frame_age_sec:.2f}s)',
+                throttle_duration_sec=2.0)
+            return
+
         src_frame = msg.header.frame_id or self._cam_frame or 'base_link'
         stamp = msg.header.stamp
 
-        # Look up camera→odom transform at the image stamp; fall back to latest.
-        try:
-            tf = self._tf_buffer.lookup_transform(
-                self._frame, src_frame, stamp,
-                timeout=Duration(seconds=self._tf_timeout))
-        except TransformException:
-            try:
-                tf = self._tf_buffer.lookup_transform(
-                    self._frame, src_frame, rclpy.time.Time(),
-                    timeout=Duration(seconds=self._tf_timeout))
-            except TransformException as ex:
+        if self._use_odom_pose:
+            odom = self._latest_odom
+            if odom is None:
                 self.get_logger().warn(
-                    f'TF {src_frame}->{self._frame} failed: {ex}',
+                    f'Waiting for odometry on {self._odom_topic} before updating depth obstacle map.',
+                    throttle_duration_sec=2.0)
+                return
+            odom_frame = odom.header.frame_id or self._frame
+            if odom_frame != self._frame:
+                self.get_logger().warn(
+                    f'Odometry frame "{odom_frame}" does not match depth map frame "{self._frame}". '
+                    'Set frame_id to the odom message frame or disable use_odom_pose.',
+                    throttle_duration_sec=2.0)
+                return
+            odom_age = (now - rclpy.time.Time.from_msg(odom.header.stamp)).nanoseconds / 1e9
+            if self._max_odom_age_sec > 0.0 and odom_age > self._max_odom_age_sec:
+                self.get_logger().warn(
+                    f'Dropping depth frame: latest odom age={odom_age:.2f}s > '
+                    f'{self._max_odom_age_sec:.2f}s',
                     throttle_duration_sec=2.0)
                 return
 
-        # Extract transform components
-        tx  = tf.transform.translation.x
-        ty  = tf.transform.translation.y
-        tz  = tf.transform.translation.z
-        q   = tf.transform.rotation
+            pose = odom.pose.pose
+            odom_yaw = self._yaw_from_quat(
+                pose.orientation.x,
+                pose.orientation.y,
+                pose.orientation.z,
+                pose.orientation.w)
+            cos_yaw = math.cos(odom_yaw)
+            sin_yaw = math.sin(odom_yaw)
+            R_odom_base = np.array([
+                [cos_yaw, -sin_yaw, 0.0],
+                [sin_yaw, cos_yaw, 0.0],
+                [0.0, 0.0, 1.0],
+            ], dtype=np.float64)
+            t_odom_base = np.array([
+                pose.position.x,
+                pose.position.y,
+                pose.position.z,
+            ], dtype=np.float64)
+            if not self._logged_projection_source:
+                self.get_logger().info(
+                    f'depth_obstacle_costmap: stamping depth points with odom topic '
+                    f'{self._odom_topic}; camera_xyz={self._camera_xyz.tolist()}')
+                self._logged_projection_source = True
+        else:
+            # Legacy fallback: project with TF camera→fixed frame.
+            if self._use_latest_tf:
+                try:
+                    tf = self._tf_buffer.lookup_transform(
+                        self._frame, src_frame, rclpy.time.Time(),
+                        timeout=Duration(seconds=self._tf_timeout))
+                except TransformException as ex:
+                    self.get_logger().warn(
+                        f'TF {src_frame}->{self._frame} failed: {ex}',
+                        throttle_duration_sec=2.0)
+                    return
+            else:
+                try:
+                    tf = self._tf_buffer.lookup_transform(
+                        self._frame, src_frame, stamp,
+                        timeout=Duration(seconds=self._tf_timeout))
+                except TransformException:
+                    try:
+                        tf = self._tf_buffer.lookup_transform(
+                            self._frame, src_frame, rclpy.time.Time(),
+                            timeout=Duration(seconds=self._tf_timeout))
+                    except TransformException as ex:
+                        self.get_logger().warn(
+                            f'TF {src_frame}->{self._frame} failed: {ex}',
+                            throttle_duration_sec=2.0)
+                        return
 
-        # Full 3×3 rotation matrix from quaternion
-        qw, qx, qy, qz = q.w, q.x, q.y, q.z
-        R = np.array([
-            [1 - 2*(qy*qy + qz*qz),     2*(qx*qy - qz*qw),     2*(qx*qz + qy*qw)],
-            [    2*(qx*qy + qz*qw), 1 - 2*(qx*qx + qz*qz),     2*(qy*qz - qx*qw)],
-            [    2*(qx*qz - qy*qw),     2*(qy*qz + qx*qw), 1 - 2*(qx*qx + qy*qy)],
-        ], dtype=np.float64)
+            tx = tf.transform.translation.x
+            ty = tf.transform.translation.y
+            tz = tf.transform.translation.z
+            q = tf.transform.rotation
+            R_tf = self._quat_to_rot(q.x, q.y, q.z, q.w)
+            t_tf = np.array([tx, ty, tz], dtype=np.float64)
 
         # Convert depth image to float32 array
         try:
@@ -256,15 +391,30 @@ class DepthObstacleCostmapNode(Node):
         v_v  = v_flat[valid].astype(np.float64)
 
         # ── Back-project pixels to 3-D in camera frame ───────────────
-        # ZED depth is along optical axis (Z forward for optical frame)
-        xc = (u_v - self._cx) * d_v / self._fx
-        yc = (v_v - self._cy) * d_v / self._fy
-        zc = d_v
+        # Pinhole math naturally produces optical-frame points:
+        # x=right, y=down, z=forward.  The odom path converts those to
+        # camera-body FLU points before applying the configured mount.
+        x_opt = (u_v - self._cx) * d_v / self._fx
+        y_opt = (v_v - self._cy) * d_v / self._fy
+        z_opt = d_v
 
-        pts_cam = np.stack([xc, yc, zc], axis=1)  # (N, 3)
-
-        # ── Transform to fixed frame (odom) ──────────────────────────
-        pts_world = (R @ pts_cam.T).T + np.array([tx, ty, tz])
+        pts_cam_flu = np.stack([z_opt, -x_opt, -y_opt], axis=1)  # (N, 3)
+        if self._use_odom_pose:
+            pts_base = (self._camera_rot @ pts_cam_flu.T).T + self._camera_xyz
+            pts_world = (R_odom_base @ pts_base.T).T + t_odom_base
+        else:
+            convention = self._resolve_depth_frame_convention(src_frame)
+            if not self._logged_depth_frame_convention:
+                self.get_logger().info(
+                    f'depth_obstacle_costmap: interpreting depth points as '
+                    f'{convention} frame coordinates for source frame "{src_frame}"',
+                    once=True)
+                self._logged_depth_frame_convention = True
+            if convention == 'flu':
+                pts_cam = pts_cam_flu
+            else:
+                pts_cam = np.stack([x_opt, y_opt, z_opt], axis=1)  # (N, 3)
+            pts_world = (R_tf @ pts_cam.T).T + t_tf
 
         # ── Filter by height above ground ─────────────────────────────
         # pts_world[:,2] is the Z coordinate in odom (approximately height)
@@ -281,7 +431,21 @@ class DepthObstacleCostmapNode(Node):
         cj = np.floor((wy - self._origin_y) / self._res).astype(np.int32)
         in_g = (ci >= 0) & (ci < self._nx) & (cj >= 0) & (cj < self._ny)
         if np.any(in_g):
-            np.add.at(self._hits, (cj[in_g], ci[in_g]), self._hit_weight)
+            hit_rows = cj[in_g]
+            hit_cols = ci[in_g]
+            if self._min_points_per_cell > 1:
+                frame_counts = np.zeros_like(self._hits, dtype=np.uint16)
+                np.add.at(frame_counts, (hit_rows, hit_cols), 1)
+                supported = frame_counts[hit_rows, hit_cols] >= self._min_points_per_cell
+                if not np.any(supported):
+                    return
+                hit_rows = hit_rows[supported]
+                hit_cols = hit_cols[supported]
+            cell_ids = hit_rows.astype(np.int64) * self._nx + hit_cols.astype(np.int64)
+            unique_cells = np.unique(cell_ids)
+            hit_rows = (unique_cells // self._nx).astype(np.int32)
+            hit_cols = (unique_cells % self._nx).astype(np.int32)
+            self._hits[hit_rows, hit_cols] += self._hit_weight
             np.minimum(self._hits, self._max_value, out=self._hits)
 
     # ── Publish ───────────────────────────────────────────────────────────
@@ -290,6 +454,12 @@ class DepthObstacleCostmapNode(Node):
         data = np.full((self._ny, self._nx), np.int8(-1), dtype=np.int8)
 
         hit_mask = (self._hits >= self._hit_thresh).astype(np.uint8)
+        if self._min_component_cells > 1 and np.any(hit_mask):
+            n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                hit_mask, connectivity=8)
+            keep = np.zeros(n_labels, dtype=bool)
+            keep[1:] = stats[1:, cv2.CC_STAT_AREA] >= self._min_component_cells
+            hit_mask = keep[labels].astype(np.uint8)
         if self._dilate_kernel is not None:
             hit_mask = cv2.dilate(hit_mask, self._dilate_kernel, iterations=1)
         data[hit_mask > 0] = np.int8(100)

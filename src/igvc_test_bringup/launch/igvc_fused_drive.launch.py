@@ -174,20 +174,35 @@ def generate_launch_description() -> LaunchDescription:
             {'depth_topic': '/front_zed_camera_x/zed_node/depth/depth_registered'},
             {'info_topic': '/front_zed_camera_x/zed_node/depth/camera_info'},
             {'output_topic': '/depth_obstacle_map'},
+            {'use_odom_pose': True},
+            {'odom_topic': '/front_zed_camera_x/zed_node/odom'},
+            {'camera_x_m': 0.44},
+            {'camera_y_m': 0.06},
+            {'camera_z_m': 0.21},
+            {'camera_roll_rad': 0.0},
+            {'camera_pitch_rad': 0.0},
+            {'camera_yaw_rad': 0.0},
             {'width_m': 100.0},
             {'height_m': 100.0},
             {'origin_x': -50.0},
             {'origin_y': -50.0},
             {'resolution': 0.10},
             {'min_depth_m': 0.40},
-            {'max_depth_m': 8.0},
-            {'min_height_m': 0.10},
+            {'max_depth_m': 5.5},
+            {'min_height_m': 0.25},
             {'max_height_m': 2.20},
-            {'stride': 4},
-            {'hit_weight': 2.0},
-            {'hit_threshold': 8.0},
-            {'inflate_radius_m': 0.20},
+            {'stride': 6},
+            {'hit_weight': 1.0},
+            {'decay': 0.97},
+            {'decay_every_n_frames': 1},
+            {'hit_threshold': 14.0},
+            {'min_points_per_cell': 2},
+            {'min_component_cells': 8},
+            {'inflate_radius_m': 0.10},
             {'publish_hz': 5.0},
+            {'use_latest_tf': True},
+            {'max_frame_age_sec': 2.0},
+            {'depth_frame_convention': 'auto'},
         ],
     )
     lidar_obstacle_costmap_node = Node(
@@ -236,10 +251,11 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             'model_weights',
-            default_value=EnvironmentVariable(
-                'YOLOPV2_WEIGHTS',
-                default_value='/root/ros2_ws/src/IGVC_robot_2026/models/yolopv2_384.engine'),
-            description='Absolute path to YOLOPv2 weights (.engine for TensorRT, .pt for TorchScript).'
+            default_value=EnvironmentVariable('LANE_MODEL_WEIGHTS', default_value=''),
+            description=(
+                'Absolute path to the selected lane model checkpoint. If empty, '
+                'lane_segmentation_node chooses $UFLDV2_WEIGHTS or $YOLOPV2_WEIGHTS '
+                'from detection_mode.')
         ),
         # zed_multi_fused_odom,
         # teleop,
