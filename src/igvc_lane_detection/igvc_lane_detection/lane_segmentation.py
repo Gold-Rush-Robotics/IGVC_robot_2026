@@ -23,6 +23,7 @@ import array
 import math
 import os
 import threading
+import time
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import cv2
@@ -82,7 +83,6 @@ class LaneSegmentationNode(Node):
             return self.get_parameter(name).value
 
         self.base_frame             = p('base_frame',              'base_link')
-        self.depth_scale            = p('depth_scale',              1.0)
         self.grid_res               = p('grid_resolution',          0.05)
         self.grid_width_m           = p('grid_width',              10.0)
         self.grid_height_m          = p('grid_height',             10.0)
@@ -132,6 +132,28 @@ class LaneSegmentationNode(Node):
         self.local_publish_hz      = float(p('local_costmap_publish_hz', 10.0))
         self.local_back_nogo_buffer_m = max(
             0.0, float(p('local_back_nogo_buffer_m', 0.30)))
+        # Temporal lane filtering for /lane_costmap publication.
+        # The filter tracks per-cell lane occupancy confidence over time
+        # and applies hysteresis to suppress one-frame flicker.
+        self.temporal_filter_enabled = bool(p('temporal_filter_enabled', True))
+        self.temporal_lane_rise_alpha = float(
+            np.clip(float(p('temporal_lane_rise_alpha', 0.60)), 0.0, 1.0))
+        self.temporal_lane_fall_alpha = float(
+            np.clip(float(p('temporal_lane_fall_alpha', 0.35)), 0.0, 1.0))
+        self.temporal_lane_unknown_decay = float(
+            np.clip(float(p('temporal_lane_unknown_decay', 0.08)), 0.0, 1.0))
+        self.temporal_lane_on_threshold = float(
+            np.clip(float(p('temporal_lane_on_threshold', 0.60)), 0.0, 1.0))
+        self.temporal_lane_off_threshold = float(
+            np.clip(float(p('temporal_lane_off_threshold', 0.45)), 0.0, 1.0))
+        if self.temporal_lane_off_threshold > self.temporal_lane_on_threshold:
+            self.temporal_lane_off_threshold = self.temporal_lane_on_threshold
+        # If no frame applies the filter for this many seconds, zero the
+        # EMA state on the next call so stale evidence does not re-emerge
+        # after a long perception gap (e.g. dropped frames, mode switch).
+        # <= 0 disables the gap reset.
+        self.temporal_reset_gap_sec = float(
+            p('temporal_reset_gap_sec', 1.0))
 
         # ── Pose deduplication — skip persistent write if not moved ────
         self.min_pose_change_m   = float(p('min_pose_change_m',   0.05))
@@ -194,6 +216,12 @@ class LaneSegmentationNode(Node):
         self.model_pc2_fallback_enabled = bool(
             p('model_pc2_fallback_enabled', self._use_ufldv2))
         self.model_debug_stats = bool(p('model_debug_stats', True))
+
+        # Validate the parameters we need before any expensive setup
+        # (model deserialization, persistent-map allocation, subscriptions).
+        # Catches typos / bad combinations in seconds instead of after a
+        # multi-second TensorRT load.
+        self._validate_params()
 
         # ── PC2 color-ground detector ───────────────────────────────
         # Lane points are ground-plane cloud pixels whose packed RGB is
@@ -472,7 +500,9 @@ class LaneSegmentationNode(Node):
         # Each camera has its own YOLOPv2 instance + CUDA stream, so
         # inference runs concurrently with no serialisation lock needed.
         # _state_lock still guards the shared map / grid state.
-        self._state_lock = threading.Lock()
+        # RLock so handlers that already hold the lock can safely call
+        # methods (e.g. _republish_grid) that also acquire it.
+        self._state_lock = threading.RLock()
         # ReentrantCallbackGroup lets the executor run camera callbacks
         # concurrently instead of forcing a single-active-callback policy.
         self._cam_cb_group = ReentrantCallbackGroup()
@@ -541,6 +571,12 @@ class LaneSegmentationNode(Node):
         self._cam_state: dict = {}
         self._latest_odom: Optional[Odometry] = None
         self._last_persist_pose: Optional[Tuple] = None
+        self._temporal_lane_score: Optional[np.ndarray] = None
+        self._temporal_lane_mask: Optional[np.ndarray] = None
+        self._temporal_last_update_monotonic: Optional[float] = None
+        # _temporal_lane_score / _temporal_lane_mask are always mutated
+        # under _state_lock (both the camera-callback path and the
+        # _republish_grid timer path).  No separate lock is needed.
         # Per-shape pixel meshgrid cache (built lazily, reused across frames).
         self._pixel_grid_cache: dict = {}
 
@@ -565,6 +601,46 @@ class LaneSegmentationNode(Node):
             self._publish_persistent_map)
 
         self.create_timer(2.0, self._watchdog)
+
+    def _validate_params(self) -> None:
+        """Fail loudly at startup for invalid parameter combinations.
+
+        Only checks combinations that previously failed silently or with
+        obscure runtime errors.  Values that are already clipped/clamped
+        at parse time are not re-checked here.
+        """
+        errors: List[str] = []
+        if self.grid_res <= 0.0:
+            errors.append(f'grid_resolution must be > 0 (got {self.grid_res})')
+        if self.grid_width_m <= 0.0:
+            errors.append(f'grid_width must be > 0 (got {self.grid_width_m})')
+        if self.grid_height_m <= 0.0:
+            errors.append(f'grid_height must be > 0 (got {self.grid_height_m})')
+        if self.persist_res <= 0.0:
+            errors.append(f'persistent_map_resolution must be > 0 (got {self.persist_res})')
+        if self.persist_size_m <= 0.0:
+            errors.append(f'persistent_map_size_m must be > 0 (got {self.persist_size_m})')
+        if not (0.0 < self.persist_decay <= 1.0):
+            errors.append(
+                f'persistent_map_decay must be in (0, 1] (got {self.persist_decay})')
+        if self.local_from_persistent and not self.odom_topic:
+            errors.append(
+                'local_costmap_from_persistent=true requires a non-empty odom_topic')
+        if self.min_detection_depth_m >= self.max_detection_depth_m:
+            errors.append(
+                f'min_detection_depth_m ({self.min_detection_depth_m}) must be < '
+                f'max_detection_depth_m ({self.max_detection_depth_m})')
+        mode = getattr(self, 'detection_mode', '')
+        if mode not in ('pc2_color_ground', 'yolopv2', 'ufldv2'):
+            errors.append(
+                f"detection_mode must be one of 'pc2_color_ground'|'yolopv2'|'ufldv2' "
+                f'(got {mode!r})')
+        if errors:
+            for e in errors:
+                self.get_logger().error(f'Invalid parameter: {e}')
+            raise ValueError(
+                f'lane_segmentation_node parameter validation failed: '
+                + '; '.join(errors))
 
     # ═══════════════════════════════════════════════════════════════════
     # Persistent map
@@ -697,11 +773,12 @@ class LaneSegmentationNode(Node):
         # depth noise).  Apply decay only and skip the stamping pass so
         # the persistent map fades stale evidence instead of stacking
         # new bad evidence on top of it.
+        odom = self._latest_odom  # single-ref snapshot avoids attribute-chain race
         if (
             self.max_yaw_rate_persist > 0.0
-            and self._latest_odom is not None
+            and odom is not None
         ):
-            yaw_rate = abs(self._latest_odom.twist.twist.angular.z)
+            yaw_rate = abs(odom.twist.twist.angular.z)
             if yaw_rate > self.max_yaw_rate_persist:
                 self._phits *= self.persist_decay
                 self._pfree *= self.persist_decay
@@ -787,7 +864,10 @@ class LaneSegmentationNode(Node):
         rows = rows[valid]
         cols = cols[valid]
         np.add.at(grid, (rows, cols), weight)
-        grid[rows, cols] = np.minimum(grid[rows, cols], self.persist_max)
+        # Clamp the entire grid in-place.  Using np.minimum on the full
+        # array avoids the fancy-index last-write-wins issue for duplicate
+        # (row, col) pairs that the original per-index write had.
+        np.minimum(grid, self.persist_max, out=grid)
 
     def _persistent_grid_data(self, stamp=None, clear_robot: bool = True) -> np.ndarray:
         if self._persistent_data_cache is None or self._persistent_dirty:
@@ -797,9 +877,9 @@ class LaneSegmentationNode(Node):
             self._persistent_data_cache = data
             self._persistent_dirty = False
 
-        data = self._persistent_data_cache
+        # Always return a copy so callers cannot mutate the cache array.
+        data = self._persistent_data_cache.copy()
         if clear_robot:
-            data = data.copy()
             self._clear_persistent_robot_footprint(data, stamp)
         return data
 
@@ -845,7 +925,7 @@ class LaneSegmentationNode(Node):
     def _clear_persistent_robot_footprint(self, data: np.ndarray, stamp) -> None:
         if self.persist_clear_radius <= 0.0:
             return
-        pose = self._persistent_pose(None)
+        pose = self._persistent_pose(stamp)  # use frame-aligned stamp, not latest TF
         if pose is None:
             return
 
@@ -1166,19 +1246,30 @@ class LaneSegmentationNode(Node):
         if self.publish_overlay and cam_idx in self.overlay_pubs:
             self._publish_overlay(cam_idx, bgr, da_mask, ll_mask, rgb_msg)
 
-        # ── Cache per-camera state + fuse + publish (serialised) ──
+        # ── Cache per-camera state + fuse + publish ──
+        # _build_grid is pure on its inputs (fused_free, fused_lane,
+        # process_stamp) and does no shared-state I/O, so we run it
+        # outside the lock to shorten the critical section.  All shared
+        # state reads/writes (cam_state, latest_grid, persistent map,
+        # temporal filter, grid publish) stay inside _state_lock.
         with self._state_lock:
             self._cam_state[cam_idx] = {
                 'stamp':    process_stamp,
                 'free':     free_pts,
                 'lane':     lane_pts,
             }
-
             fused_free, fused_lane = self._fuse_points(process_stamp)
+            has_points = (
+                fused_free.shape[0] > 0 or fused_lane.shape[0] > 0)
 
-            if fused_free.shape[0] > 0 or fused_lane.shape[0] > 0:
-                self.latest_grid = self._build_grid(
-                    fused_free, fused_lane, process_stamp)
+        new_grid: Optional[OccupancyGrid] = None
+        if has_points:
+            new_grid = self._build_grid(
+                fused_free, fused_lane, process_stamp)
+
+        with self._state_lock:
+            if has_points and new_grid is not None:
+                self.latest_grid = new_grid
                 # Write only THIS camera's freshly-projected points to the
                 # persistent map.  Neural models use the original capture stamp
                 # to compensate for inference latency; PC2 color-ground mode is
@@ -1189,6 +1280,16 @@ class LaneSegmentationNode(Node):
                 if self.local_from_persistent:
                     self._publish_local_costmap_from_persistent()
                 else:
+                    # Temporal filter lives in _publish_local_costmap_from_persistent
+                    # for the persistent path; apply it here for the direct path so
+                    # every published frame is filtered exactly once.
+                    _h = self.latest_grid.info.height
+                    _w = self.latest_grid.info.width
+                    _gd = np.frombuffer(
+                        bytes(self.latest_grid.data), dtype=np.int8,
+                    ).reshape(_h, _w).copy()
+                    _gd = self._apply_temporal_lane_filter(_gd)
+                    self.latest_grid.data = array.array('b', _gd.tobytes())
                     self.grid_pub.publish(self.latest_grid)
             elif self.keep_last_grid_on_miss:
                 self._republish_grid()
@@ -1293,6 +1394,9 @@ class LaneSegmentationNode(Node):
         us = np.arange(w, dtype=np.float32)
         vs = np.arange(h, dtype=np.float32)
         ug, vg = np.meshgrid(us, vs)
+        if len(self._pixel_grid_cache) >= 8:
+            # Evict oldest entry; dict preserves insertion order (Python 3.7+).
+            self._pixel_grid_cache.pop(next(iter(self._pixel_grid_cache)))
         self._pixel_grid_cache[key] = (ug, vg)
         return ug, vg
 
@@ -1562,8 +1666,17 @@ class LaneSegmentationNode(Node):
         right = np.full(n_bins, np.nan, dtype=np.float32)
         pct = float(np.clip(self.pc2_free_boundary_percentile, 0.0, 49.0))
 
-        for bin_idx in np.unique(lane_bins):
-            values = lane_lat[lane_bins == bin_idx]
+        # Sort once so each bin is a contiguous slice — avoids O(n) boolean
+        # mask per unique bin and makes percentile calls cache-friendly.
+        _sort_order = np.argsort(lane_bins, kind='stable')
+        _bins_sorted = lane_bins[_sort_order]
+        _lat_sorted = lane_lat[_sort_order]
+        _unique_bins, _bin_starts = np.unique(_bins_sorted, return_index=True)
+        _bin_ends = np.append(_bin_starts[1:], _bins_sorted.size)
+        for bin_idx, _s, _e in zip(
+            _unique_bins.tolist(), _bin_starts.tolist(), _bin_ends.tolist()
+        ):
+            values = _lat_sorted[_s:_e]
             if values.size < self.pc2_free_min_lane_points_per_bin:
                 continue
             lo = float(np.percentile(values, pct))
@@ -1893,6 +2006,9 @@ class LaneSegmentationNode(Node):
         """Zero-out chassis + out-of-ROI regions of a binary mask."""
         if mask.size == 0:
             return mask
+        # Nothing to do — skip the full-image copy.
+        if self.chassis_mask_frac <= 0.0 and not self.roi_enabled:
+            return mask
         out = mask.copy()
         h, w = out.shape[:2]
 
@@ -1920,15 +2036,6 @@ class LaneSegmentationNode(Node):
         cv2.fillPoly(roi, pts, 255)
         out = cv2.bitwise_and(out, out, mask=roi)
         return out
-
-    def _intrinsics(self, cam_idx: int, depth_shape: Tuple[int, int]):
-        h_d, w_d = depth_shape[:2]
-        K = self.K.get(cam_idx)
-        fx = K[0, 0] if K is not None else 500.0
-        fy = K[1, 1] if K is not None else fx
-        cx = K[0, 2] if K is not None else w_d / 2.0
-        cy = K[1, 2] if K is not None else h_d / 2.0
-        return fx, fy, cx, cy
 
     def _cam_tf_components(self, cam_tf):
         if cam_tf is None:
@@ -2247,8 +2354,71 @@ class LaneSegmentationNode(Node):
             data[lo:hi, col] = np.where(seg == np.int8(-1), np.int8(0), seg)
         # ────────────────────────────────────────────────────────────────────
 
+        # Temporal filtering is applied in the publish path (_finish_projected_frame
+        # for the direct route, _publish_local_costmap_from_persistent for the
+        # persistent route) so it runs exactly once per published frame.
+
         g.data = array.array('b', data.tobytes())
         return g
+
+    def _apply_temporal_lane_filter(self, data: np.ndarray) -> np.ndarray:
+        if not self.temporal_filter_enabled:
+            return data
+        if data.ndim != 2:
+            return data
+
+        # Must be called under _state_lock so the EMA state arrays are not
+        # modified concurrently by the camera-callback and timer paths.
+        ny, nx = data.shape
+
+        # Gap reset: if the filter has not run for a while, the stored EMA
+        # state is stale (robot has likely moved and the grid corresponds
+        # to a different patch of the world).  Zero it so old evidence
+        # cannot re-emerge through hysteresis.
+        now_mono = time.monotonic()
+        if (
+            self.temporal_reset_gap_sec > 0.0
+            and self._temporal_last_update_monotonic is not None
+            and self._temporal_lane_score is not None
+            and (now_mono - self._temporal_last_update_monotonic)
+                > self.temporal_reset_gap_sec
+        ):
+            self._temporal_lane_score.fill(0.0)
+            if self._temporal_lane_mask is not None:
+                self._temporal_lane_mask.fill(False)
+        self._temporal_last_update_monotonic = now_mono
+
+        if (
+            self._temporal_lane_score is None
+            or self._temporal_lane_mask is None
+            or self._temporal_lane_score.shape != (ny, nx)
+        ):
+            self._temporal_lane_score = np.zeros((ny, nx), dtype=np.float32)
+            self._temporal_lane_mask = np.zeros((ny, nx), dtype=bool)
+
+        score = self._temporal_lane_score
+        lane_mask = self._temporal_lane_mask
+
+        lane_obs = (data == 100)
+        free_obs = (data == 0)
+        unknown_obs = ~(lane_obs | free_obs)
+
+        if np.any(lane_obs):
+            score[lane_obs] += self.temporal_lane_rise_alpha * (1.0 - score[lane_obs])
+        if np.any(free_obs):
+            score[free_obs] *= (1.0 - self.temporal_lane_fall_alpha)
+        if np.any(unknown_obs):
+            score[unknown_obs] *= (1.0 - self.temporal_lane_unknown_decay)
+
+        np.clip(score, 0.0, 1.0, out=score)
+
+        lane_mask[score >= self.temporal_lane_on_threshold] = True
+        lane_mask[score <= self.temporal_lane_off_threshold] = False
+
+        filtered = data.copy()
+        filtered[filtered == 100] = -1
+        filtered[lane_mask] = 100
+        return filtered
 
     def _empty_grid(self, stamp=None) -> OccupancyGrid:
         g = OccupancyGrid()
@@ -2353,12 +2523,7 @@ class LaneSegmentationNode(Node):
             r, g, b = _LANE_COLORS[i % len(_LANE_COLORS)]
             m.color = ColorRGBA(r=float(r), g=float(g), b=float(b), a=1.0)
             m.lifetime = Duration(seconds=1).to_msg()
-            for fwd, lat in pts:
-                p = Point()
-                p.x = float(fwd)
-                p.y = float(lat)
-                p.z = 0.0
-                m.points.append(p)
+            m.points = [Point(x=float(fwd), y=float(lat), z=0.0) for fwd, lat in pts]
             arr.markers.append(m)
 
         self.marker_pub.publish(arr)
@@ -2368,10 +2533,15 @@ class LaneSegmentationNode(Node):
     # ═══════════════════════════════════════════════════════════════════
 
     def _republish_grid(self) -> None:
-        if self.local_from_persistent:
-            if self._publish_local_costmap_from_persistent():
-                return
-        self.grid_pub.publish(self.latest_grid)
+        # Must hold _state_lock: _publish_local_costmap_from_persistent reads
+        # _phits/_pfree which are written by _update_persistent_map (also
+        # under _state_lock), and _apply_temporal_lane_filter mutates shared
+        # EMA state that is protected by the same lock.
+        with self._state_lock:
+            if self.local_from_persistent:
+                if self._publish_local_costmap_from_persistent():
+                    return
+            self.grid_pub.publish(self.latest_grid)
 
     def _publish_local_costmap_from_persistent(self) -> bool:
         pose = self._persistent_pose(None)
@@ -2430,6 +2600,11 @@ class LaneSegmentationNode(Node):
                 # unknown (-1).  Existing 100 stays 100.
                 grow = (inflated > 0) & (local_data != 100)
                 local_data[grow] = 100
+
+        # Apply temporal filter after inflation (and regardless of whether
+        # inflation is enabled) so the filter always runs once per published
+        # frame for the persistent path.  Must be called under _state_lock.
+        local_data = self._apply_temporal_lane_filter(local_data)
 
         back_buf_cells = int(math.ceil(self.local_back_nogo_buffer_m / self.grid_res))
         if back_buf_cells > 0:

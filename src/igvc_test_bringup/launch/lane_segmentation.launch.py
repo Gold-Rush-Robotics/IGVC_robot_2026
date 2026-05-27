@@ -225,7 +225,7 @@ def generate_launch_description() -> LaunchDescription:
         ufldv2_root_arg,
         ufldv2_config_arg,
         publish_overlay_arg,
-        pointcloud_merger_node,
+        # pointcloud_merger_node,
         lane_segmentation_node,
         static_map_to_odom,
         # obstacle_costmap_node,  # disabled: YOLO bbox obstacles

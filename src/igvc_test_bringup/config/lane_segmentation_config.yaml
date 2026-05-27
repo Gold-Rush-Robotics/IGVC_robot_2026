@@ -4,7 +4,7 @@ lane_segmentation_node:
     # The pointcloud_merger_node fuses all three ZED point clouds into a
     # single base_link cloud.  The lane detector still keeps one front RGB
     # subscription for sync/fallback overlay only; PC2 RGB drives detection.
-    num_cameras: 1
+    num_cameras: 3
     camera_topics:
       - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
       # - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
@@ -40,7 +40,7 @@ lane_segmentation_node:
 
     # ── PC2 range gates ──────────────────────────────────────────────
     min_detection_depth_m: 0.3
-    max_detection_depth_m: 8.0
+    max_detection_depth_m: 5.0
 
     # ── Detection mode ───────────────────────────────────────────────
     # pc2_color_ground skips YOLOPv2 and uses the fused ZED PointCloud2:
@@ -48,7 +48,7 @@ lane_segmentation_node:
     # free = other ground-plane cloud points between the detected lines.
     # Set to "yolopv2" to return to the YOLOPv2 model-mask pipeline.
     # Set to "ufldv2" to use Ultra-Fast-Lane-Detection-v2 lane masks.
-    detection_mode: "pc2_color_ground"
+    detection_mode: "yolopv2"
 
     # Ground-plane gate in base_link Z.  Widen if the map reports color
     # pixels but drops them before projection; tighten if obstacle colors
@@ -65,7 +65,7 @@ lane_segmentation_node:
     pc2_obstacle_z_min_m:       0.12
     pc2_obstacle_z_max_m:       2.5
     pc2_obstacle_depth_min_m:   0.3
-    pc2_obstacle_depth_max_m:   8.0
+    pc2_obstacle_depth_max_m:   5.0
     pc2_obstacle_dilation_px:   35
 
     # PointCloud2 color gates in OpenCV HSV units (H: 0-179, S/V: 0-255).
@@ -132,6 +132,21 @@ lane_segmentation_node:
     local_costmap_from_persistent: true
     local_costmap_publish_hz: 10.0
     local_back_nogo_buffer_m: 0.30
+
+    # ── Temporal lane filtering before /lane_costmap publish ───────
+    # Per-cell EMA + hysteresis on lane occupancy to suppress one-frame
+    # mask flicker before the local costmap is published.
+    temporal_filter_enabled: true
+    temporal_lane_rise_alpha: 0.60
+    temporal_lane_fall_alpha: 0.35
+    temporal_lane_unknown_decay: 0.08
+    temporal_lane_on_threshold: 0.60
+    temporal_lane_off_threshold: 0.45
+    # Zero the EMA state if no frame applies the filter for this long
+    # (seconds).  Prevents stale evidence from re-emerging through
+    # hysteresis after a perception gap (dropped frames, mode switch,
+    # robot teleport).  Set <= 0 to disable.
+    temporal_reset_gap_sec: 1.0
 
     # 0 disables the yaw-rate write gate.  With PC2 color-ground mode we
     # do not have the YOLO latency that made this guard necessary.
