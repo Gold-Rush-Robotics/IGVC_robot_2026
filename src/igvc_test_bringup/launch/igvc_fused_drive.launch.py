@@ -268,6 +268,6 @@ def generate_launch_description() -> LaunchDescription:
         twist_stamper_node,
         # object_detection_to_costmap_node,  # disabled: YOLO bbox obstacles
         # yolo_ros,  # disabled: only fed obstacle_costmap_node
-        # lidar_obstacle_costmap_node,  # disabled: obstacles shorter than lidar plane
+        lidar_obstacle_costmap_node,  # /scan ray-cast obstacle evidence -> /lidar_obstacle_map
         # depth_obstacle_costmap_node,
     ])

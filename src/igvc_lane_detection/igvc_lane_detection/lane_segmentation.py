@@ -47,7 +47,7 @@ from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from std_msgs.msg import ColorRGBA
 from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, Vector3Stamped
 
 from .projection_utils import (
     lookup_tf,
@@ -414,6 +414,22 @@ class LaneSegmentationNode(Node):
                 "not recognised; falling back to 'off'.")
             self.ground_plane_projection_mode = 'off'
 
+        # ── Ramp / slope detection ───────────────────────────────────
+        # RANSAC-fits the ground plane ahead of the robot (independent of
+        # ground_plane_projection_mode) and publishes the forward terrain
+        # slope plus the in-plane heading to the steepest-ascent ("fall")
+        # line on ``ramp_status_topic`` as a geometry_msgs/Vector3Stamped:
+        #   vector.x = slope angle ahead (degrees)
+        #   vector.y = heading error to the fall line (radians, base_link;
+        #              the yaw the robot must turn to face straight up-slope)
+        #   vector.z = detection confidence in [0, 1]
+        # mission_planner_node consumes this (fused with IMU pitch) to align
+        # the robot parallel to the IGVC ramp before climbing it.
+        self.ramp_detect_enabled  = bool(p('ramp_detect_enabled', False))
+        self.ramp_status_topic    = str(p('ramp_status_topic', '/ramp/state'))
+        self.ramp_min_period_sec  = float(p('ramp_min_period_sec', 0.2))
+        self._ramp_last_pub_mono: Optional[float] = None
+
         # ── Plane-based height obstacle gate ─────────────────────────
         # Once we have a RANSAC plane, any mask pixel whose true 3-D
         # height above the plane exceeds the threshold is almost
@@ -641,6 +657,10 @@ class LaneSegmentationNode(Node):
         self.marker_pub  = self.create_publisher(
             MarkerArray, self.lane_marker_topic, 10)
 
+        # Ramp/slope status for mission_planner (see ramp params above).
+        self.ramp_pub = (
+            self.create_publisher(Vector3Stamped, self.ramp_status_topic, 10)
+            if self.ramp_detect_enabled else None)
         self.latest_grid = self._empty_grid()
         self._last_persistent_stamp = None
         self._cam_state: dict = {}
@@ -1153,6 +1173,11 @@ class LaneSegmentationNode(Node):
                     f'No TF from {cam_frame} to {self.base_frame}; '
                     f'falling back to camera-frame PC2 projection for cam[{cam_idx}]',
                     throttle_duration_sec=2.0)
+
+        # ── Ramp / slope detection (independent of projection mode) ──
+        if self.ramp_pub is not None and cam_idx == 0:
+            self._detect_and_publish_ramp(
+                cam_idx, xyz, cam_tf, cloud_in_base_frame)
 
         # ── Optional ground-plane RANSAC + optical-frame TF lookup ──
         # Only paid for when ground-plane projection is enabled.  The
@@ -2198,6 +2223,64 @@ class LaneSegmentationNode(Node):
     # ═══════════════════════════════════════════════════════════════════
     # Ground-plane RANSAC (optional, see ground_plane_projection_mode)
     # ═══════════════════════════════════════════════════════════════════
+
+    def _detect_and_publish_ramp(
+        self,
+        cam_idx: int,
+        xyz: np.ndarray,
+        cam_tf,
+        cloud_in_base_frame: bool,
+    ) -> None:
+        """Estimate forward terrain slope and publish ``/ramp/state``.
+
+        Reuses the RANSAC ground-plane fit (in ``base_link``) to derive the
+        slope angle ahead of the robot and the heading to the steepest-ascent
+        line, so mission_planner can align the robot parallel to the IGVC ramp
+        before climbing it.  Runs independently of
+        ``ground_plane_projection_mode`` and is throttled to
+        ``ramp_min_period_sec``.
+
+        Published as geometry_msgs/Vector3Stamped on ``ramp_status_topic``:
+          vector.x = slope angle ahead (degrees)
+          vector.y = heading error to the fall line (radians, base_link)
+          vector.z = detection confidence in [0, 1]
+        """
+        if self.ramp_pub is None:
+            return
+
+        now_mono = time.monotonic()
+        if (self._ramp_last_pub_mono is not None
+                and (now_mono - self._ramp_last_pub_mono) < self.ramp_min_period_sec):
+            return
+        self._ramp_last_pub_mono = now_mono
+
+        plane = self._fit_ground_plane_base(
+            cam_idx, xyz, cam_tf, cloud_in_base_frame)
+        if plane is None:
+            return
+        n_hat, _d = plane
+        nx, ny, nz = float(n_hat[0]), float(n_hat[1]), float(n_hat[2])
+
+        # Slope = angle between the up-pointing plane normal and +z.
+        horiz = math.hypot(nx, ny)
+        slope_rad = math.atan2(horiz, max(abs(nz), 1e-6))
+        slope_deg = math.degrees(slope_rad)
+
+        # Steepest-ascent (fall-line) direction in base_link is (-nx, -ny);
+        # this is the yaw the robot must turn to face straight up-slope.
+        fall_line_yaw = math.atan2(-ny, -nx) if horiz > 1e-6 else 0.0
+
+        # Confidence proxy: normal verticality (a degenerate near-horizontal
+        # normal would have been rejected by the RANSAC z-normal gate).
+        confidence = float(np.clip(nz, 0.0, 1.0))
+
+        msg = Vector3Stamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.base_frame
+        msg.vector.x = slope_deg
+        msg.vector.y = fall_line_yaw
+        msg.vector.z = confidence
+        self.ramp_pub.publish(msg)
 
     def _fit_ground_plane_base(
         self,
