@@ -23,8 +23,8 @@ lane_segmentation_node:
       # - "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
 
     # ── Frames ──────────────────────────────────────────────────────
-    base_frame: "zed_camera_link"
-    occupancy_grid_frame: "zed_camera_link"
+    base_frame: "base_link"
+    occupancy_grid_frame: "base_link"
 
     # ── Local rolling costmap ───────────────────────────────────────
     grid_resolution: 0.05

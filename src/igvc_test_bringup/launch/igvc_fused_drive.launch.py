@@ -263,7 +263,7 @@ def generate_launch_description() -> LaunchDescription:
         # lane_follower,
         lane_segmentation,
         # gps_node,
-        # odom_tf_bridge_node,
+        odom_tf_bridge_node,
         # zed_f9p_launch,
         twist_stamper_node,
         # object_detection_to_costmap_node,  # disabled: YOLO bbox obstacles
