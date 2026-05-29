@@ -298,6 +298,55 @@ lane_segmentation_node:
     lane_canny_s_max:             70    # HSV S ≤ this (same as color filter)
     lane_canny_dilate_px:         5     # edge thickening before merge (px)
 
+    # ── Ground-plane projection (experimental, gated) ────────────────
+    # Fits a RANSAC plane to the ROI'd PC2 in base_link each frame, then
+    # uses ray–plane intersection to recover (fwd, lat) for mask pixels.
+    # Modes:
+    #   off      : disabled — current behaviour, projection uses per-pixel PC2 z
+    #   fallback : use PC2 z first; fill NaN pixels with ray–plane only
+    #   force    : always ray–plane (ignore per-pixel PC2 z)
+    # Recommended first test: 'fallback'.
+    ground_plane_projection_mode: "off"
+    ground_plane_ransac_iters:    60
+    ground_plane_inlier_thresh_m: 0.05
+    ground_plane_roi_fwd_min_m:   1.0
+    ground_plane_roi_fwd_max_m:   12.0
+    ground_plane_roi_lat_abs_m:   3.0
+    ground_plane_roi_z_abs_m:     0.30
+    ground_plane_min_inliers:     200
+    ground_plane_min_z_normal:    0.7
+    ground_plane_ema_alpha:       0.3      # 0=hold previous, 1=use new fit
+    ground_plane_max_sample_pts:  5000
+
+    # ── Plane-based height obstacle gate (requires plane mode != off) ─
+    # Drops mask pixels whose true height above the fitted ground plane
+    # exceeds the threshold.  Adapts to terrain pitch and camera drift.
+    plane_height_gate_enabled:    false
+    plane_height_gate_thresh_m:   0.10
+    plane_height_gate_dilate_px:  15
+
+    # ── Per-component lane curve fitting ─────────────────────────────
+    # Fits lat = poly(fwd) to each connected lane component in base_link
+    # and replaces the raw scatter with samples along the curve.  Keeps
+    # the original component when the fit residual exceeds the cap so
+    # smoothing can only improve, never delete data.
+    lane_curve_fit_enabled:       false
+    lane_curve_poly_order:        2        # 1=line, 2=quadratic, 3=cubic
+    lane_curve_min_points:        10
+    lane_curve_sample_step_m:     0.10
+    lane_curve_max_residual_m:    0.30     # reject fit above this RMSE
+    lane_curve_extend_to_robot:   false
+    lane_curve_extend_forward_m:  0.0      # 0 disables forward extrapolation
+
+    # ── Confidence-weighted persistent-map writes ────────────────────
+    # Per-point write scale = base_weight * w, where w grows with the
+    # connected-component size that produced the point (large blobs are
+    # more likely to be real paint than specks).  No effect unless
+    # enabled; original behaviour is w = 1 for every point.
+    confidence_weighted_writes_enabled: false
+    confidence_min_weight:        0.3      # clamp floor (0.05–1.0)
+    confidence_component_full_px: 400      # component size that hits w=1
+
     # ── Depth-based obstacle masking ─────────────────────────────────
     # After YOLOPv2 inference, pixels whose 3-D base_link height lands in the
     # obstacle band are zeroed out of both the drivable-area and lane-line masks.

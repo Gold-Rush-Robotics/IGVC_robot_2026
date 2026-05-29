@@ -11,6 +11,10 @@ find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+# PCL for ICP-based one-shot geometric calibration.  Only the modules
+# actually used by the merger node are requested to keep build times
+# down.  Eigen3 is pulled in transitively.
+find_package(PCL REQUIRED COMPONENTS common filters registration)
 
 add_library(pointcloud_merger_component SHARED
   src/pointcloud_merger_node.cpp
@@ -20,6 +24,11 @@ target_include_directories(pointcloud_merger_component PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
+target_include_directories(pointcloud_merger_component SYSTEM PUBLIC
+  ${PCL_INCLUDE_DIRS}
+)
+target_link_libraries(pointcloud_merger_component ${PCL_LIBRARIES})
+target_compile_definitions(pointcloud_merger_component PUBLIC ${PCL_DEFINITIONS})
 ament_target_dependencies(pointcloud_merger_component
   rclcpp
   rclcpp_components

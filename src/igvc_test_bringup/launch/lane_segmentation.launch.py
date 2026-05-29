@@ -119,6 +119,25 @@ def generate_launch_description() -> LaunchDescription:
             'publish_hz': 15.0,
             'drop_invalid': False,
             'preserve_organized': True,
+            # ── One-shot ICP geometric calibration ──────────────────
+            # Accumulate N frames per input (already transformed to
+            # base_link via URDF), then run ICP from each non-reference
+            # camera against the reference (index 0 = front).  The
+            # refined source→base_link transform is cached and reused
+            # forever — URDF is no longer consulted after calibration
+            # completes.  Translation/rotation/fitness sanity caps
+            # cause a per-camera fallback to URDF if ICP misbehaves.
+            'calibrate_on_startup': True,
+            'calibration_method': 'icp',
+            'calibration_reference_index': 0,        # front camera
+            'calibration_frames_per_input': 10,
+            'calibration_voxel_size_m': 0.10,
+            'calibration_max_correspondence_m': 0.30,
+            'calibration_max_iterations': 50,
+            'calibration_max_points_per_input': 200000,
+            'calibration_max_translation_m': 0.30,
+            'calibration_max_rotation_deg': 15.0,
+            'calibration_max_fitness': 0.10,
         }],
     )
 

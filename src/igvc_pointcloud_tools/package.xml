@@ -14,6 +14,10 @@
   <depend>sensor_msgs</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
+  <!-- PCL: required for one-shot ICP/FPFH geometric calibration of the
+       partially-overlapping ZED point clouds (see calibrate_on_startup
+       in pointcloud_merger_node). -->
+  <depend>libpcl-all-dev</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

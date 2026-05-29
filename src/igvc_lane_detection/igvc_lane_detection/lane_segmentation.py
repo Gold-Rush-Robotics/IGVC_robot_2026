@@ -378,6 +378,81 @@ class LaneSegmentationNode(Node):
             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_kce, _kce))
             if self.lane_canny_dilate_px > 0 else None)
 
+        # ── Ground-plane RANSAC projection ────────────────────────────
+        # Robustness experiment: instead of per-pixel PC2 z (which is
+        # very noisy on white lane paint due to low texture + specular
+        # returns), fit a single ground plane each frame in base_link
+        # using RANSAC on the *good* PC2 points (mostly asphalt/grass),
+        # then back-project lane-mask pixels by intersecting the camera
+        # ray with that plane.
+        #
+        # Modes:
+        #   'off'      : disabled (default, current behaviour)
+        #   'fallback' : use PC2 first; only fill NaN pixels via plane
+        #   'force'    : always use ray-plane (ignore per-pixel PC2 z)
+        # All other parameters are no-ops when mode == 'off'.
+        self.ground_plane_projection_mode = str(
+            p('ground_plane_projection_mode', 'off')).lower()
+        self.ground_plane_ransac_iters     = max(1, int(p('ground_plane_ransac_iters', 60)))
+        self.ground_plane_inlier_thresh_m  = float(p('ground_plane_inlier_thresh_m', 0.05))
+        self.ground_plane_roi_fwd_min_m    = float(p('ground_plane_roi_fwd_min_m', 1.0))
+        self.ground_plane_roi_fwd_max_m    = float(p('ground_plane_roi_fwd_max_m', 12.0))
+        self.ground_plane_roi_lat_abs_m    = float(p('ground_plane_roi_lat_abs_m', 3.0))
+        self.ground_plane_roi_z_abs_m      = float(p('ground_plane_roi_z_abs_m', 0.30))
+        self.ground_plane_min_inliers      = max(3, int(p('ground_plane_min_inliers', 200)))
+        self.ground_plane_min_z_normal     = float(p('ground_plane_min_z_normal', 0.7))
+        self.ground_plane_ema_alpha        = float(np.clip(
+            float(p('ground_plane_ema_alpha', 0.3)), 0.0, 1.0))
+        self.ground_plane_max_sample_pts   = max(100, int(p('ground_plane_max_sample_pts', 5000)))
+        # Per-camera plane cache (n_hat, d) in base_link. Persists across
+        # frames so a single-frame RANSAC failure does not lose the plane.
+        self._plane_by_cam: dict = {}
+
+        if self.ground_plane_projection_mode not in ('off', 'fallback', 'force'):
+            self.get_logger().warn(
+                f"ground_plane_projection_mode='{self.ground_plane_projection_mode}' "
+                "not recognised; falling back to 'off'.")
+            self.ground_plane_projection_mode = 'off'
+
+        # ── Plane-based height obstacle gate ─────────────────────────
+        # Once we have a RANSAC plane, any mask pixel whose true 3-D
+        # height above the plane exceeds the threshold is almost
+        # certainly an obstacle rather than ground paint.  This is a
+        # stronger version of the fixed-Z obstacle_mask gate because it
+        # adapts to terrain pitch and camera mounting drift.  Requires
+        # ground_plane_projection_mode != 'off' (we need the plane).
+        self.plane_height_gate_enabled    = bool(p('plane_height_gate_enabled', False))
+        self.plane_height_gate_thresh_m   = float(p('plane_height_gate_thresh_m', 0.10))
+        self.plane_height_gate_dilate_px  = max(0, int(p('plane_height_gate_dilate_px', 15)))
+
+        # ── Per-component lane curve fitting ─────────────────────────
+        # Fit a polynomial (lat = f(fwd)) to each lane component in
+        # base_link and replace the raw projected points with samples
+        # along the smoothed curve.  Removes scatter from depth noise
+        # and bridges short gaps in dashed paint.  Can also extrapolate
+        # the curve forward to the nearest range gate so the corridor
+        # is continuous even when the model only sees the far end.
+        self.lane_curve_fit_enabled        = bool(p('lane_curve_fit_enabled', False))
+        self.lane_curve_poly_order         = max(1, min(3, int(p('lane_curve_poly_order', 2))))
+        self.lane_curve_min_points         = max(3, int(p('lane_curve_min_points', 10)))
+        self.lane_curve_sample_step_m      = max(0.02, float(p('lane_curve_sample_step_m', 0.10)))
+        self.lane_curve_max_residual_m     = float(p('lane_curve_max_residual_m', 0.30))
+        self.lane_curve_extend_to_robot    = bool(p('lane_curve_extend_to_robot', False))
+        self.lane_curve_extend_forward_m   = float(p('lane_curve_extend_forward_m', 0.0))
+
+        # ── Confidence-weighted persistent-map writes ────────────────
+        # Per-point write weight = base_weight * w(point), where w is
+        # derived from the size of the lane component that produced the
+        # point (large connected components are more likely to be real
+        # lane paint than small specks).  Disabled by default so the
+        # persistent map behaves exactly as before.
+        self.confidence_weighted_writes_enabled = bool(
+            p('confidence_weighted_writes_enabled', False))
+        self.confidence_min_weight              = float(np.clip(
+            float(p('confidence_min_weight', 0.3)), 0.05, 1.0))
+        self.confidence_component_full_px       = max(1, int(
+            p('confidence_component_full_px', 400)))
+
         if self._use_model and not self.model_weights:
             raise RuntimeError(
                 "Parameter 'model_weights' must be set to the path of "
@@ -755,6 +830,8 @@ class LaneSegmentationNode(Node):
         free_pts: Optional[Sequence[Tuple[float, float]]],
         lane_pts: Optional[Sequence[Tuple[float, float]]],
         stamp,
+        free_weights: Optional[np.ndarray] = None,
+        lane_weights: Optional[np.ndarray] = None,
     ) -> None:
         self._last_persistent_stamp = stamp
         free_empty = free_pts is None or len(free_pts) == 0
@@ -823,10 +900,12 @@ class LaneSegmentationNode(Node):
 
         self._stamp_persistent_points(
             free_pts, tx, ty, cos_y, sin_y,
-            self._pfree, self.persist_free_hit_w)
+            self._pfree, self.persist_free_hit_w,
+            point_weights=free_weights)
         self._stamp_persistent_points(
             lane_pts, tx, ty, cos_y, sin_y,
-            self._phits, self.persist_hit_w)
+            self._phits, self.persist_hit_w,
+            point_weights=lane_weights)
         self._persistent_dirty = True
         self._persistent_msg_dirty = True
 
@@ -839,6 +918,7 @@ class LaneSegmentationNode(Node):
         sin_y: float,
         grid: np.ndarray,
         weight: float,
+        point_weights: Optional[np.ndarray] = None,
     ) -> None:
         if points is None or len(points) == 0:
             return
@@ -863,7 +943,17 @@ class LaneSegmentationNode(Node):
 
         rows = rows[valid]
         cols = cols[valid]
-        np.add.at(grid, (rows, cols), weight)
+
+        # Confidence-weighted writes: per-point weight scales the base.
+        # Caller passes None when CWW is disabled (current behaviour).
+        if (
+            point_weights is not None
+            and len(point_weights) == pts.shape[0]
+        ):
+            pw = np.asarray(point_weights, dtype=np.float32)[valid]
+            np.add.at(grid, (rows, cols), weight * pw)
+        else:
+            np.add.at(grid, (rows, cols), weight)
         # Clamp the entire grid in-place.  Using np.minimum on the full
         # array avoids the fancy-index last-write-wins issue for duplicate
         # (row, col) pairs that the original per-index write had.
@@ -1064,6 +1154,28 @@ class LaneSegmentationNode(Node):
                     f'falling back to camera-frame PC2 projection for cam[{cam_idx}]',
                     throttle_duration_sec=2.0)
 
+        # ── Optional ground-plane RANSAC + optical-frame TF lookup ──
+        # Only paid for when ground-plane projection is enabled.  The
+        # optical TF is separate from cam_tf above because the ZED
+        # publishes the cloud in the body (FLU) frame while the RGB
+        # message is in the optical frame (x=right, y=down, z=forward),
+        # which is what K is expressed in.
+        plane: Optional[Tuple[np.ndarray, float]] = None
+        optical_tf = None
+        if self.ground_plane_projection_mode != 'off':
+            plane = self._fit_ground_plane_base(
+                cam_idx, xyz, cam_tf, cloud_in_base_frame)
+            opt_frame = rgb_msg.header.frame_id
+            if opt_frame and opt_frame != self.base_frame:
+                optical_tf = lookup_tf(
+                    self.tf_buffer, self.base_frame, opt_frame, None)
+                if optical_tf is None:
+                    self.get_logger().warn(
+                        f'No TF from optical frame {opt_frame} to '
+                        f'{self.base_frame}; ground-plane projection '
+                        f'disabled this frame for cam[{cam_idx}].',
+                        throttle_duration_sec=2.0)
+
         if not self._use_model:
             free_pts, lane_pts, lane_components, da_mask, ll_mask = (
                 self._detect_pc2_color_ground(
@@ -1149,6 +1261,23 @@ class LaneSegmentationNode(Node):
                 da_mask[obs_mask] = 0
                 ll_mask[obs_mask] = 0
 
+        # ── Plane-based obstacle gate ──
+        # Stronger than the fixed-Z obstacle band above: any cloud pixel
+        # whose height above the RANSAC ground plane exceeds the threshold
+        # is treated as an obstacle.  Adapts to terrain pitch and slow
+        # camera-mount drift since the plane is re-fit every frame.
+        if self.plane_height_gate_enabled and plane is not None:
+            ph_mask = self._plane_height_obstacle_mask(
+                xyz, cam_tf, cloud_in_base_frame, plane)
+            if ph_mask is not None and np.any(ph_mask):
+                if ph_mask.shape != da_mask.shape:
+                    ph_mask = cv2.resize(
+                        ph_mask.astype(np.uint8),
+                        (da_mask.shape[1], da_mask.shape[0]),
+                        interpolation=cv2.INTER_NEAREST).astype(bool)
+                da_mask[ph_mask] = 0
+                ll_mask[ph_mask] = 0
+
         # ── Lane mask dilation (pre-projection) ──
         # Thicken the raw lane mask so each detected lane pixel projects
         # to a small neighbourhood instead of a single ray.  This fills
@@ -1163,9 +1292,11 @@ class LaneSegmentationNode(Node):
         # ── Project masks into base_link ──
         free_pts = self._project_mask_points(
             da_mask, xyz, cam_tf,
-            stride=self.da_subsample_px)
+            stride=self.da_subsample_px,
+            cam_idx=cam_idx, optical_tf=optical_tf, plane=plane)
         lane_pts, lane_components = self._project_lane_mask(
-            ll_mask, xyz, cam_tf)
+            ll_mask, xyz, cam_tf,
+            cam_idx=cam_idx, optical_tf=optical_tf, plane=plane)
 
         mask_stats = (
             f'mask_free_px={post_da_area} mask_lane_px={post_ll_area}'
@@ -1267,6 +1398,19 @@ class LaneSegmentationNode(Node):
             new_grid = self._build_grid(
                 fused_free, fused_lane, process_stamp)
 
+        # Optional per-point confidence weights for the persistent map.
+        # Sized & ordered to match the points actually written below.
+        lane_weights: Optional[np.ndarray] = None
+        lane_pts_for_persist = lane_pts
+        if self.confidence_weighted_writes_enabled and lane_components:
+            # Component-derived weights are aligned with concat(components),
+            # which may re-order the points relative to ``lane_pts`` (when
+            # curve-fit is off).  Use concat(components) as the source of
+            # truth so weights[i] matches point[i].
+            lane_pts_for_persist = np.concatenate(
+                lane_components, axis=0).astype(np.float32, copy=False)
+            lane_weights = self._component_weights(lane_components)
+
         with self._state_lock:
             if has_points and new_grid is not None:
                 self.latest_grid = new_grid
@@ -1276,7 +1420,8 @@ class LaneSegmentationNode(Node):
                 # cheap and should use the freshest odom pose.
                 persist_stamp = rgb_msg.header.stamp if self._use_model else None
                 self._update_persistent_map(
-                    free_pts, lane_pts, persist_stamp)
+                    free_pts, lane_pts_for_persist, persist_stamp,
+                    lane_weights=lane_weights)
                 if self.local_from_persistent:
                     self._publish_local_costmap_from_persistent()
                 else:
@@ -2050,6 +2195,322 @@ class LaneSegmentationNode(Node):
         trans = np.array([t.x, t.y, t.z], dtype=np.float32)
         return rot, trans
 
+    # ═══════════════════════════════════════════════════════════════════
+    # Ground-plane RANSAC (optional, see ground_plane_projection_mode)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _fit_ground_plane_base(
+        self,
+        cam_idx: int,
+        xyz: np.ndarray,
+        cam_tf,
+        cloud_in_base_frame: bool,
+    ) -> Optional[Tuple[np.ndarray, float]]:
+        """RANSAC-fit a ground plane in ``base_link`` from the PC2.
+
+        Returns ``(n_hat, d)`` with ``n_hat·p + d = 0`` on the plane and
+        ``n_hat`` pointing roughly +z (up).  EMA-smoothed across frames
+        and cached per-camera so a single failed RANSAC pass keeps the
+        last good plane available to downstream code.
+        """
+        fwd, lat, height, valid = self._cloud_base_arrays(
+            xyz, cam_tf, cloud_in_base_frame)
+        roi = (
+            valid
+            & (fwd >= self.ground_plane_roi_fwd_min_m)
+            & (fwd <= self.ground_plane_roi_fwd_max_m)
+            & (np.abs(lat) <= self.ground_plane_roi_lat_abs_m)
+            & (np.abs(height) <= self.ground_plane_roi_z_abs_m)
+        )
+        ys, xs = np.nonzero(roi)
+        n_total = int(ys.size)
+        if n_total < self.ground_plane_min_inliers:
+            return self._plane_by_cam.get(cam_idx)
+
+        if n_total > self.ground_plane_max_sample_pts:
+            step = int(math.ceil(n_total / self.ground_plane_max_sample_pts))
+            ys = ys[::step]
+            xs = xs[::step]
+
+        pts = np.stack(
+            [fwd[ys, xs], lat[ys, xs], height[ys, xs]],
+            axis=1,
+        ).astype(np.float32, copy=False)
+        n = pts.shape[0]
+        if n < 3:
+            return self._plane_by_cam.get(cam_idx)
+
+        rng = np.random.default_rng(0xA1CE)
+        thresh = self.ground_plane_inlier_thresh_m
+        best_count = 0
+        best_n: Optional[np.ndarray] = None
+        best_d: Optional[float] = None
+
+        for _ in range(self.ground_plane_ransac_iters):
+            idx = rng.choice(n, size=3, replace=False)
+            p0, p1, p2 = pts[idx[0]], pts[idx[1]], pts[idx[2]]
+            nrm = np.cross(p1 - p0, p2 - p0)
+            nl = float(np.linalg.norm(nrm))
+            if nl < 1e-6:
+                continue
+            nrm = (nrm / nl).astype(np.float32)
+            if nrm[2] < 0.0:
+                nrm = -nrm
+            if nrm[2] < self.ground_plane_min_z_normal:
+                continue
+            d = -float(np.dot(nrm, p0))
+            dist = np.abs(pts @ nrm + d)
+            count = int(np.count_nonzero(dist < thresh))
+            if count > best_count:
+                best_count = count
+                best_n = nrm
+                best_d = d
+
+        if (
+            best_n is None
+            or best_d is None
+            or best_count < self.ground_plane_min_inliers
+        ):
+            return self._plane_by_cam.get(cam_idx)
+
+        # Least-squares refit on inliers (SVD of centred points).
+        dist = np.abs(pts @ best_n + best_d)
+        inliers = pts[dist < thresh]
+        if inliers.shape[0] >= 3:
+            centroid = inliers.mean(axis=0)
+            _, _, vh = np.linalg.svd(inliers - centroid, full_matrices=False)
+            refit_n = vh[-1].astype(np.float32)
+            if refit_n[2] < 0.0:
+                refit_n = -refit_n
+            if refit_n[2] >= self.ground_plane_min_z_normal:
+                best_n = refit_n
+                best_d = -float(np.dot(best_n, centroid))
+
+        prev = self._plane_by_cam.get(cam_idx)
+        if prev is not None and self.ground_plane_ema_alpha < 1.0:
+            a = self.ground_plane_ema_alpha
+            blended_n = a * best_n + (1.0 - a) * prev[0]
+            bln = float(np.linalg.norm(blended_n))
+            if bln > 1e-6:
+                best_n = (blended_n / bln).astype(np.float32)
+                best_d = float(a * best_d + (1.0 - a) * prev[1])
+
+        self._plane_by_cam[cam_idx] = (best_n, float(best_d))
+        return self._plane_by_cam[cam_idx]
+
+    def _ray_plane_intersect(
+        self,
+        ys_mask: np.ndarray,
+        xs_mask: np.ndarray,
+        mask_shape: Tuple[int, int],
+        cam_idx: int,
+        optical_tf,
+        plane: Optional[Tuple[np.ndarray, float]],
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Intersect camera rays (built from K) with a base_link plane.
+
+        Returns ``(pts (M,2) [fwd,lat], local_idx (M,))`` where
+        ``local_idx`` indexes the input ``ys_mask/xs_mask`` arrays for the
+        rays that produced a valid (in-front, in-range) intersection.
+        """
+        empty_pts = np.empty((0, 2), dtype=np.float32)
+        empty_idx = np.empty((0,), dtype=np.int64)
+        if (
+            ys_mask.size == 0
+            or plane is None
+            or optical_tf is None
+            or cam_idx not in self.K
+        ):
+            return empty_pts, empty_idx
+
+        K = self.K[cam_idx]
+        if K is None or K.size != 9:
+            return empty_pts, empty_idx
+        fx = float(K[0, 0]); fy = float(K[1, 1])
+        cx = float(K[0, 2]); cy = float(K[1, 2])
+        if fx <= 0.0 or fy <= 0.0:
+            return empty_pts, empty_idx
+
+        img_size = self.camera_info_size.get(cam_idx)
+        if img_size is None:
+            return empty_pts, empty_idx
+        img_w, img_h = img_size
+        h_m, w_m = mask_shape
+        sx = float(img_w) / float(w_m) if w_m > 0 else 1.0
+        sy = float(img_h) / float(h_m) if h_m > 0 else 1.0
+
+        u = xs_mask.astype(np.float32) * sx
+        v = ys_mask.astype(np.float32) * sy
+
+        # Rays in the camera *optical* frame (x=right, y=down, z=forward).
+        rx = (u - cx) / fx
+        ry = (v - cy) / fy
+        rz = np.ones_like(u)
+        rays_cam = np.stack([rx, ry, rz], axis=0)  # (3, N)
+
+        rot, trans = self._cam_tf_components(optical_tf)
+        if rot is None or trans is None:
+            return empty_pts, empty_idx
+        rays_base = rot @ rays_cam                   # (3, N)
+        origin = trans                               # (3,)
+
+        n_hat, d_plane = plane
+        n_hat = n_hat.astype(np.float32, copy=False)
+        n_dot_dir = (n_hat @ rays_base).astype(np.float32)  # (N,)
+        n_dot_o_plus_d = float(n_hat @ origin) + float(d_plane)
+
+        valid_dir = np.abs(n_dot_dir) > 1e-6
+        if not np.any(valid_dir):
+            return empty_pts, empty_idx
+
+        t = np.full(n_dot_dir.shape, np.nan, dtype=np.float32)
+        t[valid_dir] = -n_dot_o_plus_d / n_dot_dir[valid_dir]
+
+        pts_base = origin[:, None] + rays_base * t[None, :]
+        fwd = pts_base[0]
+        lat = pts_base[1]
+
+        ok = (
+            np.isfinite(fwd) & np.isfinite(lat) & (t > 0.0)
+            & (fwd > self.min_detection_depth_m)
+            & (fwd < self.max_detection_depth_m)
+        )
+        if not np.any(ok):
+            return empty_pts, empty_idx
+        pts = np.stack([fwd[ok], lat[ok]], axis=1).astype(np.float32, copy=False)
+        idx_local = np.flatnonzero(ok).astype(np.int64, copy=False)
+        return pts, idx_local
+
+    def _plane_height_obstacle_mask(
+        self,
+        xyz: np.ndarray,
+        cam_tf,
+        cloud_in_base_frame: bool,
+        plane: Optional[Tuple[np.ndarray, float]],
+    ) -> Optional[np.ndarray]:
+        """Bool mask of pixels whose 3-D base_link point lies above the plane.
+
+        Returns ``None`` when the plane is unavailable.  Pixels with NaN
+        cloud values are *not* flagged — they cannot be classified.
+        """
+        if plane is None or xyz is None or xyz.size == 0:
+            return None
+        fwd, lat, height, valid = self._cloud_base_arrays(
+            xyz, cam_tf, cloud_in_base_frame)
+        n_hat, d_plane = plane
+        # Signed height above plane: n·p + d (positive = above for an
+        # upward-pointing normal, which we enforce in the RANSAC step).
+        with np.errstate(invalid='ignore'):
+            sign_h = (
+                n_hat[0] * fwd + n_hat[1] * lat + n_hat[2] * height + d_plane
+            )
+        obs = valid & np.isfinite(sign_h) & (sign_h > self.plane_height_gate_thresh_m)
+        if not np.any(obs):
+            return obs
+        if self.plane_height_gate_dilate_px > 1:
+            k = self.plane_height_gate_dilate_px | 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            obs = cv2.dilate(obs.astype(np.uint8), kernel).astype(bool)
+        return obs
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Lane curve fitting (optional, see lane_curve_fit_enabled)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _fit_lane_curves(
+        self, components: Sequence[np.ndarray],
+    ) -> Tuple[np.ndarray, List[np.ndarray]]:
+        """Fit lat = poly(fwd) per component; replace with smoothed samples.
+
+        Components with too few points or excessive fit residuals are
+        kept as-is (so curve fit can only improve, never delete, lane
+        data).  Returns ``(all_pts, new_components)``.
+        """
+        new_components: List[np.ndarray] = []
+        for comp in components:
+            if comp is None or comp.shape[0] < self.lane_curve_min_points:
+                new_components.append(comp)
+                continue
+            fwd = comp[:, 0]
+            lat = comp[:, 1]
+            order = min(
+                self.lane_curve_poly_order,
+                max(1, comp.shape[0] - 1),
+            )
+            try:
+                coeffs = np.polyfit(fwd, lat, order)
+                pred = np.polyval(coeffs, fwd)
+                residual = float(np.sqrt(np.mean((lat - pred) ** 2)))
+            except (np.linalg.LinAlgError, ValueError):
+                new_components.append(comp)
+                continue
+            if (
+                self.lane_curve_max_residual_m > 0.0
+                and residual > self.lane_curve_max_residual_m
+            ):
+                new_components.append(comp)
+                continue
+            f_lo = float(np.min(fwd))
+            f_hi = float(np.max(fwd))
+            if self.lane_curve_extend_to_robot:
+                f_lo = float(self.min_detection_depth_m)
+            if self.lane_curve_extend_forward_m > 0.0:
+                f_hi = min(
+                    float(self.max_detection_depth_m),
+                    f_hi + self.lane_curve_extend_forward_m,
+                )
+            if f_hi <= f_lo:
+                new_components.append(comp)
+                continue
+            n_samples = max(
+                2,
+                int(math.ceil((f_hi - f_lo) / self.lane_curve_sample_step_m)) + 1,
+            )
+            f_samples = np.linspace(f_lo, f_hi, n_samples, dtype=np.float32)
+            l_samples = np.polyval(coeffs, f_samples).astype(np.float32)
+            ok = (
+                np.isfinite(f_samples) & np.isfinite(l_samples)
+                & (f_samples > self.min_detection_depth_m)
+                & (f_samples < self.max_detection_depth_m)
+            )
+            if not np.any(ok):
+                new_components.append(comp)
+                continue
+            new_components.append(
+                np.stack([f_samples[ok], l_samples[ok]], axis=1).astype(
+                    np.float32, copy=False))
+
+        new_components = [c for c in new_components if c is not None and c.shape[0] > 0]
+        if not new_components:
+            return np.empty((0, 2), dtype=np.float32), []
+        all_pts = np.concatenate(new_components, axis=0).astype(np.float32, copy=False)
+        return all_pts, new_components
+
+    def _component_weights(
+        self, components: Sequence[np.ndarray],
+    ) -> np.ndarray:
+        """Per-point write weights derived from component size.
+
+        Returns a float32 array aligned with ``np.concatenate(components)``.
+        Each point inherits its parent component's weight in
+        ``[confidence_min_weight, 1.0]``.
+        """
+        if not components:
+            return np.empty((0,), dtype=np.float32)
+        full = float(self.confidence_component_full_px)
+        chunks: List[np.ndarray] = []
+        for comp in components:
+            if comp is None or comp.shape[0] == 0:
+                continue
+            w = float(np.clip(
+                comp.shape[0] / max(1.0, full),
+                self.confidence_min_weight, 1.0,
+            ))
+            chunks.append(np.full(comp.shape[0], w, dtype=np.float32))
+        if not chunks:
+            return np.empty((0,), dtype=np.float32)
+        return np.concatenate(chunks, axis=0)
+
     def _project_pixel_indices(
         self,
         ys_mask: np.ndarray,
@@ -2057,8 +2518,16 @@ class LaneSegmentationNode(Node):
         mask_shape: Tuple[int, int],
         xyz: np.ndarray,
         cam_tf,
+        cam_idx: Optional[int] = None,
+        optical_tf=None,
+        plane: Optional[Tuple[np.ndarray, float]] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Vectorised mask-pixel → ``base_link`` projection.
+
+        When ``ground_plane_projection_mode`` is set, the optional
+        ``cam_idx``, ``optical_tf`` and ``plane`` arguments enable a
+        ray-plane back-projection that supplements (``'fallback'``) or
+        replaces (``'force'``) the per-pixel PC2 lookup.
 
         Parameters
         ----------
@@ -2083,6 +2552,19 @@ class LaneSegmentationNode(Node):
         if ys_mask.size == 0:
             return (np.empty((0, 2), dtype=np.float32),
                     np.empty((0,), dtype=np.int64))
+
+        mode = self.ground_plane_projection_mode
+        plane_ok = (
+            mode != 'off'
+            and plane is not None
+            and optical_tf is not None
+            and cam_idx is not None
+        )
+
+        # ── Force mode: skip PC2 entirely, ray-plane only ─────────────
+        if mode == 'force' and plane_ok:
+            return self._ray_plane_intersect(
+                ys_mask, xs_mask, mask_shape, cam_idx, optical_tf, plane)
 
         h_d, w_d = xyz.shape[:2]
         h_m, w_m = mask_shape
@@ -2122,6 +2604,12 @@ class LaneSegmentationNode(Node):
         gate = np.isfinite(xc) & np.isfinite(yc) & np.isfinite(zc)
         n_finite = int(np.count_nonzero(gate))
         if n_finite == 0:
+            # If plane fallback is enabled, try to recover ALL pixels via
+            # ray-plane instead of giving up.
+            if mode == 'fallback' and plane_ok:
+                return self._ray_plane_intersect(
+                    ys_mask, xs_mask, mask_shape,
+                    cam_idx, optical_tf, plane)
             self.get_logger().warn(
                 f'_project_pixel_indices: all {n_in} sampled PC2 points are '
                 f'NaN/Inf — projection produced 0 pts',
@@ -2170,12 +2658,31 @@ class LaneSegmentationNode(Node):
                     f'fwd range was [{float(fwd.min()):.2f}, '
                     f'{float(fwd.max()):.2f}] m',
                     throttle_duration_sec=2.0)
+            if mode == 'fallback' and plane_ok:
+                return self._ray_plane_intersect(
+                    ys_mask, xs_mask, mask_shape,
+                    cam_idx, optical_tf, plane)
             return (np.empty((0, 2), dtype=np.float32),
                     np.empty((0,), dtype=np.int64))
 
         idx_final = idx1[forward_gate]
         pts = np.stack([fwd[forward_gate], lat[forward_gate]], axis=1).astype(
             np.float32, copy=False)
+
+        # ── Fallback mode: fill NaN/dropped pixels via ray-plane ─────
+        if mode == 'fallback' and plane_ok:
+            # Indices the PC2 path lost (NaN or out-of-range).
+            survived = np.zeros(ys_mask.shape[0], dtype=bool)
+            survived[idx_final] = True
+            missing = np.flatnonzero(~survived)
+            if missing.size > 0:
+                plane_pts, plane_local_idx = self._ray_plane_intersect(
+                    ys_mask[missing], xs_mask[missing], mask_shape,
+                    cam_idx, optical_tf, plane)
+                if plane_pts.shape[0] > 0:
+                    pts = np.concatenate([pts, plane_pts], axis=0)
+                    idx_final = np.concatenate(
+                        [idx_final, missing[plane_local_idx]], axis=0)
         return pts, idx_final
 
     def _project_mask_points(
@@ -2184,6 +2691,9 @@ class LaneSegmentationNode(Node):
         xyz: np.ndarray,
         cam_tf,
         stride: int,
+        cam_idx: Optional[int] = None,
+        optical_tf=None,
+        plane: Optional[Tuple[np.ndarray, float]] = None,
     ) -> np.ndarray:
         """Vectorised drivable-area projection.
 
@@ -2216,7 +2726,8 @@ class LaneSegmentationNode(Node):
         xs_mask = xs_sub * stride if stride > 1 else xs_sub
 
         pts, _ = self._project_pixel_indices(
-            ys_mask, xs_mask, mask.shape[:2], xyz, cam_tf)
+            ys_mask, xs_mask, mask.shape[:2], xyz, cam_tf,
+            cam_idx=cam_idx, optical_tf=optical_tf, plane=plane)
         return pts
 
     def _project_lane_mask(
@@ -2224,6 +2735,9 @@ class LaneSegmentationNode(Node):
         ll_mask: np.ndarray,
         xyz: np.ndarray,
         cam_tf,
+        cam_idx: Optional[int] = None,
+        optical_tf=None,
+        plane: Optional[Tuple[np.ndarray, float]] = None,
     ) -> Tuple[np.ndarray, List[np.ndarray]]:
         """Vectorised lane-line projection, partitioned by component.
 
@@ -2273,7 +2787,8 @@ class LaneSegmentationNode(Node):
         lbl_per_px = labels[ys_all, xs_all]
 
         all_pts, valid_idx = self._project_pixel_indices(
-            ys_all, xs_all, ll_mask.shape[:2], xyz, cam_tf)
+            ys_all, xs_all, ll_mask.shape[:2], xyz, cam_tf,
+            cam_idx=cam_idx, optical_tf=optical_tf, plane=plane)
         if all_pts.shape[0] == 0:
             return all_pts, []
 
@@ -2296,6 +2811,12 @@ class LaneSegmentationNode(Node):
         # Sort components left-to-right by mean lateral offset.  +y is
         # left of the robot, so most-positive first.
         components.sort(key=lambda a: -float(a[:, 1].mean()))
+
+        # Optional per-component polynomial smoothing / extrapolation.
+        # Replaces both ``components`` and ``all_pts`` so downstream code
+        # (markers, costmap, persistent map) sees the smoothed curves.
+        if self.lane_curve_fit_enabled and components:
+            all_pts, components = self._fit_lane_curves(components)
         return all_pts, components
 
     # ═══════════════════════════════════════════════════════════════════
