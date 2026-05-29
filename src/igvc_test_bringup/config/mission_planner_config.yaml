@@ -21,3 +21,21 @@ mission_planner_node:
     waypoint_lats: [0.0, 0.0, 0.0, 0.0]
     waypoint_lons: [0.0, 0.0, 0.0, 0.0]
     waypoint_kinds: ["start", "obstacle", "obstacle", "end"]
+
+    # ── Ramp alignment / climb ──────────────────────────────────────
+    # Detects the 15° course ramp from lane-seg ground-plane slope and the
+    # ZED IMU pitch, rotates the robot parallel to the fall line, then drives
+    # it straight up via injected NavigateToPose goals.  Suppressed while a
+    # GPS waypoint mission ("active"/"done") owns navigation.
+    ramp_enabled: true
+    ramp_status_topic: "/ramp/state"          # geometry_msgs/Vector3Stamped from lane-seg
+    imu_topic: "/front_zed_camera_x/zed_node/imu/data"
+    ramp_detect_slope_deg: 8.0                 # lane-seg forward slope that arms ramp mode
+    ramp_min_confidence: 0.3                   # min slope-reading confidence (Vector3.z)
+    ramp_confirm_pitch_deg: 5.0                # IMU pitch confirming we are on the ramp
+    ramp_exit_pitch_deg: 3.0                   # pitch below which the ramp is "cleared"
+    ramp_align_yaw_tol_deg: 8.0                # heading error to finish aligning → climb
+    ramp_climb_distance_m: 6.0                 # how far up the fall line to place the goal
+    ramp_goal_period_sec: 1.0                  # re-inject the climb goal at most this often
+    ramp_status_timeout_sec: 1.0              # ignore lane-seg slope older than this
+    ramp_exit_hold_sec: 1.5                    # pitch must stay low this long before exit

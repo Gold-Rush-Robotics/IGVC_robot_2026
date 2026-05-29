@@ -94,7 +94,7 @@ def generate_launch_description() -> LaunchDescription:
         name='zed_odom_tf_bridge',
         output='screen',
         parameters=[{
-            'odom_topic': '/zed/zed_node/odom',
+            'odom_topic': '/front_zed_camera_x/zed_node/odom',
             'odom_frame_id': 'odom',
             'base_frame_id': 'base_link',
             'publish_rate_hz': 100.0,

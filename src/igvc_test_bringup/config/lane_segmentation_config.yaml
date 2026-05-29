@@ -6,18 +6,18 @@ lane_segmentation_node:
     # subscription for sync/fallback overlay only; PC2 RGB drives detection.
     num_cameras: 1
     camera_topics:
-      - "/zed/zed_node/rgb/color/rect/image"
+      - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
       # - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
       # - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
       # - "/right_zed_camera_x/zed_node/rgb/color/rect/image"
     pc2_topics:
-     - "/zed/zed_node/point_cloud/cloud_registered"
+     - "/front_zed_camera_x/zed_node/point_cloud/cloud_registered"
       # - "/zed/point_cloud/merged_registered"
       # - "/front_zed_camera_x/zed_node/point_cloud/cloud_registered"
       # - "/left_zed_camera_x/zed_node/point_cloud/cloud_registered"
       # - "/right_zed_camera_x/zed_node/point_cloud/cloud_registered"
     camera_info_topics:
-      - "/zed/zed_node/rgb/color/rect/camera_info"
+      - "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
       # - "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
       # - "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
       # - "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
@@ -44,7 +44,6 @@ lane_segmentation_node:
     # ── PC2 range gates ──────────────────────────────────────────────
     min_detection_depth_m: 0.3
     max_detection_depth_m: 5.0
-
     # ── Detection mode ───────────────────────────────────────────────
     # pc2_color_ground skips YOLOPv2 and uses the fused ZED PointCloud2:
     # lane = white/yellow ground-plane cloud points;
@@ -119,7 +118,7 @@ lane_segmentation_node:
     # of lanes stacking at the same world position.
     persistent_map_frame:      "odom"
     persistent_pose_source:    "odom"
-    odom_topic:                "/zed/zed_node/odom" # "/front_zed_camera_x/zed_node/odom"
+    odom_topic:                "/front_zed_camera_x/zed_node/odom" # "/front_zed_camera_x/zed_node/odom"
     persistent_map_size_m:    100.0
     persistent_map_resolution: 0.20
     persistent_map_decay:      0.998
@@ -313,13 +312,26 @@ lane_segmentation_node:
     ground_plane_ransac_iters:    60
     ground_plane_inlier_thresh_m: 0.05
     ground_plane_roi_fwd_min_m:   1.0
-    ground_plane_roi_fwd_max_m:   12.0
-    ground_plane_roi_lat_abs_m:   3.0
-    ground_plane_roi_z_abs_m:     0.30
+    # fwd_max/z_abs widened from 12.0/0.30 so the same RANSAC fit also serves
+    # ramp detection: at 15° the surface rises ~0.27 m per metre forward, so a
+    # 0.30 m z band would clip the ramp face out of the ROI.  6 m forward x
+    # 1.5 m z captures the approach + ramp without pulling in tall obstacles
+    # (the z-normal gate + 0.05 m inlier band still lock onto the ground).
+    ground_plane_roi_fwd_max_m:   6.0
+    ground_plane_roi_lat_abs_m:   2.0
+    ground_plane_roi_z_abs_m:     1.5
     ground_plane_min_inliers:     200
     ground_plane_min_z_normal:    0.7
     ground_plane_ema_alpha:       0.3      # 0=hold previous, 1=use new fit
     ground_plane_max_sample_pts:  5000
+
+    # ── Ramp / slope detection ───────────────────────────────────────
+    # Publishes forward terrain slope + fall-line heading on ramp_status_topic
+    # (geometry_msgs/Vector3Stamped: x=slope_deg, y=fall_line_yaw_rad,
+    # z=confidence) for mission_planner_node's ramp_align/ramp_climb states.
+    ramp_detect_enabled: true
+    ramp_status_topic:   "/ramp/state"
+    ramp_min_period_sec: 0.2
 
     # ── Plane-based height obstacle gate (requires plane mode != off) ─
     # Drops mask pixels whose true height above the fitted ground plane

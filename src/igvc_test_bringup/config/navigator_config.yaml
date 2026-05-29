@@ -29,7 +29,7 @@ igvc_navigator:
     allow_straight_fallback: false
 
     # Obstacle map for centreline extraction overlay.
-    obstacle_map_topic: "/depth_obstacle_map"
+    obstacle_map_topic: "/lidar_obstacle_map"
 
     # Legacy fallback if direct FollowPath bringup needs to be disabled.
     waypoint_horizon_m: 1.8

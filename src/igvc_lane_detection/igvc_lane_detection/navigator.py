@@ -151,6 +151,11 @@ class _Waypoint:
 
 # ── Node ──────────────────────────────────────────────────────────────────────
 
+# Mission-planner states during which the navigator must release Nav2:
+# 'active' = GPS waypoint mission; 'ramp_align'/'ramp_climb' = ramp handling.
+_YIELD_STATES = ('active', 'ramp_align', 'ramp_climb')
+
+
 class IGVCNavigatorNode(Node):
 
     def __init__(self) -> None:
@@ -456,8 +461,9 @@ class IGVCNavigatorNode(Node):
         if self._mission_state != prev:
             self.get_logger().info(
                 f'navigator: mission state {prev} -> {self._mission_state}')
-            if self._mission_state == 'active' and self._goal_handle is not None:
-                # Hand control to mission_planner: cancel our in-flight goal.
+            if self._mission_state in _YIELD_STATES and self._goal_handle is not None:
+                # Hand control to mission_planner (GPS mission or ramp climb):
+                # cancel our in-flight goal.
                 try:
                     self._goal_handle.cancel_goal_async()
                 except Exception:
@@ -529,8 +535,9 @@ class IGVCNavigatorNode(Node):
         lane_path = self._lane_path_from_costmap()
         self._path_pub.publish(lane_path)
 
-        # Mission planner owns Nav2 while a GPS waypoint mission is active.
-        if self._mission_state == 'active':
+        # Mission planner owns Nav2 while a GPS waypoint mission is active
+        # or while it aligns/climbs a ramp.
+        if self._mission_state in _YIELD_STATES:
             return
 
         # Brakes are applied — hold all navigation goals.
