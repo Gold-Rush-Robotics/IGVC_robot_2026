@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>igvc_shm_transport</transport_id>
+      <type>SHM</type>
+      <segment_size>134217728</segment_size>
+    </transport_descriptor>
+  </transport_descriptors>
+
+  <participant profile_name="igvc_shm_participant" is_default_profile="true">
+    <rtps>
+      <useBuiltinTransports>false</useBuiltinTransports>
+      <userTransports>
+        <transport_id>igvc_shm_transport</transport_id>
+      </userTransports>
+    </rtps>
+  </participant>
+</profiles>

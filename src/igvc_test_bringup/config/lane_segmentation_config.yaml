@@ -4,24 +4,27 @@ lane_segmentation_node:
     # The pointcloud_merger_node fuses all three ZED point clouds into a
     # single base_link cloud.  The lane detector still keeps one front RGB
     # subscription for sync/fallback overlay only; PC2 RGB drives detection.
-    num_cameras: 3
+    num_cameras: 1
     camera_topics:
-      - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
+      - "/zed/zed_node/rgb/color/rect/image"
+      # - "/front_zed_camera_x/zed_node/rgb/color/rect/image"
       # - "/left_zed_camera_x/zed_node/rgb/color/rect/image"
       # - "/right_zed_camera_x/zed_node/rgb/color/rect/image"
     pc2_topics:
+     - "/zed/zed_node/point_cloud/cloud_registered"
       # - "/zed/point_cloud/merged_registered"
-      - "/front_zed_camera_x/zed_node/point_cloud/cloud_registered"
+      # - "/front_zed_camera_x/zed_node/point_cloud/cloud_registered"
       # - "/left_zed_camera_x/zed_node/point_cloud/cloud_registered"
       # - "/right_zed_camera_x/zed_node/point_cloud/cloud_registered"
     camera_info_topics:
-      - "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
+      - "/zed/zed_node/rgb/color/rect/camera_info"
+      # - "/front_zed_camera_x/zed_node/rgb/color/rect/camera_info"
       # - "/left_zed_camera_x/zed_node/rgb/color/rect/camera_info"
       # - "/right_zed_camera_x/zed_node/rgb/color/rect/camera_info"
 
     # ── Frames ──────────────────────────────────────────────────────
-    base_frame: "base_link"
-    occupancy_grid_frame: "base_link"
+    base_frame: "zed_camera_link"
+    occupancy_grid_frame: "zed_camera_link"
 
     # ── Local rolling costmap ───────────────────────────────────────
     grid_resolution: 0.05
@@ -66,7 +69,7 @@ lane_segmentation_node:
     pc2_obstacle_z_max_m:       2.5
     pc2_obstacle_depth_min_m:   0.3
     pc2_obstacle_depth_max_m:   5.0
-    pc2_obstacle_dilation_px:   35
+    pc2_obstacle_dilation_px:   10
 
     # PointCloud2 color gates in OpenCV HSV units (H: 0-179, S/V: 0-255).
     pc2_white_v_min: 180
@@ -116,7 +119,7 @@ lane_segmentation_node:
     # of lanes stacking at the same world position.
     persistent_map_frame:      "odom"
     persistent_pose_source:    "odom"
-    odom_topic:                "/front_zed_camera_x/zed_node/odom"
+    odom_topic:                "/zed/zed_node/odom" # "/front_zed_camera_x/zed_node/odom"
     persistent_map_size_m:    100.0
     persistent_map_resolution: 0.20
     persistent_map_decay:      0.998
@@ -136,7 +139,7 @@ lane_segmentation_node:
     # ── Temporal lane filtering before /lane_costmap publish ───────
     # Per-cell EMA + hysteresis on lane occupancy to suppress one-frame
     # mask flicker before the local costmap is published.
-    temporal_filter_enabled: true
+    temporal_filter_enabled: false
     temporal_lane_rise_alpha: 0.60
     temporal_lane_fall_alpha: 0.35
     temporal_lane_unknown_decay: 0.08
@@ -154,8 +157,8 @@ lane_segmentation_node:
 
     # Keep the synchronizer latest-only so YOLO does not chew through
     # a backlog of old RGB+depth pairs when the camera out-runs inference.
-    sync_queue_size: 5
-    sync_slop_sec: 0.20
+    sync_queue_size: 1
+    sync_slop_sec: 0.10
     # Jetson real-world pipeline latency is often 0.40-0.70s under YOLO load.
     # Keep latest-only queueing but allow those frames through.
     max_frame_age_sec: 2.0

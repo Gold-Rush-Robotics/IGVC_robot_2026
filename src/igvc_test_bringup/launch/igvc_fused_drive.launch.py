@@ -102,7 +102,7 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         parameters=[
             {'use_sim_time': use_sim_time},
-            {'odom_topic': '/front_zed_camera_x/zed_node/odom'},
+            {'odom_topic': '/zed/zed_node/odom'},
             {'odom_frame_id': 'odom'},
             {'base_frame_id': 'base_link'},
             {'publish_rate_hz': 100.0},
@@ -139,9 +139,9 @@ def generate_launch_description() -> LaunchDescription:
             'use_3d': 'True',
             'model': '/home/nitin-5090/Documents/DevEnv/jazzy_ws/IGVC_robot_2026/models/yolov26n.pt',
             'target_frame': 'map',
-            'input_image_topic': '/front_zed_camera_x/zed_node/rgb/color/rect/image',
-            'input_depth_topic': '/front_zed_camera_x/zed_node/depth/depth_registered',
-            'input_depth_info_topic': '/front_zed_camera_x/zed_node/depth/camera_info',
+            'input_image_topic': '/zed/zed_node/rgb/color/rect/image',
+            'input_depth_topic': '/zed/zed_node/depth/depth_registered',
+            'input_depth_info_topic': '/zed/zed_node/depth/camera_info',
             'depth_image_units_divisor': '1',
         }.items(),
     )
@@ -171,11 +171,11 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             {'use_sim_time': use_sim_time},
             {'frame_id': 'odom'},
-            {'depth_topic': '/front_zed_camera_x/zed_node/depth/depth_registered'},
-            {'info_topic': '/front_zed_camera_x/zed_node/depth/camera_info'},
+            {'depth_topic': '/zed/zed_node/depth/depth_registered'},
+            {'info_topic': '/zed/zed_node/depth/camera_info'},
             {'output_topic': '/depth_obstacle_map'},
             {'use_odom_pose': True},
-            {'odom_topic': '/front_zed_camera_x/zed_node/odom'},
+            {'odom_topic': '/zed/zed_node/odom'},
             {'camera_x_m': 0.44},
             {'camera_y_m': 0.06},
             {'camera_z_m': 0.21},
@@ -259,15 +259,15 @@ def generate_launch_description() -> LaunchDescription:
         ),
         # zed_multi_fused_odom,
         # teleop,
-        motor_controllers,
+        # motor_controllers,
         # lane_follower,
         lane_segmentation,
         # gps_node,
-        odom_tf_bridge_node,
+        # odom_tf_bridge_node,
         # zed_f9p_launch,
         twist_stamper_node,
         # object_detection_to_costmap_node,  # disabled: YOLO bbox obstacles
         # yolo_ros,  # disabled: only fed obstacle_costmap_node
         # lidar_obstacle_costmap_node,  # disabled: obstacles shorter than lidar plane
-        depth_obstacle_costmap_node,
+        # depth_obstacle_costmap_node,
     ])

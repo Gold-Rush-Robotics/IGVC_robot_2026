@@ -38,8 +38,8 @@ class AutonomousIndicatorNode(Node):
     def __init__(self) -> None:
         super().__init__('autonomous_indicator_node')
 
-        self._autonomous = False
-        self._led_state  = False   # current LED output level
+        self._autonomous = True
+        self._led_state  = True   # current LED output level
 
         # ── GPIO setup ────────────────────────────────────────────────
         if _GPIO_AVAILABLE:

@@ -4,9 +4,9 @@ workspace_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 export ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
-export ROS_LOCALHOST_ONLY=0
-export FASTDDS_BUILTIN_TRANSPORTS=UDPv4
-export FASTDDS_DEFAULT_PROFILES_FILE="$workspace_root/src/igvc_test_bringup/config/fastdds_udp.xml"
+export ROS_LOCALHOST_ONLY=1
+export FASTDDS_BUILTIN_TRANSPORTS=SHM
+export FASTDDS_DEFAULT_PROFILES_FILE="$workspace_root/src/igvc_test_bringup/config/fastdds_shm_only.xml"
 export FASTRTPS_DEFAULT_PROFILES_FILE="$FASTDDS_DEFAULT_PROFILES_FILE"
 
 echo "IGVC DDS environment configured:"

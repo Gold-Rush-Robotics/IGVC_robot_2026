@@ -248,7 +248,7 @@ def generate_launch_description() -> LaunchDescription:
         lane_segmentation_node,
         static_map_to_odom,
         # obstacle_costmap_node,  # disabled: YOLO bbox obstacles
-        mission_planner_node,
-        navigator_node,
-        nav2_launch,
+        # mission_planner_node,
+        # navigator_node,
+        # nav2_launch,
     ])

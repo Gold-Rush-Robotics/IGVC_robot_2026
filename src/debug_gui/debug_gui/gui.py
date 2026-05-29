@@ -30,9 +30,10 @@ class JointStatePublisher(Node):
 
     def create_subscribers(self):
         # topics = [ "left_zed_camera_x/zed_node/rgb/color/rect/image","/front_zed_camera_x/zed_node/rgb/color/rect/image","right_zed_camera_x/zed_node/rgb/color/rect/image"]
-        topics = [ "/lane_debug/cam0/overlay", "/lane_debug/cam1/overlay", "/lane_debug/cam2/overlay" ]
+        # topics = [ "/lane_debug/cam0/overlay", "/lane_debug/cam1/overlay", "/lane_debug/cam2/overlay" ]
         # topics = [ "/lane_debug/cam0/overlay", "/yolo_ros/dbg_image" ]
         # topics = [ "/debug/stitched_lanes" ]
+        topics = [ "/lane_debug/cam0/overlay" ]
         for i, topic in enumerate(topics):
             callback = partial(self.image_callback, index=i)
             subscriber = self.create_subscription(Image, topic, callback, 10)
@@ -103,7 +104,7 @@ class JointControlGUI(QWidget):
             self.node.get_logger().warn(f'Unsupported image encoding: {msg.encoding}')
             return None
 
-        return QPixmap.fromImage(image.copy().scaled(640, 480, Qt.KeepAspectRatio))
+        return QPixmap.fromImage(image.copy().scaled(1920, 1280, Qt.KeepAspectRatio))
 
     def convert_32fc1_to_grayscale(self, msg):
         bytes_per_pixel = np.dtype(np.float32).itemsize
