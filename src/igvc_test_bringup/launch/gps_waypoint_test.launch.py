@@ -131,8 +131,10 @@ def generate_launch_description() -> LaunchDescription:
             'odom_topic': '/front_zed_camera_x/zed_node/odom',
             'map_frame': 'map',
             'odom_frame': 'odom',
-            # No heading calibration drive needed in odom-relative mode.
-            'heading_init': False,
+            # Use ZED magnetometer for heading — no drive-forward calibration needed.
+            'heading_init': True,
+            'use_mag_heading': True,
+            'mag_topic': '/front_zed_camera_x/zed_node/imu/mag',
             'calib_distance_m': 2.5,
             'calib_speed_mps': 0.3,
             'calib_settle_sec': 1.0,

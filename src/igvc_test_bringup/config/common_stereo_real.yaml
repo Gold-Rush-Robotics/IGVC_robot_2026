@@ -81,7 +81,7 @@
             publish_imu: true
             publish_imu_raw: false
             publish_cam_imu_transf: true
-            publish_mag: false
+            publish_mag: true
             publish_baro: false
             publish_temp: false
 

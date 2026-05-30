@@ -38,7 +38,7 @@ from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
 from geometry_msgs.msg import PoseStamped, Twist, TransformStamped
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import NavigateThroughPoses
-from sensor_msgs.msg import NavSatFix
+from sensor_msgs.msg import Imu, NavSatFix
 from tf2_ros import StaticTransformBroadcaster
 
 from igvc_lane_detection.navigator import gps_to_map
@@ -98,6 +98,10 @@ class GpsWaypointTestNode(Node):
         # Skip the drive-forward calibration and assume map==odom (only valid
         # if the robot already starts facing true East / odom is ENU-aligned).
         self.declare_parameter('heading_init', True)
+        # Use the ZED magnetometer (IMU orientation) for heading instead of
+        # a drive-forward calibration manoeuvre.
+        self.declare_parameter('use_mag_heading', True)
+        self.declare_parameter('mag_topic', '/front_zed_camera_x/zed_node/imu/data')
         # How far to drive forward to establish heading.  Must be well above
         # the GPS noise floor: ~1 m is the minimum for RTK, use 2-3 m for
         # standard GPS so the displacement dominates position noise.
@@ -141,6 +145,8 @@ class GpsWaypointTestNode(Node):
         self._resend_period = float(self.get_parameter('resend_period_sec').value)
         self._waypoint_spacing = float(self.get_parameter('waypoint_spacing_m').value)
         self._heading_init = bool(self.get_parameter('heading_init').value)
+        self._use_mag_heading = bool(self.get_parameter('use_mag_heading').value)
+        self._mag_topic = self.get_parameter('mag_topic').value
         self._calib_distance = float(self.get_parameter('calib_distance_m').value)
         self._calib_speed = float(self.get_parameter('calib_speed_mps').value)
         self._calib_settle = float(self.get_parameter('calib_settle_sec').value)
@@ -165,6 +171,8 @@ class GpsWaypointTestNode(Node):
         self._latest_fix: Optional[tuple[float, float]] = None
         self._latest_status: int = -1
         self._latest_odom: Optional[tuple[float, float]] = None  # (x, y) in odom
+        self._latest_imu_yaw: Optional[float] = None            # yaw from ZED magnetometer
+        self._odom_start: Optional[tuple[float, float]] = None  # odom position at nav start
         self._goal_handle = None
         self._goal_pending = False
         self._reached = False
@@ -201,6 +209,9 @@ class GpsWaypointTestNode(Node):
                 NavSatFix, self._gps_topic, self._on_gps, sensor_qos)
         self.create_subscription(
             Odometry, self._odom_topic, self._on_odom, sensor_qos)
+        if self._heading_init and self._use_mag_heading:
+            self.create_subscription(
+                Imu, self._mag_topic, self._on_imu, sensor_qos)
 
         self._drive_pub = self.create_publisher(Twist, self._drive_cmd_topic, 10)
 
@@ -236,6 +247,14 @@ class GpsWaypointTestNode(Node):
 
     def _on_odom(self, msg: Odometry) -> None:
         self._latest_odom = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+
+    def _on_imu(self, msg: Imu) -> None:
+        """Extract yaw from the ZED IMU orientation (magnetometer-fused)."""
+        q = msg.orientation
+        # Standard ZYX Euler yaw from quaternion
+        siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        self._latest_imu_yaw = math.atan2(siny_cosp, cosy_cosp)
 
     # ── map -> odom transform ───────────────────────────────────────────────
 
@@ -291,6 +310,9 @@ class GpsWaypointTestNode(Node):
         if not self._heading_init:
             self._enter_navigate()
             return
+        if self._use_mag_heading:
+            self._calibrate_from_mag()
+            return
         if self._latest_status < 1:
             self.get_logger().warn(
                 'GPS has no augmentation (status < 1); heading estimate from a '
@@ -301,6 +323,30 @@ class GpsWaypointTestNode(Node):
             f'{self._calib_settle:.1f} s, then driving {self._calib_distance:.1f} m.')
         self._begin_settle()
         self._state = self._S_CALIB_START
+
+    def _calibrate_from_mag(self) -> None:
+        """Compute map->odom transform from ZED magnetometer heading + GPS fix."""
+        if self._latest_imu_yaw is None:
+            self.get_logger().info(
+                f'Waiting for magnetometer heading on {self._mag_topic}…',
+                throttle_duration_sec=3.0)
+            return
+        yaw = self._latest_imu_yaw
+        gps_e, gps_n = gps_to_map(
+            self._latest_fix[0], self._latest_fix[1],
+            self._origin_lat, self._origin_lon)
+        ox, oy = self._latest_odom
+        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+        # t = gps_pos - R(yaw) * odom_pos  (pins robot map pose to GPS-ENU pose)
+        tx = gps_e - (cos_y * ox - sin_y * oy)
+        ty = gps_n - (sin_y * ox + cos_y * oy)
+        self._map_to_odom_yaw = yaw
+        self._map_to_odom_t = (tx, ty)
+        self._publish_map_to_odom()
+        self.get_logger().info(
+            f'Heading from magnetometer: {math.degrees(yaw):.1f}° '
+            f'(odom offset t=({tx:.2f}, {ty:.2f}) m). Navigating to target.')
+        self._enter_navigate()
 
     def _begin_settle(self) -> None:
         self._settle_fixes = []
@@ -410,6 +456,12 @@ class GpsWaypointTestNode(Node):
         self._goal_pending = False
         self._last_send_sec = None
         self._min_dist_seen = None
+        # Capture starting odom position so it can be added to odom-relative goals.
+        if self._odom_start is None and self._latest_odom is not None:
+            self._odom_start = self._latest_odom
+            self.get_logger().info(
+                f'Odom start captured: ({self._odom_start[0]:.3f}, '
+                f'{self._odom_start[1]:.3f}) m')
         self._state = self._S_NAVIGATE
 
     # ── Navigation ───────────────────────────────────────────────────────────
@@ -432,7 +484,11 @@ class GpsWaypointTestNode(Node):
             if self._latest_odom is None:
                 return
             cur_e, cur_n = self._latest_odom
-            tgt_e, tgt_n = self._target_x, self._target_y
+            # Add starting odom position to the goal so the target is correct
+            # even when odom doesn't start at (0, 0).
+            start_x = self._odom_start[0] if self._odom_start is not None else 0.0
+            start_y = self._odom_start[1] if self._odom_start is not None else 0.0
+            tgt_e, tgt_n = self._target_x + start_x, self._target_y + start_y
         dist = math.hypot(tgt_e - cur_e, tgt_n - cur_n)
         if dist <= self._goal_tol:
             self.get_logger().info(
