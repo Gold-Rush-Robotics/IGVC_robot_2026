@@ -36,7 +36,7 @@ from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
 
 from geometry_msgs.msg import PoseStamped
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import NavigateThroughPoses
 from sensor_msgs.msg import NavSatFix
 
 from igvc_lane_detection.navigator import gps_to_map
@@ -53,10 +53,13 @@ class GpsWaypointTestNode(Node):
         self.declare_parameter('origin_lon', 0.0)
         self.declare_parameter('gps_topic', '/fix')
         self.declare_parameter('map_frame', 'map')
-        self.declare_parameter('nav_action', 'navigate_to_pose')
+        self.declare_parameter('nav_action', 'navigate_through_poses')
         self.declare_parameter('goal_tolerance_m', 1.0)
         # Re-send the goal at most this often while we wait for arrival.
         self.declare_parameter('resend_period_sec', 5.0)
+        # Intermediate waypoints are inserted every this many metres along the
+        # straight-line path to the target so RPP always has a nearby carrot.
+        self.declare_parameter('waypoint_spacing_m', 3.0)
 
         self._target_lat = float(self.get_parameter('target_lat').value)
         self._target_lon = float(self.get_parameter('target_lon').value)
@@ -68,6 +71,7 @@ class GpsWaypointTestNode(Node):
         self._nav_action = self.get_parameter('nav_action').value
         self._goal_tol = float(self.get_parameter('goal_tolerance_m').value)
         self._resend_period = float(self.get_parameter('resend_period_sec').value)
+        self._waypoint_spacing = float(self.get_parameter('waypoint_spacing_m').value)
 
         if self._target_lat == 0.0 and self._target_lon == 0.0:
             self.get_logger().error(
@@ -80,7 +84,7 @@ class GpsWaypointTestNode(Node):
         self._reached = False
         self._last_send_sec: Optional[float] = None
 
-        self._nav = ActionClient(self, NavigateToPose, self._nav_action)
+        self._nav = ActionClient(self, NavigateThroughPoses, self._nav_action)
 
         sensor_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -150,23 +154,37 @@ class GpsWaypointTestNode(Node):
                 throttle_duration_sec=3.0)
             return
 
-        # Face the goal so the robot doesn't have to spin on arrival.
+        # Build intermediate waypoints spaced every waypoint_spacing_m metres
+        # along the straight line to the target.  Each waypoint faces the final
+        # target so the robot doesn't spin between sub-goals.
         yaw = math.atan2(tgt_n - cur_n, tgt_e - cur_e)
+        qz = math.sin(yaw * 0.5)
+        qw = math.cos(yaw * 0.5)
 
-        goal = NavigateToPose.Goal()
-        goal.pose = PoseStamped()
-        goal.pose.header.frame_id = self._map_frame
-        goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x = float(tgt_e)
-        goal.pose.pose.position.y = float(tgt_n)
-        goal.pose.pose.orientation.z = math.sin(yaw * 0.5)
-        goal.pose.pose.orientation.w = math.cos(yaw * 0.5)
+        spacing = max(0.5, self._waypoint_spacing)
+        n_steps = max(1, round(dist / spacing))
+        now = self.get_clock().now().to_msg()
+        poses: list[PoseStamped] = []
+        for i in range(1, n_steps + 1):
+            frac = i / n_steps
+            p = PoseStamped()
+            p.header.frame_id = self._map_frame
+            p.header.stamp = now
+            p.pose.position.x = cur_e + frac * (tgt_e - cur_e)
+            p.pose.position.y = cur_n + frac * (tgt_n - cur_n)
+            p.pose.orientation.z = qz
+            p.pose.orientation.w = qw
+            poses.append(p)
+
+        goal = NavigateThroughPoses.Goal()
+        goal.poses = poses
 
         self._goal_pending = True
         self._last_send_sec = self.get_clock().now().nanoseconds / 1e9
         self.get_logger().info(
             f'Sending GPS goal: map ({tgt_e:.2f}, {tgt_n:.2f}), '
-            f'dist={dist:.2f} m')
+            f'dist={dist:.2f} m via {len(poses)} waypoint(s) '
+            f'(spacing={spacing:.1f} m)')
         future = self._nav.send_goal_async(goal)
         future.add_done_callback(self._on_goal_response)
 

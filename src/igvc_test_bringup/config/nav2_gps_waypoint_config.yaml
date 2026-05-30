@@ -102,7 +102,10 @@ controller_server:
       use_rotate_to_heading: false
       allow_reversing: false
       rotate_to_heading_min_angle: 1.57
-      max_robot_pose_search_dist: 2.0
+      # Must exceed max_lookahead_dist (2.6 m); RPP uses this as the upper
+      # bound for its carrot search so if it is smaller than the lookahead
+      # RPP logs "carrot outside range" and refuses to move.
+      max_robot_pose_search_dist: 10.0
 
 collision_monitor:
   ros__parameters:
