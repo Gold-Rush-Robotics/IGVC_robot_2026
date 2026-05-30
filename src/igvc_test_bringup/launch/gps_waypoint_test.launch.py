@@ -131,17 +131,26 @@ def generate_launch_description() -> LaunchDescription:
             'odom_topic': '/front_zed_camera_x/zed_node/odom',
             'map_frame': 'map',
             'odom_frame': 'odom',
-            # Use ZED magnetometer for heading — no drive-forward calibration needed.
+            # ── Heading triangulation (3 GPS fixes) ─────────────────────────
+            # P1: average GPS at start.  Drive 1 m → P2.  Drive 1 m → P3.
+            # Heading = P1→P3 vector; if atan2 returns a flipped result the
+            # node auto-corrects using the odom displacement as a reference.
             'heading_init': True,
-            'use_mag_heading': True,
-            'mag_topic': '/front_zed_camera_x/zed_node/imu/mag',
-            'calib_distance_m': 2.5,
+            'calib_distance_m': 1.0,
             'calib_speed_mps': 0.3,
-            'calib_settle_sec': 1.0,
+            'calib_settle_sec': 2.0,
             'drive_cmd_topic': 'cmd_vel_nav',
             'min_gps_displacement_m': 0.5,
             'recovery_dist_increase_m': 2.0,
             'max_recoveries': 5,
+            # ── Closed-loop GPS regression ───────────────────────────────────
+            # Rolling window of GPS fixes fed into the linear regression that
+            # smooths the current position estimate during navigation.
+            'gps_regression_window_sec': 5.0,
+            'gps_min_samples': 3,
+            # Resend the Nav2 goal whenever the regressed GPS position moves
+            # this far from where the last goal was sent.
+            'goal_update_distance_m': 0.5,
         }],
     )
     odom_tf_bridge_node = Node(
