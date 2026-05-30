@@ -47,8 +47,8 @@ class GpsWaypointTestNode(Node):
     def __init__(self) -> None:
         super().__init__('gps_waypoint_test')
 
-        self.declare_parameter('target_lat', 0.0)
-        self.declare_parameter('target_lon', 0.0)
+        self.declare_parameter('target_lat', 42.400510946)   # 5004 Practice Mid
+        self.declare_parameter('target_lon', -83.130640432)  # 5004 Practice Mid
         self.declare_parameter('origin_lat', 0.0)
         self.declare_parameter('origin_lon', 0.0)
         self.declare_parameter('gps_topic', '/gps/fix')
