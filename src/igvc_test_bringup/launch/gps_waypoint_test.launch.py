@@ -121,8 +121,8 @@ def generate_launch_description() -> LaunchDescription:
             # use_gps=false: navigate to a fixed map-frame pose using odometry
             # only.  The robot starts at (0, 0) and drives to (target_x, target_y).
             'use_gps': False,
-            'target_x': 3.0,   # metres forward (+X)
-            'target_y': 4.0,   # metres lateral (+Y = left)
+            'target_x': 0.0,   # metres forward (+X)
+            'target_y': 0.0,   # metres lateral (+Y = left)
             # ── GPS target (ignored when use_gps=false) ─────────────────────
             'target_lat': 42.66821182,
             'target_lon': -83.21845873,
