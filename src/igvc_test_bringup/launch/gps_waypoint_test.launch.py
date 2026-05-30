@@ -21,7 +21,7 @@ Arguments
     origin_lon          Map-origin longitude  (0.0 = first fix)  (default: 0.0)
     hardware_interface  CanInterface | IsaacDriveHardware   (default: CanInterface)
     use_sim_time        true | false                        (default: false)
-    params_file         Nav2 params YAML                    (default: nav2_lane_follow_config.yaml)
+    params_file         Nav2 params YAML                    (default: nav2_gps_waypoint_config.yaml)
 """
 
 import os
@@ -106,6 +106,10 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ── 3. GPS waypoint test node ──────────────────────────────────────────
+    # This node also owns the map -> odom transform: it publishes identity
+    # until it has driven forward to calibrate true heading, then republishes
+    # the corrected transform.  Do NOT also run a static map->odom publisher
+    # here — two publishers on the same parent/child fight in the TF tree.
     gps_waypoint_test_node = Node(
         package='igvc_lane_detection',
         executable='gps_waypoint_test_node',
@@ -117,19 +121,17 @@ def generate_launch_description() -> LaunchDescription:
             'target_lon': -83.21845873,
             'origin_lat': origin_lat,
             'origin_lon': origin_lon,
+            'odom_topic': '/front_zed_camera_x/zed_node/odom',
+            'map_frame': 'map',
+            'odom_frame': 'odom',
+            # Drive forward to establish heading before navigating.
+            'heading_init': True,
+            'calib_distance_m': 1.5,
+            'calib_speed_mps': 0.3,
+            'calib_settle_sec': 1.0,
+            'drive_cmd_topic': 'cmd_vel_nav',
+            'min_gps_displacement_m': 0.5,
         }],
-    )
-    static_map_to_odom = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='static_map_to_odom',
-        output='log',
-        arguments=[
-            '--x', '0', '--y', '0', '--z', '0',
-            '--roll', '0', '--pitch', '0', '--yaw', '0',
-            '--frame-id', 'map', '--child-frame-id', 'odom',
-        ],
-        parameters=[{'use_sim_time': use_sim_time}],
     )
     odom_tf_bridge_node = Node(
         package="igvc_lane_detection",
@@ -161,6 +163,5 @@ def generate_launch_description() -> LaunchDescription:
         motor_controllers,
         nav2,
         gps_waypoint_test_node,
-        static_map_to_odom,
         odom_tf_bridge_node,
     ])
