@@ -113,8 +113,8 @@ def generate_launch_description() -> LaunchDescription:
         output='screen',
         parameters=[{
             'use_sim_time': use_sim_time,
-            'target_lat': target_lat,
-            'target_lon': target_lon,
+            'target_lat': 42.66808596,
+            'target_lon': -83.21844564,
             'origin_lat': origin_lat,
             'origin_lon': origin_lon,
         }],
