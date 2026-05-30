@@ -7,3 +7,4 @@ cd src/IGVC_robot_2026;
 source install/setup.bash;
 export DISPLAY=:0;
 ros2 launch igvc_test_bringup sensor_launch.launch.py;
+"
