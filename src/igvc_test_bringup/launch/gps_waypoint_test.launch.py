@@ -50,7 +50,7 @@ def generate_launch_description() -> LaunchDescription:
     )
     params_file_arg = DeclareLaunchArgument(
         'params_file',
-        default_value=PathJoinSubstitution([bringup, 'config', 'nav2_lane_follow_config.yaml']),
+        default_value=PathJoinSubstitution([bringup, 'config', 'nav2_gps_waypoint_config.yaml']),
         description='Full path to the Nav2 YAML params file.',
     )
     target_lat_arg = DeclareLaunchArgument(
