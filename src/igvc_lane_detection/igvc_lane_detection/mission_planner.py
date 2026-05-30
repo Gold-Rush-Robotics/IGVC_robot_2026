@@ -63,7 +63,7 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 
-from geometry_msgs.msg import Pose, PoseArray, PoseStamped, Vector3Stamped
+from geometry_msgs.msg import Pose, PoseArray, PoseStamped, Twist, Vector3Stamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, NavSatFix
 from std_msgs.msg import Empty, String
@@ -119,9 +119,9 @@ def _pitch_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:
     return math.asin(sinp)
 
 
-def _yaw_to_quat(yaw: float) -> tuple[float, float, float, float]:
-    """(x, y, z, w) quaternion for a pure yaw rotation."""
-    return (0.0, 0.0, math.sin(yaw * 0.5), math.cos(yaw * 0.5))
+def _clamp(value: float, limit: float) -> float:
+    """Clamp ``value`` to the symmetric range [-limit, +limit]."""
+    return max(-limit, min(limit, value))
 
 
 class MissionPlannerNode(Node):
@@ -160,10 +160,17 @@ class MissionPlannerNode(Node):
         self._ramp_exit_pitch_deg    = float(p('ramp_exit_pitch_deg', 3.0).value)
         # Heading error (deg) below which alignment is complete → climb.
         self._ramp_align_yaw_tol_deg = float(p('ramp_align_yaw_tol_deg', 8.0).value)
-        # How far ahead (m) up the fall line to place the injected goal.
-        self._ramp_climb_distance_m  = float(p('ramp_climb_distance_m', 6.0).value)
-        # Re-inject the climb goal at most this often (s).
-        self._ramp_goal_period_sec   = float(p('ramp_goal_period_sec', 1.0).value)
+        # Closed-loop ramp drive: a constant forward speed (so the robot never
+        # stalls on the incline) plus a proportional heading correction on the
+        # lane-seg fall-line yaw that keeps the robot parallel to the slope and
+        # off the ramp edges.  Commands are published straight to the velocity
+        # smoother input so the collision monitor still guards them.
+        self._ramp_climb_speed_mps   = float(p('ramp_climb_speed_mps', 1.5).value)
+        self._ramp_align_speed_mps   = float(p('ramp_align_speed_mps', 0.0).value)
+        self._ramp_yaw_kp            = float(p('ramp_yaw_kp', 1.8).value)
+        self._ramp_max_yaw_rate      = float(p('ramp_max_yaw_rate', 1.5).value)
+        self._ramp_cmd_topic         = p('ramp_cmd_topic', 'cmd_vel_nav').value
+        self._ramp_cmd_rate_hz       = float(p('ramp_cmd_rate_hz', 20.0).value)
         # Slope freshness: ignore lane-seg readings older than this (s).
         self._ramp_status_timeout_sec = float(p('ramp_status_timeout_sec', 1.0).value)
         # Pitch must stay below the exit threshold this long before declaring
@@ -208,8 +215,6 @@ class MissionPlannerNode(Node):
         self._ramp_conf        = 0.0
         self._ramp_status_mono: Optional[float] = None
         self._imu_pitch_deg    = 0.0
-        self._ramp_goal_handle = None
-        self._ramp_goal_mono: Optional[float] = None
         self._ramp_exit_below_since: Optional[float] = None
         self._state_before_ramp = STATE_LANE_FOLLOW
 
@@ -256,9 +261,12 @@ class MissionPlannerNode(Node):
 
         # 2 Hz tick drives the GPS mission state machine.
         self._timer = self.create_timer(0.5, self._tick)
-        # 5 Hz tick drives ramp alignment/climb for snappier heading control.
+        # Fast tick + direct cmd_vel publisher drive closed-loop ramp control.
         if self._ramp_enabled:
-            self._ramp_timer = self.create_timer(0.2, self._ramp_tick)
+            self._ramp_cmd_pub = self.create_publisher(
+                Twist, self._ramp_cmd_topic, 10)
+            ramp_period = 1.0 / max(1.0, self._ramp_cmd_rate_hz)
+            self._ramp_timer = self.create_timer(ramp_period, self._ramp_tick)
 
         self._publish_state()
         self.get_logger().info(
@@ -474,36 +482,41 @@ class MissionPlannerNode(Node):
             return
 
     def _enter_ramp(self, now: float) -> None:
-        if self._robot_xy is None or self._robot_yaw is None:
+        if self._robot_yaw is None:
             self.get_logger().warn(
                 'mission_planner: ramp detected but no odom pose yet',
                 throttle_duration_sec=2.0)
             return
-        self._state_before_ramp = (
-            self._state if self._state == STATE_LANE_FOLLOW else STATE_LANE_FOLLOW)
+        # Ramp is only armed from a non-GPS state, so lane_follow is always the
+        # correct hand-back target.
+        self._state_before_ramp = STATE_LANE_FOLLOW
         self._ramp_exit_below_since = None
         self._state = STATE_RAMP_ALIGN
         self._publish_state()
         self.get_logger().info(
             f'mission_planner: ramp detected (slope={self._ramp_slope_deg:.1f}°, '
             f'pitch={self._imu_pitch_deg:.1f}°) → aligning to fall line')
-        self._send_ramp_goal(now, fresh=True)
 
     def _ramp_align_step(self, now: float, fresh: bool) -> None:
-        # Heading error to the fall line equals the base-frame fall-line yaw.
-        yaw_err = abs(self._ramp_fall_yaw) if fresh else 0.0
-        if yaw_err <= math.radians(self._ramp_align_yaw_tol_deg):
+        # Without a fresh slope reading we don't know which way to turn; hold
+        # still rather than spin blindly.
+        if not fresh:
+            self._publish_ramp_cmd(0.0, 0.0)
+            return
+        yaw_err = self._ramp_fall_yaw
+        if abs(yaw_err) <= math.radians(self._ramp_align_yaw_tol_deg):
             self._state = STATE_RAMP_CLIMB
             self._publish_state()
-            self.get_logger().info(
-                'mission_planner: aligned with ramp → climbing')
-            self._send_ramp_goal(now, fresh=True)
+            self.get_logger().info('mission_planner: aligned with ramp → climbing')
+            self._drive_up_ramp(yaw_err)
             return
-        self._maybe_refresh_ramp_goal(now)
+        # Rotate (mostly) in place toward the fall line.
+        wz = _clamp(self._ramp_yaw_kp * yaw_err, self._ramp_max_yaw_rate)
+        self._publish_ramp_cmd(self._ramp_align_speed_mps, wz)
 
     def _ramp_climb_step(self, now: float, fresh: bool, pitch: float) -> None:
-        # Keep steering up the (re-fitted) fall line.
-        self._maybe_refresh_ramp_goal(now)
+        yaw_err = self._ramp_fall_yaw if fresh else 0.0
+        self._drive_up_ramp(yaw_err)
         # Exit once the chassis has flattened out for a sustained period.
         if pitch < self._ramp_exit_pitch_deg:
             if self._ramp_exit_below_since is None:
@@ -513,73 +526,22 @@ class MissionPlannerNode(Node):
         else:
             self._ramp_exit_below_since = None
 
-    def _maybe_refresh_ramp_goal(self, now: float) -> None:
-        if (self._ramp_goal_mono is None
-                or (now - self._ramp_goal_mono) >= self._ramp_goal_period_sec):
-            self._send_ramp_goal(now, fresh=False)
+    def _drive_up_ramp(self, yaw_err: float) -> None:
+        # Constant forward speed (so the robot never stalls on the incline)
+        # with a proportional heading correction that keeps it parallel to the
+        # fall line and off the ramp edges.
+        wz = _clamp(self._ramp_yaw_kp * yaw_err, self._ramp_max_yaw_rate)
+        self._publish_ramp_cmd(self._ramp_climb_speed_mps, wz)
 
-    def _send_ramp_goal(self, now: float, fresh: bool) -> None:
-        if self._robot_xy is None or self._robot_yaw is None:
-            return
-        if not self._nav_client.wait_for_server(timeout_sec=0.5):
-            self.get_logger().warn(
-                'mission_planner: navigate_to_pose not ready for ramp goal',
-                throttle_duration_sec=2.0)
-            return
-        status_fresh = (self._ramp_status_mono is not None
-                        and (now - self._ramp_status_mono)
-                        <= self._ramp_status_timeout_sec)
-        fall = self._ramp_fall_yaw if status_fresh else 0.0
-        world_yaw = self._robot_yaw + fall
-        gx = self._robot_xy[0] + self._ramp_climb_distance_m * math.cos(world_yaw)
-        gy = self._robot_xy[1] + self._ramp_climb_distance_m * math.sin(world_yaw)
-        qx, qy, qz, qw = _yaw_to_quat(world_yaw)
-
-        goal = NavigateToPose.Goal()
-        goal.pose = PoseStamped()
-        goal.pose.header.frame_id = self._frame
-        goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x = float(gx)
-        goal.pose.pose.position.y = float(gy)
-        goal.pose.pose.orientation.x = qx
-        goal.pose.pose.orientation.y = qy
-        goal.pose.pose.orientation.z = qz
-        goal.pose.pose.orientation.w = qw
-
-        # Cancel any previous ramp goal before issuing the refreshed one.
-        if self._ramp_goal_handle is not None:
-            try:
-                self._ramp_goal_handle.cancel_goal_async()
-            except Exception:
-                pass
-            self._ramp_goal_handle = None
-
-        self._ramp_goal_mono = now
-        future = self._nav_client.send_goal_async(goal)
-        future.add_done_callback(self._on_ramp_goal_response)
-
-    def _on_ramp_goal_response(self, future) -> None:
-        # Ignore stale responses once we've left ramp handling.
-        if self._state not in (STATE_RAMP_ALIGN, STATE_RAMP_CLIMB):
-            return
-        try:
-            handle = future.result()
-        except Exception as ex:  # pragma: no cover
-            self.get_logger().error(f'mission_planner: ramp send_goal failed: {ex}')
-            return
-        if not handle.accepted:
-            self.get_logger().warn('mission_planner: ramp NavigateToPose rejected')
-            return
-        self._ramp_goal_handle = handle
+    def _publish_ramp_cmd(self, vx: float, wz: float) -> None:
+        cmd = Twist()
+        cmd.linear.x = float(vx)
+        cmd.angular.z = float(wz)
+        self._ramp_cmd_pub.publish(cmd)
 
     def _exit_ramp(self) -> None:
-        if self._ramp_goal_handle is not None:
-            try:
-                self._ramp_goal_handle.cancel_goal_async()
-            except Exception:
-                pass
-        self._ramp_goal_handle = None
-        self._ramp_goal_mono = None
+        # Stop commanding; the lane navigator resumes ownership of cmd_vel_nav.
+        self._publish_ramp_cmd(0.0, 0.0)
         self._ramp_exit_below_since = None
         self._state = self._state_before_ramp or STATE_LANE_FOLLOW
         self._publish_state()

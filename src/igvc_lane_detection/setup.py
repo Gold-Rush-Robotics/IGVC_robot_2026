@@ -43,6 +43,7 @@ setup(
             'lidar_obstacle_costmap_node = igvc_lane_detection.lidar_obstacle_costmap:main',
             'depth_obstacle_costmap_node = igvc_lane_detection.depth_obstacle_costmap:main',
             'mission_planner_node = igvc_lane_detection.mission_planner:main',
+            'gps_waypoint_test_node = igvc_lane_detection.gps_waypoint_test:main',
             'multi_camera_lane_detection_node = igvc_lane_detection.multi_camera_lane_detection:main',
             'lane_segmentation_node = igvc_lane_detection.lane_segmentation:main',
             'anchor3dlane_node = igvc_lane_detection.anchor3dlane_node:main',

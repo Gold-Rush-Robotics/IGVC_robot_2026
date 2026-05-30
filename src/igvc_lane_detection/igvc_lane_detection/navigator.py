@@ -79,7 +79,7 @@ from rclpy.qos import (DurabilityPolicy, HistoryPolicy,
 from rclpy.time import Time
 
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import FollowPath, NavigateToPose
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from sensor_msgs.msg import NavSatFix
@@ -206,6 +206,12 @@ class IGVCNavigatorNode(Node):
         self._max_odom_age = self._p('max_odom_age_sec', self._max_costmap_age)
         self._max_odom_costmap_skew = self._p(
             'max_odom_costmap_skew_sec', self._max_costmap_age)
+        self._mission_state_timeout = float(self._p('mission_state_timeout_sec', 10.0))
+        self._stuck_reverse_enabled = bool(self._p('stuck_reverse_enabled', True))
+        self._stuck_timeout_sec = float(self._p('stuck_timeout_sec', 3.0))
+        self._reverse_speed_mps = abs(float(self._p('reverse_speed_mps', 0.30)))
+        self._reverse_max_dist_m = float(self._p('reverse_max_dist_m', 0.80))
+        self._reverse_cmd_topic = self._p('reverse_cmd_topic', 'cmd_vel_nav')
 
         # Centerline-waypoint strategy: rolling NavigateToPose goals along a
         # pre-known centerline (from track_points.json).  Lets SmacPlanner2D
@@ -252,6 +258,14 @@ class IGVCNavigatorNode(Node):
         # mission_planner_node owns NavigateToPose and the lane
         # navigator must hold off.  Default = lane_follow.
         self._mission_state = 'lane_follow'
+        # Timestamp (ROS seconds) of the last /mission/state message, used by
+        # the staleness watchdog to release a stuck yield if the planner dies.
+        self._last_mission_state_sec = self.get_clock().now().nanoseconds / 1e9
+        # Stuck-recovery state machine: when the forward path stays blocked we
+        # back up a bounded distance, then re-evaluate.
+        self._blocked_since_sec: Optional[float] = None
+        self._reverse_active = False
+        self._reverse_start_xy: Optional[tuple[float, float]] = None
         # Brake-control pause flag: set true by ~/set_paused (std_srvs/SetBool)
         # to prevent the navigator from issuing new Nav2 goals while the
         # mechanical brakes are applied and the motor controllers are idled.
@@ -350,6 +364,11 @@ class IGVCNavigatorNode(Node):
         # ── Publishers ────────────────────────────────────────────────────
         self._path_pub = self.create_publisher(Path, '/lane_path', 10)
         self._status_pub = self.create_publisher(String, '/navigator/status', 10)
+        # Direct velocity output used only by the bounded stuck-reverse
+        # recovery; it enters the velocity smoother / collision monitor chain
+        # like every other command.
+        self._reverse_cmd_pub = self.create_publisher(
+            Twist, self._reverse_cmd_topic, 10)
 
         # ── Main loop ─────────────────────────────────────────────────────
         self.create_timer(0.1, self._update)   # 10 Hz
@@ -396,6 +415,18 @@ class IGVCNavigatorNode(Node):
             ('max_costmap_age_sec', 2.0),
             ('max_odom_age_sec', 0.75),
             ('max_odom_costmap_skew_sec', 1.5),
+            # Watchdog: if mission_planner stops publishing /mission/state
+            # while it owns navigation (GPS/ramp), fall back to lane_follow so
+            # the robot doesn't sit idle forever after a planner crash.
+            ('mission_state_timeout_sec', 10.0),
+            # Stuck recovery: when the forward corridor stays blocked, back up
+            # slowly (collision monitor + rear zone permitting) and re-plan
+            # instead of stalling against the obstacle / lane line.
+            ('stuck_reverse_enabled',  True),
+            ('stuck_timeout_sec',      3.0),
+            ('reverse_speed_mps',      0.30),
+            ('reverse_max_dist_m',     0.80),
+            ('reverse_cmd_topic',      'cmd_vel_nav'),
             # Centerline-waypoint navigation strategy
             ('nav_strategy', ''),               # '' (auto) | 'local_lane' | 'centerline_waypoints' | 'gps'
             ('centerline_source_json', ''),     # path to track_points.json
@@ -458,6 +489,7 @@ class IGVCNavigatorNode(Node):
     def _on_mission_state(self, msg: String) -> None:
         prev = self._mission_state
         self._mission_state = msg.data or 'lane_follow'
+        self._last_mission_state_sec = self.get_clock().now().nanoseconds / 1e9
         if self._mission_state != prev:
             self.get_logger().info(
                 f'navigator: mission state {prev} -> {self._mission_state}')
@@ -535,13 +567,29 @@ class IGVCNavigatorNode(Node):
         lane_path = self._lane_path_from_costmap()
         self._path_pub.publish(lane_path)
 
+        # Watchdog: if mission_planner owns navigation (GPS/ramp) but has gone
+        # silent for too long, assume it crashed and reclaim lane following so
+        # the robot doesn't stall indefinitely.
+        if self._mission_state in _YIELD_STATES:
+            now_sec = self.get_clock().now().nanoseconds / 1e9
+            if (now_sec - self._last_mission_state_sec) > self._mission_state_timeout:
+                self.get_logger().warn(
+                    f'No /mission/state update for >{self._mission_state_timeout:.0f}s '
+                    f'while in "{self._mission_state}"; reverting to lane_follow.')
+                self._mission_state = 'lane_follow'
+                self._last_mission_state_sec = now_sec
+            else:
+                return
+
         # Mission planner owns Nav2 while a GPS waypoint mission is active
         # or while it aligns/climbs a ramp.
         if self._mission_state in _YIELD_STATES:
+            self._clear_stuck_recovery()
             return
 
         # Brakes are applied — hold all navigation goals.
         if self._paused:
+            self._clear_stuck_recovery()
             self.get_logger().warn(
                 'Navigator paused (brakes applied).', throttle_duration_sec=3.0)
             return
@@ -558,10 +606,10 @@ class IGVCNavigatorNode(Node):
         if self._uses_follow_path():
             invalid_reason = self._path_invalid_reason(lane_path)
             if invalid_reason is not None:
-                self.get_logger().warn(
-                    f'No valid lane path visible ({invalid_reason}) — holding current course.',
-                    throttle_duration_sec=2.0)
+                self._handle_blocked_path(invalid_reason)
                 return
+            # Forward corridor is clear again — abandon any reverse recovery.
+            self._clear_stuck_recovery()
 
             goal_active = self._goal_handle is not None
             if goal_active and not self._path_changed_enough(lane_path):
@@ -609,6 +657,76 @@ class IGVCNavigatorNode(Node):
                     (now - self._last_goal_send_time).nanoseconds / 1e9 >= self._replan_min_dt
                 ):
                     self._send_goal(new_wp)
+
+    # ── Stuck / reverse recovery ──────────────────────────────────────────
+
+    def _publish_reverse_cmd(self, vx: float) -> None:
+        cmd = Twist()
+        cmd.linear.x = float(vx)
+        self._reverse_cmd_pub.publish(cmd)
+
+    def _clear_stuck_recovery(self) -> None:
+        """Cancel any in-progress reverse and reset the blocked timer."""
+        if self._reverse_active:
+            self._publish_reverse_cmd(0.0)
+        self._reverse_active = False
+        self._reverse_start_xy = None
+        self._blocked_since_sec = None
+
+    def _handle_blocked_path(self, reason: str) -> None:
+        """
+        Called every cycle the forward corridor is blocked.  Holds position
+        for ``stuck_timeout_sec`` then backs up a bounded distance so the
+        planner can find a new route instead of stalling against the obstacle.
+        """
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        if not self._stuck_reverse_enabled:
+            self.get_logger().warn(
+                f'No valid lane path visible ({reason}) — holding current course.',
+                throttle_duration_sec=2.0)
+            return
+
+        if self._blocked_since_sec is None:
+            self._blocked_since_sec = now_sec
+        blocked_for = now_sec - self._blocked_since_sec
+
+        if not self._reverse_active:
+            if blocked_for < self._stuck_timeout_sec:
+                self.get_logger().warn(
+                    f'No valid lane path visible ({reason}) — holding before reverse.',
+                    throttle_duration_sec=2.0)
+                return
+            # Begin reversing: drop any forward goal so RPP stops competing.
+            if self._goal_handle is not None:
+                try:
+                    self._goal_handle.cancel_goal_async()
+                except Exception:
+                    pass
+                self._goal_handle = None
+            self._reverse_active = True
+            self._reverse_start_xy = self._robot_xy
+            self.get_logger().warn(
+                f'Forward path blocked ({reason}) for {blocked_for:.1f}s → '
+                f'reversing up to {self._reverse_max_dist_m:.2f} m to recover.')
+
+        travelled = 0.0
+        if self._reverse_start_xy is not None and self._robot_xy is not None:
+            travelled = math.hypot(
+                self._robot_xy[0] - self._reverse_start_xy[0],
+                self._robot_xy[1] - self._reverse_start_xy[1])
+        if travelled >= self._reverse_max_dist_m:
+            # Used the whole budget; stop and wait for a fresh path before
+            # considering another backup.
+            self._publish_reverse_cmd(0.0)
+            self._reverse_active = False
+            self._reverse_start_xy = None
+            self._blocked_since_sec = now_sec
+            self.get_logger().warn(
+                'Reverse budget exhausted; holding for re-plan.',
+                throttle_duration_sec=2.0)
+            return
+
+        self._publish_reverse_cmd(-self._reverse_speed_mps)
 
     # ── Waypoint generation ───────────────────────────────────────────────
 
@@ -1239,6 +1357,37 @@ class IGVCNavigatorNode(Node):
                         clearance[r, c] = min(clearance[r, c], clearance[rr, cc] + step)
         clearance_m = clearance * res
 
+        # Previous-path hysteresis: build a boolean mask of ROI cells lying
+        # near the last accepted centreline so the Dijkstra search can discount
+        # them.  This keeps the planner committed to one side of the corridor
+        # instead of flip-flopping each frame between equally-good routes — the
+        # main cause of side-to-side snaking on straight sections.  The cached
+        # path is in odom; project it into the current base_link ROI.
+        near_prev: Optional[np.ndarray] = None
+        if (self._prev_path_bias_weight > 0.0
+                and self._prev_centreline_odom is not None
+                and self._prev_centreline_odom.size > 0
+                and self._robot_xy is not None
+                and self._robot_yaw is not None):
+            cos_r = math.cos(self._robot_yaw)
+            sin_r = math.sin(self._robot_yaw)
+            pdx = self._prev_centreline_odom[:, 0] - self._robot_xy[0]
+            pdy = self._prev_centreline_odom[:, 1] - self._robot_xy[1]
+            pf = cos_r * pdx + sin_r * pdy
+            pl = -sin_r * pdx + cos_r * pdy
+            pcs = ((pf - orig_x) / res).astype(int) - min_col
+            prs = ((pl - orig_y) / res).astype(int) - min_row
+            in_b = (prs >= 0) & (prs < roi_h) & (pcs >= 0) & (pcs < roi_w)
+            if np.any(in_b):
+                near_prev = np.zeros((roi_h, roi_w), dtype=bool)
+                rad = max(1, int(round(self._prev_path_bias_radius_m / res)))
+                for pri, pci in zip(prs[in_b], pcs[in_b]):
+                    r0 = max(0, int(pri) - rad)
+                    r1 = min(roi_h, int(pri) + rad + 1)
+                    c0 = max(0, int(pci) - rad)
+                    c1 = min(roi_w, int(pci) + rad + 1)
+                    near_prev[r0:r1, c0:c1] = True
+
         cost = np.full((roi_h, roi_w), np.inf, dtype=float)
         travel = np.full((roi_h, roi_w), np.inf, dtype=float)
         parent_r = np.full((roi_h, roi_w), -1, dtype=np.int32)
@@ -1277,8 +1426,12 @@ class IGVCNavigatorNode(Node):
                 clearance_penalty = min(6.0, 0.45 / clr)
                 lateral_penalty = 0.30 if dc == 0 else 0.0
                 unknown_penalty = 8.0 if not free[rr, cc] else 0.0
-                next_cost = cur_cost + step_m * (
-                    1.0 + clearance_penalty + lateral_penalty + unknown_penalty)
+                prev_bias = (-self._prev_path_bias_weight
+                             if near_prev is not None and near_prev[rr, cc]
+                             else 0.0)
+                weight = max(0.05, 1.0 + clearance_penalty + lateral_penalty
+                             + unknown_penalty + prev_bias)
+                next_cost = cur_cost + step_m * weight
                 if next_cost < cost[rr, cc]:
                     cost[rr, cc] = next_cost
                     travel[rr, cc] = travel[r, c] + step_m
@@ -1336,6 +1489,16 @@ class IGVCNavigatorNode(Node):
             if fwd < -0.05:
                 continue
             pts.append((float(fwd), float(lat)))
+
+        # Cache the accepted path in odom frame so the next cycle can apply the
+        # hysteresis bias above.
+        if pts and self._robot_xy is not None and self._robot_yaw is not None:
+            cos_r = math.cos(self._robot_yaw)
+            sin_r = math.sin(self._robot_yaw)
+            arr = np.asarray(pts, dtype=float)
+            ox = self._robot_xy[0] + cos_r * arr[:, 0] - sin_r * arr[:, 1]
+            oy = self._robot_xy[1] + sin_r * arr[:, 0] + cos_r * arr[:, 1]
+            self._prev_centreline_odom = np.column_stack([ox, oy])
 
         return pts
 

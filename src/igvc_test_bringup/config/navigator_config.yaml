@@ -55,3 +55,18 @@ igvc_navigator:
     # genuinely better route still wins.
     prev_path_bias_weight: 0.4
     prev_path_bias_radius_m: 0.30
+
+    # Watchdog: if mission_planner owns navigation (GPS/ramp) but stops
+    # publishing /mission/state for this long, reclaim lane following so a
+    # planner crash can't strand the robot.
+    mission_state_timeout_sec: 10.0
+
+    # Stuck recovery: when the forward corridor stays blocked, hold for
+    # stuck_timeout_sec then back up (slowly, bounded distance) and re-plan
+    # instead of stalling against the obstacle / lane line.  The 360° lidar
+    # rear StopZone in the collision monitor guards the reverse.
+    stuck_reverse_enabled: true
+    stuck_timeout_sec: 3.0
+    reverse_speed_mps: 0.30
+    reverse_max_dist_m: 0.80
+    reverse_cmd_topic: "cmd_vel_nav"

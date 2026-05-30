@@ -94,8 +94,12 @@ controller_server:
       desired_angular_vel: 1.5
       lookahead_dist: 1.2
       min_lookahead_dist: 0.6
-      max_lookahead_dist: 2.4
-      lookahead_time: 1.0
+      max_lookahead_dist: 2.6
+      # Longer lookahead time damps straight-line snaking (at the 1.5 m/s
+      # cruise the carrot sits ~2.0 m ahead, smoothing small lane-path wobble),
+      # while velocity-scaled lookahead still collapses to min_lookahead_dist
+      # (0.6 m) when the robot slows for tight corners — keeping turn agility.
+      lookahead_time: 1.35
       rotate_to_heading_angular_vel: 1.5
       transform_tolerance: 1.0
       # Velocity-scaled lookahead keeps high-speed tracking smooth while still
@@ -145,7 +149,7 @@ collision_monitor:
     source_timeout: 1.5
     base_shift_correction: true
     stop_pub_timeout: 2.0
-    polygons: ["SlowZone", "StopZone"]
+    polygons: ["SlowZone", "StopZone", "RearStopZone"]
 
     # Slow to 50% when anything enters 1.0m ahead
     # SlowZone:
@@ -186,6 +190,15 @@ collision_monitor:
       action_type: "stop"
       min_points: 2
       enabled: true
+    # Rear guard so the bounded reverse recovery (navigator stuck-recovery)
+    # cannot back into an obstacle.  The 360° lidar already covers behind the
+    # robot, so this polygon is populated from the same /scan source.
+    RearStopZone:
+      type: "polygon"
+      points: "[[-0.55, 0.35], [-0.55, -0.35], [0.0, -0.35], [0.0, 0.35]]"
+      action_type: "stop"
+      min_points: 2
+      enabled: true
 
     observation_sources: ["lidar_scan", "front_pointcloud"]
     lidar_scan:
@@ -217,9 +230,11 @@ velocity_smoother:
     scale_velocities: true
     feedback: "OPEN_LOOP"
     max_velocity: [ 2.24, 0.0,  1.5]   # 5 mph forward cap
-    # Hard-block reverse motion: forward-only robot, never command negative
-    # linear velocity even when nav2 emits one near tight spaces.
-    min_velocity: [ 0.0,  0.0, -1.5]
+    # Allow a small reverse speed so the navigator's bounded stuck-recovery can
+    # back away from a blocked corridor instead of stalling.  RPP itself plans
+    # forward-only paths; only the recovery commands negative X, and the rear
+    # collision StopZone guards it.
+    min_velocity: [-0.6,  0.0, -1.5]
     # Accel limits sized so the robot can reach 2.24 m/s in ~1.5 s.
     max_accel:    [ 1.5,  0.0,  1.5]
     max_decel:    [-2.0,  0.0, -1.5]
