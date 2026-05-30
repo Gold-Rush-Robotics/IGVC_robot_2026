@@ -51,7 +51,7 @@ class GpsWaypointTestNode(Node):
         self.declare_parameter('target_lon', -83.130640432)  # 5004 Practice Mid
         self.declare_parameter('origin_lat', 0.0)
         self.declare_parameter('origin_lon', 0.0)
-        self.declare_parameter('gps_topic', '/gps/fix')
+        self.declare_parameter('gps_topic', '/fix')
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('nav_action', 'navigate_to_pose')
         self.declare_parameter('goal_tolerance_m', 1.0)

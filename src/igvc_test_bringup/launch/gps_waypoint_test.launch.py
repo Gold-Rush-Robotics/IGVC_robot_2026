@@ -113,11 +113,41 @@ def generate_launch_description() -> LaunchDescription:
         output='screen',
         parameters=[{
             'use_sim_time': use_sim_time,
-            'target_lat': 42.66808596,
-            'target_lon': -83.21844564,
+            'target_lat': 42.66821182,
+            'target_lon': -83.21845873,
             'origin_lat': origin_lat,
             'origin_lon': origin_lon,
         }],
+    )
+    static_map_to_odom = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='static_map_to_odom',
+        output='log',
+        arguments=[
+            '--x', '0', '--y', '0', '--z', '0',
+            '--roll', '0', '--pitch', '0', '--yaw', '0',
+            '--frame-id', 'map', '--child-frame-id', 'odom',
+        ],
+        parameters=[{'use_sim_time': use_sim_time}],
+    )
+    odom_tf_bridge_node = Node(
+        package="igvc_lane_detection",
+        executable="odom_tf_bridge_node",
+        name="odom_tf_bridge",
+        output="screen",
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            {'odom_topic': '/front_zed_camera_x/zed_node/odom'},
+            {'odom_frame_id': 'odom'},
+            {'base_frame_id': 'base_link'},
+            {'publish_rate_hz': 100.0},
+            # Match isaac_nav_test: publish TF at the current ROS time so
+            # RViz/Nav2 can transform base_link-framed /lane_costmap even
+            # when the ZED odom message timestamp lags under sim/YOLO load.
+            {'use_original_timestamp': False},
+            {'warn_odom_age_sec': 0.5},
+        ],
     )
 
     return LaunchDescription([
@@ -131,4 +161,6 @@ def generate_launch_description() -> LaunchDescription:
         motor_controllers,
         nav2,
         gps_waypoint_test_node,
+        static_map_to_odom,
+        odom_tf_bridge_node,
     ])
