@@ -151,6 +151,20 @@ def generate_launch_description() -> LaunchDescription:
             {'warn_odom_age_sec': 0.5},
         ],
     )
+    twist_stamper_node = Node(
+        package='twist_stamper',
+        executable='twist_stamper',
+        name='twist_stamper',
+        output='screen',
+        parameters=[
+            {'use_sim_time': use_sim_time},
+            {'frame_id': 'base_link'},
+        ],
+        remappings=[
+            ('cmd_vel_in', '/diff_drive_controller/cmd_vel_unstamped'),
+            ('cmd_vel_out', '/diff_drive_controller/cmd_vel'),
+        ],
+    )
 
     return LaunchDescription([
         use_sim_time_arg,
@@ -164,4 +178,5 @@ def generate_launch_description() -> LaunchDescription:
         nav2,
         gps_waypoint_test_node,
         odom_tf_bridge_node,
+        twist_stamper_node,
     ])
