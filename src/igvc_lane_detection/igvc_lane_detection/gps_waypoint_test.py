@@ -120,6 +120,12 @@ class GpsWaypointTestNode(Node):
         # Cap re-calibration attempts so a hopeless GPS/heading situation
         # doesn't loop forever.
         self.declare_parameter('max_recoveries', 5)
+        # Robot-relative mode: skip GPS entirely and navigate to a fixed pose
+        # expressed in the map/odom frame (identity transform).  target_x and
+        # target_y are metres forward/lateral from the robot start position.
+        self.declare_parameter('use_gps', True)
+        self.declare_parameter('target_x', 0.0)
+        self.declare_parameter('target_y', 0.0)
 
         self._target_lat = float(self.get_parameter('target_lat').value)
         self._target_lon = float(self.get_parameter('target_lon').value)
@@ -143,8 +149,15 @@ class GpsWaypointTestNode(Node):
         self._recovery_increase = float(
             self.get_parameter('recovery_dist_increase_m').value)
         self._max_recoveries = int(self.get_parameter('max_recoveries').value)
+        self._use_gps = bool(self.get_parameter('use_gps').value)
+        self._target_x = float(self.get_parameter('target_x').value)
+        self._target_y = float(self.get_parameter('target_y').value)
+        if not self._use_gps:
+            # Map frame == odom frame (identity).  No GPS origin required.
+            self._origin_set = True
+            self._heading_init = False
 
-        if self._target_lat == 0.0 and self._target_lon == 0.0:
+        if self._use_gps and self._target_lat == 0.0 and self._target_lon == 0.0:
             self.get_logger().error(
                 'target_lat/target_lon not set — nothing to navigate to. '
                 'Pass them with --ros-args -p target_lat:=.. -p target_lon:=..')
@@ -183,8 +196,9 @@ class GpsWaypointTestNode(Node):
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=5)
-        self.create_subscription(
-            NavSatFix, self._gps_topic, self._on_gps, sensor_qos)
+        if self._use_gps:
+            self.create_subscription(
+                NavSatFix, self._gps_topic, self._on_gps, sensor_qos)
         self.create_subscription(
             Odometry, self._odom_topic, self._on_odom, sensor_qos)
 
@@ -194,10 +208,16 @@ class GpsWaypointTestNode(Node):
         # diff_drive controller's cmd_vel timeout never trips mid-calibration.
         self._timer = self.create_timer(1.0, self._tick)
         self._drive_timer = self.create_timer(0.1, self._publish_drive_cmd)
-        self.get_logger().info(
-            f'gps_waypoint_test: target=({self._target_lat:.6f}, '
-            f'{self._target_lon:.6f}); heading_init={self._heading_init}; '
-            f'listening on {self._gps_topic} / {self._odom_topic}')
+        if self._use_gps:
+            self.get_logger().info(
+                f'gps_waypoint_test [GPS]: target=({self._target_lat:.6f}, '
+                f'{self._target_lon:.6f}); heading_init={self._heading_init}; '
+                f'gps={self._gps_topic} odom={self._odom_topic}')
+        else:
+            self.get_logger().info(
+                f'gps_waypoint_test [odom-relative]: target=({self._target_x:.2f},'
+                f' {self._target_y:.2f}) m in {self._map_frame}; '
+                f'odom={self._odom_topic}')
 
     # ── Callbacks ──────────────────────────────────────────────────────────
 
@@ -247,7 +267,7 @@ class GpsWaypointTestNode(Node):
         return self.get_clock().now().nanoseconds / 1e9
 
     def _tick(self) -> None:
-        if self._target_lat == 0.0 and self._target_lon == 0.0:
+        if self._use_gps and self._target_lat == 0.0 and self._target_lon == 0.0:
             return
 
         if self._state == self._S_WAIT:
@@ -401,13 +421,18 @@ class GpsWaypointTestNode(Node):
 
         if self._reached:
             return
-        if not self._origin_set or self._latest_fix is None:
-            return
-
-        cur_e, cur_n = gps_to_map(self._latest_fix[0], self._latest_fix[1],
-                                  self._origin_lat, self._origin_lon)
-        tgt_e, tgt_n = gps_to_map(self._target_lat, self._target_lon,
-                                  self._origin_lat, self._origin_lon)
+        if self._use_gps:
+            if not self._origin_set or self._latest_fix is None:
+                return
+            cur_e, cur_n = gps_to_map(self._latest_fix[0], self._latest_fix[1],
+                                      self._origin_lat, self._origin_lon)
+            tgt_e, tgt_n = gps_to_map(self._target_lat, self._target_lon,
+                                      self._origin_lat, self._origin_lon)
+        else:
+            if self._latest_odom is None:
+                return
+            cur_e, cur_n = self._latest_odom
+            tgt_e, tgt_n = self._target_x, self._target_y
         dist = math.hypot(tgt_e - cur_e, tgt_n - cur_n)
         if dist <= self._goal_tol:
             self.get_logger().info(
@@ -459,11 +484,16 @@ class GpsWaypointTestNode(Node):
         self._goal_handle = None
         self._goal_pending = False
         self._last_send_sec = None
-        # Fresh forward drive to re-estimate heading.
-        self._calib_gps_start = None
-        self._calib_odom_start = None
-        self._begin_settle()
-        self._state = self._S_CALIB_START
+        if self._use_gps:
+            # Fresh forward drive to re-estimate heading.
+            self._calib_gps_start = None
+            self._calib_odom_start = None
+            self._begin_settle()
+            self._state = self._S_CALIB_START
+        else:
+            # In odom-relative mode there is no heading to re-estimate;
+            # re-enter navigation so the goal is re-sent.
+            self._enter_navigate()
 
     # ── Goal handling ──────────────────────────────────────────────────────
 
@@ -502,8 +532,9 @@ class GpsWaypointTestNode(Node):
 
         self._goal_pending = True
         self._last_send_sec = self._now()
+        mode = 'GPS' if self._use_gps else 'odom-rel'
         self.get_logger().info(
-            f'Sending GPS goal: map ({tgt_e:.2f}, {tgt_n:.2f}), '
+            f'Sending [{mode}] goal: map ({tgt_e:.2f}, {tgt_n:.2f}), '
             f'dist={dist:.2f} m via {len(poses)} waypoint(s) '
             f'(spacing={spacing:.1f} m)')
         future = self._nav.send_goal_async(goal)

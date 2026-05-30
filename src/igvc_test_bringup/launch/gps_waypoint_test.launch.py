@@ -117,6 +117,13 @@ def generate_launch_description() -> LaunchDescription:
         output='screen',
         parameters=[{
             'use_sim_time': use_sim_time,
+            # ── Mode ────────────────────────────────────────────────────────
+            # use_gps=false: navigate to a fixed map-frame pose using odometry
+            # only.  The robot starts at (0, 0) and drives to (target_x, target_y).
+            'use_gps': False,
+            'target_x': 5.0,   # metres forward (+X)
+            'target_y': 0.0,   # metres lateral (+Y = left)
+            # ── GPS target (ignored when use_gps=false) ─────────────────────
             'target_lat': 42.66821182,
             'target_lon': -83.21845873,
             'origin_lat': origin_lat,
@@ -124,15 +131,13 @@ def generate_launch_description() -> LaunchDescription:
             'odom_topic': '/front_zed_camera_x/zed_node/odom',
             'map_frame': 'map',
             'odom_frame': 'odom',
-            # Drive forward to establish heading before navigating.
-            'heading_init': True,
+            # No heading calibration drive needed in odom-relative mode.
+            'heading_init': False,
             'calib_distance_m': 2.5,
             'calib_speed_mps': 0.3,
             'calib_settle_sec': 1.0,
             'drive_cmd_topic': 'cmd_vel_nav',
             'min_gps_displacement_m': 0.5,
-            # If the robot drifts >2 m past its closest approach, the heading
-            # estimate was wrong — re-calibrate and retry (up to max_recoveries).
             'recovery_dist_increase_m': 2.0,
             'max_recoveries': 5,
         }],
