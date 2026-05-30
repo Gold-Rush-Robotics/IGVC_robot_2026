@@ -113,6 +113,13 @@ class GpsWaypointTestNode(Node):
         # Abort calibration if the GPS-measured displacement is below this —
         # means the robot didn't actually move (blocked) or GPS is too noisy.
         self.declare_parameter('min_gps_displacement_m', 0.5)
+        # If, while navigating, the distance to the target grows this far past
+        # the closest we've ever been, the heading estimate is wrong and the
+        # robot is driving away — cancel, re-calibrate heading, and retry.
+        self.declare_parameter('recovery_dist_increase_m', 2.0)
+        # Cap re-calibration attempts so a hopeless GPS/heading situation
+        # doesn't loop forever.
+        self.declare_parameter('max_recoveries', 5)
 
         self._target_lat = float(self.get_parameter('target_lat').value)
         self._target_lon = float(self.get_parameter('target_lon').value)
@@ -133,6 +140,9 @@ class GpsWaypointTestNode(Node):
         self._calib_settle = float(self.get_parameter('calib_settle_sec').value)
         self._drive_cmd_topic = self.get_parameter('drive_cmd_topic').value
         self._min_gps_disp = float(self.get_parameter('min_gps_displacement_m').value)
+        self._recovery_increase = float(
+            self.get_parameter('recovery_dist_increase_m').value)
+        self._max_recoveries = int(self.get_parameter('max_recoveries').value)
 
         if self._target_lat == 0.0 and self._target_lon == 0.0:
             self.get_logger().error(
@@ -146,6 +156,9 @@ class GpsWaypointTestNode(Node):
         self._goal_pending = False
         self._reached = False
         self._last_send_sec: Optional[float] = None
+        # Closest we have ever been to the target, and recovery attempt count.
+        self._min_dist_seen: Optional[float] = None
+        self._recoveries = 0
 
         # Calibration bookkeeping
         self._state = self._S_WAIT
@@ -256,7 +269,7 @@ class GpsWaypointTestNode(Node):
                 throttle_duration_sec=3.0)
             return
         if not self._heading_init:
-            self._state = self._S_NAVIGATE
+            self._enter_navigate()
             return
         if self._latest_status < 1:
             self.get_logger().warn(
@@ -368,6 +381,15 @@ class GpsWaypointTestNode(Node):
             f'odom={math.degrees(odom_heading):.1f}°, '
             f'map->odom yaw={math.degrees(yaw):.1f}°, '
             f't=({tx:.2f}, {ty:.2f}). Navigating to target.')
+        self._enter_navigate()
+
+    def _enter_navigate(self) -> None:
+        """Reset goal/progress state and switch to the navigation phase."""
+        self._drive_cmd = Twist()
+        self._goal_handle = None
+        self._goal_pending = False
+        self._last_send_sec = None
+        self._min_dist_seen = None
         self._state = self._S_NAVIGATE
 
     # ── Navigation ───────────────────────────────────────────────────────────
@@ -377,7 +399,7 @@ class GpsWaypointTestNode(Node):
         # subscribers that joined after the one-shot send above.
         self._publish_map_to_odom()
 
-        if self._reached or self._goal_pending:
+        if self._reached:
             return
         if not self._origin_set or self._latest_fix is None:
             return
@@ -394,12 +416,54 @@ class GpsWaypointTestNode(Node):
             self._state = self._S_DONE
             return
 
+        # Progress watchdog: if we drift well past the closest approach we've
+        # ever made, the heading estimate is wrong and the robot is driving
+        # away from the goal.  Re-calibrate heading and try again.
+        if self._min_dist_seen is None or dist < self._min_dist_seen:
+            self._min_dist_seen = dist
+        elif (dist - self._min_dist_seen) > self._recovery_increase:
+            self._trigger_recovery(dist)
+            return
+
+        if self._goal_pending:
+            return
+
         now_sec = self._now()
         if (self._goal_handle is not None and self._last_send_sec is not None
                 and (now_sec - self._last_send_sec) < self._resend_period):
             return
 
         self._send_goal(tgt_e, tgt_n, cur_e, cur_n, dist)
+
+    def _trigger_recovery(self, dist: float) -> None:
+        """Cancel the active goal and re-run heading calibration."""
+        if self._recoveries >= self._max_recoveries:
+            self.get_logger().error(
+                f'Distance still increasing ({dist:.1f} m) after '
+                f'{self._recoveries} recovery attempts; giving up. Check GPS '
+                'fix quality and that odom is moving.')
+            self._drive_cmd = Twist()
+            self._state = self._S_DONE
+            return
+        self._recoveries += 1
+        self.get_logger().warn(
+            f'Moving AWAY from target: dist={dist:.1f} m vs best '
+            f'{self._min_dist_seen:.1f} m. Heading estimate likely wrong — '
+            f're-calibrating (attempt {self._recoveries}/{self._max_recoveries}).')
+        # Stop Nav2 driving the wrong way.
+        if self._goal_handle is not None:
+            try:
+                self._goal_handle.cancel_goal_async()
+            except Exception:  # pragma: no cover
+                pass
+        self._goal_handle = None
+        self._goal_pending = False
+        self._last_send_sec = None
+        # Fresh forward drive to re-estimate heading.
+        self._calib_gps_start = None
+        self._calib_odom_start = None
+        self._begin_settle()
+        self._state = self._S_CALIB_START
 
     # ── Goal handling ──────────────────────────────────────────────────────
 

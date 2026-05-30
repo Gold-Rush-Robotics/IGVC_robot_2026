@@ -126,11 +126,15 @@ def generate_launch_description() -> LaunchDescription:
             'odom_frame': 'odom',
             # Drive forward to establish heading before navigating.
             'heading_init': True,
-            'calib_distance_m': 1.5,
+            'calib_distance_m': 2.5,
             'calib_speed_mps': 0.3,
             'calib_settle_sec': 1.0,
             'drive_cmd_topic': 'cmd_vel_nav',
             'min_gps_displacement_m': 0.5,
+            # If the robot drifts >2 m past its closest approach, the heading
+            # estimate was wrong — re-calibrate and retry (up to max_recoveries).
+            'recovery_dist_increase_m': 2.0,
+            'max_recoveries': 5,
         }],
     )
     odom_tf_bridge_node = Node(
