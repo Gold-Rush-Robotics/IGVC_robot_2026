@@ -1,0 +1,99 @@
+# config/zed2i_mag_only.yaml
+# ZED 2i parameters for HEADING-ONLY operation.
+# Everything not required to compute a magnetic heading is disabled:
+#   - depth / point cloud  -> off
+#   - video (RGB/stereo)   -> not published
+#   - positional tracking  -> off (no odom / TF)
+#   - GNSS fusion          -> off
+#   - spatial mapping      -> off
+#   - object detection     -> off
+#   - body tracking        -> off
+#   - stream server        -> off
+#   - barometer / temp     -> off
+# The raw IMU (gyro + accel) AND the magnetometer ARE published so the
+# imu_filter_madgwick node can fuse them into a magnetic-north heading:
+#   /<cam>/zed_node/imu/data_raw  (sensor_msgs/Imu)
+#   /<cam>/zed_node/imu/mag       (sensor_msgs/MagneticField, Tesla)
+# The camera still grabs frames internally (required by the SDK to run the
+# sensor pipeline) but no image/depth data is published.
+
+---
+/**:
+    ros__parameters:
+        use_sim_time: false
+
+        simulation:
+            sim_enabled: false
+
+        general:
+            camera_timeout_sec: 10
+            camera_max_reconnect: 10
+            camera_flip: false
+            self_calib: true
+            serial_number: 0
+            # Lowest sustainable grab settings — we only need the camera
+            # running so the magnetometer pipeline produces data.
+            grab_resolution: 'VGA'
+            grab_frame_rate: 15
+            grab_compute_capping_fps: 15.0
+            pub_resolution: 'NATIVE'
+            pub_frame_rate: 15.0
+            enable_image_validity_check: 1
+            gpu_id: 0
+            async_image_retrieval: false
+            publish_status: true
+
+        video:
+            # Nothing image-related is published in magnetometer-only mode.
+            publish_rgb: false
+            publish_left_right: false
+            publish_raw: false
+            publish_gray: false
+            publish_stereo: false
+
+        sensors:
+            publish_imu_tf: true
+            sensors_image_sync: false
+            sensors_pub_rate: 200.
+            publish_imu: true        # fused IMU (orientation+gyro+accel)
+            publish_imu_raw: true    # raw gyro+accel -> madgwick input
+            publish_cam_imu_transf: true
+            publish_mag: true        # magnetometer -> madgwick input
+            publish_baro: false
+            publish_temp: false
+
+        depth:
+            # Disable the entire depth pipeline.
+            depth_mode: 'NONE'
+            point_cloud_freq: 0.0
+            publish_depth_map: false
+            publish_depth_info: false
+            publish_point_cloud: false
+            publish_depth_confidence: false
+            publish_disparity: false
+
+        pos_tracking:
+            pos_tracking_enabled: false
+            publish_tf: false
+            publish_map_tf: false
+            publish_odom_pose: false
+            publish_pose_cov: false
+            publish_cam_path: false
+
+        gnss_fusion:
+            enable_gnss: false
+
+        mapping:
+            mapping_enabled: false
+
+        object_detection:
+            od_enabled: false
+
+        body_tracking:
+            bt_enabled: false
+
+        stream_server:
+            stream_enabled: false
+
+        debug:
+            sdk_verbose: 0

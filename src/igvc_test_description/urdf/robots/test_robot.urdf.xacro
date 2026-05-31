@@ -5,6 +5,7 @@
     <xacro:include filename="$(find igvc_test_description)/urdf/parts/zed_camera_x.urdf.xacro" />
     <xacro:include filename="$(find igvc_test_description)/urdf/parts/rplidar_c1.urdf.xacro" />
     <xacro:include filename="$(find igvc_test_description)/urdf/parts/gps_antenna.urdf.xacro" />
+    <xacro:include filename="$(find igvc_test_description)/urdf/parts/zed_camera_2i.urdf.xacro" />
     
     <xacro:arg name="hardware_interface" default="IsaacDriveHardware" />
     <xacro:robot_body />
@@ -21,6 +22,10 @@
         <origin xyz="0.359 -0.195 0.251" rpy="0 ${3.14/18} -${3.14/4}"/>
     </xacro:zed_camera_x>
 
+    <xacro:zed_camera_2i parent="chassis_link" prefix="front">
+        <origin xyz="-0.215 0 0.248" rpy="0  0 0"/>
+    </xacro:zed_camera_2i>
+
     <xacro:rplidar_c1 parent="chassis_link" prefix="top">
         <origin xyz="0.225 0 0.46" rpy="0 0 0"/>
     </xacro:rplidar_c1>
@@ -28,8 +33,5 @@
     <xacro:gps_antenna parent="chassis_link" prefix="front">
         <origin xyz="0.177 -0.133 0.218" rpy="0 0 0"/>
     </xacro:gps_antenna>
-
-
-
 
 </robot>

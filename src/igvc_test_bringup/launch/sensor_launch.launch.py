@@ -252,7 +252,7 @@ def generate_launch_description():
     )
     l3gd20_node = Node(
         package='igvc_imu_interface',
-        executable='l3gd20_heading_node',
+        executable='imu_interface_node',
         name='l3gd20_heading_node',
         output='screen',
         condition=IfCondition(LaunchConfiguration('enable_l3gd20')),
@@ -295,6 +295,22 @@ def generate_launch_description():
             }
         ],
     )
+    zed_2i_mag = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(
+                get_package_share_directory('igvc_test_bringup'),
+                'launch',
+                'zed2i_mag.launch.py',
+            )
+        ),
+        launch_arguments={
+            'camera_name': 'front_zed_camera_2i',
+            'camera_model': 'zed2i',
+            'serial_number': '0',
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+        }.items(),
+    )
+
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -376,7 +392,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 'l3gd20_i2c_address',
-                default_value='0x6b',
+                default_value='107',
                 description='L3GD20 I2C address. Use 0x6a when SA0 is low.',
             ),
             DeclareLaunchArgument(
@@ -444,9 +460,11 @@ def generate_launch_description():
                 default_value='0.03',
                 description='Yaw-rate deadband in degrees per second after bias correction.',
             ),
+
             # OpaqueFunction(function=launch_setup),
             # lidar_node,
-            gps_node,
+            # gps_node,
             l3gd20_node,
+            zed_2i_mag,
         ]
     )

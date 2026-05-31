@@ -9,6 +9,11 @@
 
   <buildtool_depend>ament_python</buildtool_depend>
 
+  <!-- ZED 2i magnetometer heading pipeline (zed2i_mag.launch.py /
+       mag_heading.launch.py) -->
+  <exec_depend>zed_wrapper</exec_depend>
+  <exec_depend>imu_filter_madgwick</exec_depend>
+
   <!-- <exec_depend>igvc_pointcloud_tools</exec_depend> -->
 
   <!-- <exec_depend>controller_manager</exec_depend>
