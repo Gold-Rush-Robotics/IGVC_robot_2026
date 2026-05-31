@@ -5,7 +5,7 @@
     <xacro:include filename="$(find igvc_test_description)/urdf/parts/zed_camera_x.urdf.xacro" />
     <xacro:include filename="$(find igvc_test_description)/urdf/parts/rplidar_c1.urdf.xacro" />
     <xacro:include filename="$(find igvc_test_description)/urdf/parts/gps_antenna.urdf.xacro" />
-    <xacro:include filename="$(find igvc_test_description)/urdf/parts/zed_camera_2i.urdf.xacro" />
+    <!-- <xacro:include filename="$(find igvc_test_description)/urdf/parts/zed_camera_2i.urdf.xacro" /> -->
     
     <xacro:arg name="hardware_interface" default="IsaacDriveHardware" />
     <xacro:robot_body />

@@ -36,10 +36,10 @@ from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
 
-from geometry_msgs.msg import PoseStamped, Twist, TransformStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import NavigateThroughPoses
-from sensor_msgs.msg import NavSatFix
+from sensor_msgs.msg import Imu, MagneticField, NavSatFix
 from tf2_ros import StaticTransformBroadcaster
 
 from igvc_lane_detection.navigator import gps_to_map
@@ -48,6 +48,25 @@ from igvc_lane_detection.navigator import gps_to_map
 def _wrap(angle: float) -> float:
     """Wrap an angle to [-pi, pi]."""
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def _yaw_from_quat(q: tuple[float, float, float, float]) -> float:
+    """Yaw (rotation about +z) from a (x, y, z, w) quaternion."""
+    x, y, z, w = q
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+
+def _rotate_vec_by_quat(q: tuple[float, float, float, float],
+                        v: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Rotate vector ``v`` by quaternion ``q`` (x, y, z, w):  v' = q v q*."""
+    x, y, z, w = q
+    vx, vy, vz = v
+    tx = 2.0 * (y * vz - z * vy)
+    ty = 2.0 * (z * vx - x * vz)
+    tz = 2.0 * (x * vy - y * vx)
+    return (vx + w * tx + (y * tz - z * ty),
+            vy + w * ty + (z * tx - x * tz),
+            vz + w * tz + (x * ty - y * tx))
 
 
 def _ols(xs: list[float], ys: list[float]) -> tuple[float, float]:
@@ -66,16 +85,16 @@ class GpsWaypointTestNode(Node):
     """
     Two-phase GPS waypoint tester.
 
-    Phase 1 — HEADING TRIANGULATION
+    Phase 1 — MAGNETOMETER HEADING INIT (stationary)
         GPS gives position but no heading, and the ``odom`` frame's yaw is
-        whatever the VIO initialised to (not true North).  The robot drives
-        forward ``calib_distance_m`` to collect GPS fix P2, then drives the
-        same distance again to collect GPS fix P3.  The vector P1→P3 (longest
-        baseline) gives the true ENU heading.  As a sanity check the heading is
-        compared against the odom displacement direction; if they differ by
-        ~180° the GPS baseline is flipped by noise and is corrected
-        automatically.  The result is used to publish the ``map -> odom``
-        static transform before navigation starts.
+        whatever the VIO initialised to (not true North).  Rather than driving
+        a calibration leg, the node averages the ZED2i magnetometer for a few
+        seconds while stationary and rotates that body-frame field into the
+        ``odom`` frame using the fast, low-noise fused IMU orientation (tilt
+        compensation falls out of the full 3-D rotation).  The bearing of
+        magnetic north, corrected by the magnetic declination, gives the true
+        ENU heading, which pins the ``map -> odom`` static transform.  The IMU
+        then maintains odom yaw for the rest of the run.
 
     Phase 2 — NAVIGATE
         Sends the target as a series of evenly spaced intermediate waypoints
@@ -83,14 +102,10 @@ class GpsWaypointTestNode(Node):
     """
 
     # State machine
-    _S_WAIT        = 'wait'          # waiting for first GPS fix + odom
-    _S_CALIB_START = 'calib_start'   # averaging GPS at P1 (start)
-    _S_DRIVE       = 'drive'         # 1st forward leg  (P1 → P2)
-    _S_CALIB_MID   = 'calib_mid'     # averaging GPS at P2 (mid-point)
-    _S_DRIVE2      = 'drive2'        # 2nd forward leg  (P2 → P3)
-    _S_CALIB_END   = 'calib_end'     # averaging GPS at P3 (end)
-    _S_NAVIGATE    = 'navigate'      # sending waypoints
-    _S_DONE        = 'done'
+    _S_WAIT     = 'wait'      # waiting for first GPS fix + odom + mag + imu
+    _S_CALIB    = 'calib'     # averaging magnetometer + GPS while stationary
+    _S_NAVIGATE = 'navigate'  # sending waypoints
+    _S_DONE     = 'done'
 
     def __init__(self) -> None:
         super().__init__('gps_waypoint_test')
@@ -112,27 +127,36 @@ class GpsWaypointTestNode(Node):
         self.declare_parameter('waypoint_spacing_m', 3.0)
 
         # ── Heading-initialisation parameters ──────────────────────────────
-        # Skip the drive-forward calibration and assume map==odom (only valid
-        # if the robot already starts facing true East / odom is ENU-aligned).
+        # When true, derive the absolute (true-North) heading from the ZED2i
+        # magnetometer once, while stationary, and pin the map->odom transform.
+        # When false, assume map==odom (only valid if odom is already
+        # ENU-aligned / the robot starts facing true East).
         self.declare_parameter('heading_init', True)
-        # How far to drive forward to establish heading.  Must be well above
-        # the GPS noise floor: ~1 m is the minimum for RTK, use 2-3 m for
-        # standard GPS so the displacement dominates position noise.
-        self.declare_parameter('calib_distance_m', 1.5)
-        # Open-loop forward speed during calibration (m/s).
-        self.declare_parameter('calib_speed_mps', 0.3)
-        # Seconds of GPS samples to average at the start/end of the drive to
-        # beat down single-fix noise.
-        self.declare_parameter('calib_settle_sec', 1.0)
-        # Topic to publish the calibration drive command on.  Default routes
-        # through the velocity_smoother + collision_monitor safety chain.
-        self.declare_parameter('drive_cmd_topic', 'cmd_vel_nav')
-        # Abort calibration if the GPS-measured displacement is below this —
-        # means the robot didn't actually move (blocked) or GPS is too noisy.
-        self.declare_parameter('min_gps_displacement_m', 0.5)
+        # ZED2i magnetometer + fused-IMU topics.  The magnetometer supplies the
+        # absolute heading reference; the faster, lower-noise fused IMU
+        # orientation tilt-compensates it and then maintains odom yaw.
+        self.declare_parameter(
+            'mag_topic', '/front_zed_camera_x/zed_node/imu/mag')
+        self.declare_parameter(
+            'imu_topic', '/front_zed_camera_x/zed_node/imu/data')
+        # Seconds to average the magnetometer + GPS while stationary.
+        self.declare_parameter('mag_settle_sec', 2.0)
+        # Minimum magnetometer samples required before a heading is accepted.
+        self.declare_parameter('mag_min_samples', 20)
+        # Magnetic declination (deg, +east) for the venue.  Rochester, MI is
+        # roughly -7.5 (7.5° west).  Converts magnetic north to true north.
+        self.declare_parameter('mag_declination_deg', 0.0)
+        # One-time mounting/frame calibration to absorb the constant offset
+        # between the magnetometer sensor frame and base_link.  Tune in the
+        # field so the reported map->odom yaw matches a known heading.
+        self.declare_parameter('mag_heading_offset_deg', 0.0)
+        # Hard-iron offsets (same units as the MagneticField message, Tesla)
+        # subtracted from the raw horizontal magnetometer components.
+        self.declare_parameter('mag_offset_x', 0.0)
+        self.declare_parameter('mag_offset_y', 0.0)
         # If, while navigating, the distance to the target grows this far past
         # the closest we've ever been, the heading estimate is wrong and the
-        # robot is driving away — cancel, re-calibrate heading, and retry.
+        # robot is driving away — cancel, re-estimate heading, and retry.
         self.declare_parameter('recovery_dist_increase_m', 2.0)
         # Cap re-calibration attempts so a hopeless GPS/heading situation
         # doesn't loop forever.
@@ -169,11 +193,16 @@ class GpsWaypointTestNode(Node):
         self._resend_period = float(self.get_parameter('resend_period_sec').value)
         self._waypoint_spacing = float(self.get_parameter('waypoint_spacing_m').value)
         self._heading_init = bool(self.get_parameter('heading_init').value)
-        self._calib_distance = float(self.get_parameter('calib_distance_m').value)
-        self._calib_speed = float(self.get_parameter('calib_speed_mps').value)
-        self._calib_settle = float(self.get_parameter('calib_settle_sec').value)
-        self._drive_cmd_topic = self.get_parameter('drive_cmd_topic').value
-        self._min_gps_disp = float(self.get_parameter('min_gps_displacement_m').value)
+        self._mag_topic = self.get_parameter('mag_topic').value
+        self._imu_topic = self.get_parameter('imu_topic').value
+        self._mag_settle = float(self.get_parameter('mag_settle_sec').value)
+        self._mag_min_samples = int(self.get_parameter('mag_min_samples').value)
+        self._mag_declination = float(
+            self.get_parameter('mag_declination_deg').value)
+        self._mag_heading_offset = float(
+            self.get_parameter('mag_heading_offset_deg').value)
+        self._mag_off_x = float(self.get_parameter('mag_offset_x').value)
+        self._mag_off_y = float(self.get_parameter('mag_offset_y').value)
         self._recovery_increase = float(
             self.get_parameter('recovery_dist_increase_m').value)
         self._max_recoveries = int(self.get_parameter('max_recoveries').value)
@@ -198,6 +227,8 @@ class GpsWaypointTestNode(Node):
         self._latest_fix: Optional[tuple[float, float]] = None
         self._latest_status: int = -1
         self._latest_odom: Optional[tuple[float, float]] = None  # (x, y) in odom
+        self._latest_mag: Optional[tuple[float, float, float]] = None
+        self._latest_imu_quat: Optional[tuple[float, float, float, float]] = None
         # Rolling buffer of (timestamp_sec, lat, lon) for GPS regression.
         self._gps_buffer: deque[tuple[float, float, float]] = deque()
         self._goal_handle = None
@@ -211,15 +242,12 @@ class GpsWaypointTestNode(Node):
         self._min_dist_seen: Optional[float] = None
         self._recoveries = 0
 
-        # Calibration bookkeeping
+        # Heading-calibration bookkeeping (stationary magnetometer averaging).
         self._state = self._S_WAIT
+        self._collecting = False
         self._settle_fixes: list[tuple[float, float]] = []
+        self._mag_samples: list[tuple[float, float, float]] = []
         self._settle_deadline: Optional[float] = None
-        self._calib_gps_start: Optional[tuple[float, float]] = None   # P1
-        self._calib_odom_start: Optional[tuple[float, float]] = None  # odom at P1
-        self._calib_gps_mid:  Optional[tuple[float, float]] = None    # P2
-        self._calib_odom_mid: Optional[tuple[float, float]] = None    # odom at P2
-        self._drive_cmd = Twist()  # current open-loop command (zero = stop)
 
         # map -> odom transform, owned by this node.  Identity until calibrated.
         self._tf_static = StaticTransformBroadcaster(self)
@@ -239,20 +267,23 @@ class GpsWaypointTestNode(Node):
         if self._use_gps:
             self.create_subscription(
                 NavSatFix, self._gps_topic, self._on_gps, sensor_qos)
+            if self._heading_init:
+                self.create_subscription(
+                    MagneticField, self._mag_topic, self._on_mag, sensor_qos)
+                self.create_subscription(
+                    Imu, self._imu_topic, self._on_imu, sensor_qos)
         self.create_subscription(
             Odometry, self._odom_topic, self._on_odom, sensor_qos)
 
-        self._drive_pub = self.create_publisher(Twist, self._drive_cmd_topic, 10)
-
-        # 1 Hz state-machine tick + 10 Hz drive-command republish so the
-        # diff_drive controller's cmd_vel timeout never trips mid-calibration.
+        # 1 Hz state-machine tick.  Heading init is stationary, so there is no
+        # open-loop drive command to republish.
         self._timer = self.create_timer(1.0, self._tick)
-        self._drive_timer = self.create_timer(0.1, self._publish_drive_cmd)
         if self._use_gps:
             self.get_logger().info(
                 f'gps_waypoint_test [GPS]: target=({self._target_lat:.6f}, '
                 f'{self._target_lon:.6f}); heading_init={self._heading_init}; '
-                f'gps={self._gps_topic} odom={self._odom_topic}')
+                f'gps={self._gps_topic} odom={self._odom_topic} '
+                f'mag={self._mag_topic} imu={self._imu_topic}')
         else:
             self.get_logger().info(
                 f'gps_waypoint_test [odom-relative]: target=({self._target_x:.2f},'
@@ -272,6 +303,8 @@ class GpsWaypointTestNode(Node):
         cutoff = t_now - self._gps_regression_window
         while self._gps_buffer and self._gps_buffer[0][0] < cutoff:
             self._gps_buffer.popleft()
+        if self._collecting:
+            self._settle_fixes.append(self._latest_fix)
         if not self._origin_set:
             self._origin_lat = msg.latitude
             self._origin_lon = msg.longitude
@@ -282,6 +315,16 @@ class GpsWaypointTestNode(Node):
 
     def _on_odom(self, msg: Odometry) -> None:
         self._latest_odom = (msg.pose.pose.position.x, msg.pose.pose.position.y)
+
+    def _on_imu(self, msg: Imu) -> None:
+        q = msg.orientation
+        self._latest_imu_quat = (q.x, q.y, q.z, q.w)
+
+    def _on_mag(self, msg: MagneticField) -> None:
+        m = msg.magnetic_field
+        self._latest_mag = (m.x, m.y, m.z)
+        if self._collecting:
+            self._mag_samples.append(self._latest_mag)
 
     # ── GPS regression ──────────────────────────────────────────────────────
 
@@ -324,16 +367,6 @@ class GpsWaypointTestNode(Node):
         tf.transform.rotation.w = math.cos(self._map_to_odom_yaw * 0.5)
         self._tf_static.sendTransform(tf)
 
-    # ── Open-loop drive ─────────────────────────────────────────────────────
-
-    def _publish_drive_cmd(self) -> None:
-        # Only actively command motion while driving; otherwise stay silent so
-        # we don't fight Nav2's controller once it takes over.
-        if self._state in (self._S_DRIVE, self._S_DRIVE2):
-            self._drive_pub.publish(self._drive_cmd)
-        elif self._state in (self._S_CALIB_START, self._S_CALIB_MID, self._S_CALIB_END):
-            self._drive_pub.publish(Twist())  # hold still while settling
-
     # ── State machine ────────────────────────────────────────────────────────
 
     def _now(self) -> float:
@@ -345,219 +378,117 @@ class GpsWaypointTestNode(Node):
 
         if self._state == self._S_WAIT:
             self._tick_wait()
-        elif self._state == self._S_CALIB_START:
-            self._tick_calib_settle(start=True)
-        elif self._state == self._S_DRIVE:
-            self._tick_drive()
-        elif self._state == self._S_CALIB_MID:
-            self._tick_calib_mid()
-        elif self._state == self._S_DRIVE2:
-            self._tick_drive2()
-        elif self._state == self._S_CALIB_END:
-            self._tick_calib_settle(start=False)
+        elif self._state == self._S_CALIB:
+            self._tick_calib()
         elif self._state == self._S_NAVIGATE:
             self._tick_navigate()
         # _S_DONE: nothing to do
 
     def _tick_wait(self) -> None:
-        if not self._origin_set or self._latest_fix is None or self._latest_odom is None:
+        if (not self._origin_set or self._latest_fix is None
+                or self._latest_odom is None):
             self.get_logger().info(
-                'Waiting for GPS fix + odom before calibrating…',
+                'Waiting for GPS fix + odom before heading init…',
                 throttle_duration_sec=3.0)
             return
         if not self._heading_init:
             self._enter_navigate()
             return
+        if self._latest_mag is None or self._latest_imu_quat is None:
+            self.get_logger().info(
+                'Waiting for ZED magnetometer + IMU before heading init…',
+                throttle_duration_sec=3.0)
+            return
         if self._latest_status < 1:
             self.get_logger().warn(
-                'GPS has no augmentation (status < 1); heading estimate from a '
-                f'{self._calib_distance:.1f} m drive may be poor. Consider RTK '
-                'or a longer calib_distance_m.', throttle_duration_sec=5.0)
+                'GPS has no augmentation (status < 1); the position pin may be '
+                'coarse, but the magnetometer heading is unaffected.',
+                throttle_duration_sec=5.0)
         self.get_logger().info(
-            f'Starting heading triangulation: averaging GPS at P1 for '
-            f'{self._calib_settle:.1f} s, driving {self._calib_distance:.1f} m to P2, '
-            f'then {self._calib_distance:.1f} m more to P3.')
+            f'Starting magnetometer heading init: averaging mag + GPS for '
+            f'{self._mag_settle:.1f} s while stationary.')
         self._begin_settle()
-        self._state = self._S_CALIB_START
+        self._state = self._S_CALIB
 
     def _begin_settle(self) -> None:
+        """Open the stationary sampling window (mag + GPS gathered in callbacks)."""
         self._settle_fixes = []
-        self._settle_deadline = self._now() + self._calib_settle
+        self._mag_samples = []
+        self._collecting = True
+        self._settle_deadline = self._now() + self._mag_settle
 
-    def _collect_settle(self) -> Optional[tuple[float, float]]:
-        """Accumulate fixes until the settle window closes; return the mean."""
-        if self._latest_fix is not None:
-            self._settle_fixes.append(self._latest_fix)
+    def _tick_calib(self) -> None:
         if self._settle_deadline is None or self._now() < self._settle_deadline:
-            return None
-        if not self._settle_fixes:
-            return None
-        n = len(self._settle_fixes)
-        mean_lat = sum(f[0] for f in self._settle_fixes) / n
-        mean_lon = sum(f[1] for f in self._settle_fixes) / n
-        return (mean_lat, mean_lon)
-
-    def _tick_calib_settle(self, start: bool) -> None:
-        mean = self._collect_settle()
-        if mean is None:
+            self.get_logger().info(
+                f'Settling: {len(self._mag_samples)} mag / '
+                f'{len(self._settle_fixes)} gps samples…',
+                throttle_duration_sec=1.0)
             return
-        gps_e, gps_n = gps_to_map(mean[0], mean[1],
+        self._collecting = False
+        self._finish_heading_init()
+
+    def _finish_heading_init(self) -> None:
+        """Average mag + GPS, derive true heading, and pin map->odom."""
+        if (len(self._mag_samples) < self._mag_min_samples
+                or not self._settle_fixes
+                or self._latest_imu_quat is None
+                or self._latest_odom is None):
+            self.get_logger().error(
+                f'Heading init failed: mag={len(self._mag_samples)} '
+                f'(need {self._mag_min_samples}), gps={len(self._settle_fixes)}, '
+                f'imu={"ok" if self._latest_imu_quat else "missing"}. Retrying.')
+            self._state = self._S_WAIT
+            return
+
+        # Averaged, hard-iron-corrected magnetometer vector (body frame).
+        n = len(self._mag_samples)
+        mx = sum(s[0] for s in self._mag_samples) / n - self._mag_off_x
+        my = sum(s[1] for s in self._mag_samples) / n - self._mag_off_y
+        mz = sum(s[2] for s in self._mag_samples) / n
+
+        # Rotate the body-frame field into the odom frame using the IMU
+        # orientation; tilt compensation falls out of the full 3-D rotation.
+        mox, moy, _moz = _rotate_vec_by_quat(self._latest_imu_quat, (mx, my, mz))
+        if math.hypot(mox, moy) < 1e-12:
+            self.get_logger().error(
+                'Magnetometer horizontal component ~0 (sensor saturated or '
+                'pointing straight down?). Retrying heading init.')
+            self._state = self._S_WAIT
+            return
+        # Bearing of magnetic north as expressed in the odom frame.
+        alpha = math.atan2(moy, mox)
+
+        # ENU bearing of magnetic north = 90 deg (true north) - declination(+east).
+        decl = math.radians(self._mag_declination)
+        offset = math.radians(self._mag_heading_offset)
+        yaw = _wrap((math.pi / 2.0 - decl) - alpha + offset)
+
+        # Averaged GPS → ENU to pin the translation.
+        n_gps = len(self._settle_fixes)
+        mean_lat = sum(f[0] for f in self._settle_fixes) / n_gps
+        mean_lon = sum(f[1] for f in self._settle_fixes) / n_gps
+        gps_e, gps_n = gps_to_map(mean_lat, mean_lon,
                                   self._origin_lat, self._origin_lon)
-        if start:
-            self._calib_gps_start = (gps_e, gps_n)
-            self._calib_odom_start = self._latest_odom
-            self.get_logger().info(
-                f'Calibration start logged at map ({gps_e:.2f}, {gps_n:.2f}); '
-                f'driving forward at {self._calib_speed:.2f} m/s.')
-            self._drive_cmd = Twist()
-            self._drive_cmd.linear.x = self._calib_speed
-            self._state = self._S_DRIVE
-        else:
-            self._finish_calibration((gps_e, gps_n), self._latest_odom)
-
-    def _tick_drive(self) -> None:
-        if self._calib_odom_start is None or self._latest_odom is None:
-            return
-        dx = self._latest_odom[0] - self._calib_odom_start[0]
-        dy = self._latest_odom[1] - self._calib_odom_start[1]
-        travelled = math.hypot(dx, dy)
-        if travelled < self._calib_distance:
-            self.get_logger().info(
-                f'Triangulating (1st leg): {travelled:.2f} / {self._calib_distance:.2f} m',
-                throttle_duration_sec=1.0)
-            return
-        # Reached P2 — stop and average GPS for the mid-point fix.
-        self._drive_cmd = Twist()
-        self.get_logger().info(
-            f'Drove {travelled:.2f} m to P2; stopping to average GPS fix.')
-        self._begin_settle()
-        self._state = self._S_CALIB_MID
-
-    def _tick_calib_mid(self) -> None:
-        """Collect averaged GPS at P2, then start the 2nd drive leg."""
-        mean = self._collect_settle()
-        if mean is None:
-            return
-        gps_e, gps_n = gps_to_map(mean[0], mean[1],
-                                   self._origin_lat, self._origin_lon)
-        self._calib_gps_mid  = (gps_e, gps_n)
-        self._calib_odom_mid = self._latest_odom
-        self.get_logger().info(
-            f'P2 logged at map ({gps_e:.2f}, {gps_n:.2f}); '
-            f'driving {self._calib_distance:.2f} m more to P3.')
-        self._drive_cmd = Twist()
-        self._drive_cmd.linear.x = self._calib_speed
-        self._state = self._S_DRIVE2
-
-    def _tick_drive2(self) -> None:
-        """Second drive leg: P2 → P3."""
-        if self._calib_odom_mid is None or self._latest_odom is None:
-            return
-        dx = self._latest_odom[0] - self._calib_odom_mid[0]
-        dy = self._latest_odom[1] - self._calib_odom_mid[1]
-        travelled = math.hypot(dx, dy)
-        if travelled < self._calib_distance:
-            self.get_logger().info(
-                f'Triangulating (2nd leg): {travelled:.2f} / {self._calib_distance:.2f} m',
-                throttle_duration_sec=1.0)
-            return
-        # Reached P3 — stop and average GPS for the final fix.
-        self._drive_cmd = Twist()
-        self.get_logger().info(
-            f'Drove {travelled:.2f} m to P3; stopping to average final GPS fix.')
-        self._begin_settle()
-        self._state = self._S_CALIB_END
-
-    def _finish_calibration(self, gps_end: tuple[float, float],
-                            odom_end: Optional[tuple[float, float]]) -> None:
-        """Use 3 GPS fixes (P1, P2, P3) to triangulate heading, then navigate."""
-        if (self._calib_gps_start is None or self._calib_odom_start is None
-                or self._calib_gps_mid is None
-                or odom_end is None):
-            self.get_logger().error(
-                'Calibration failed: missing P1/P2/P3 samples. Retrying.')
-            self._calib_gps_mid  = None
-            self._calib_odom_mid = None
-            self._state = self._S_WAIT
-            return
-
-        # ── Total odom displacement (unambiguous: robot drove forward) ──────
-        o_dx = odom_end[0] - self._calib_odom_start[0]
-        o_dy = odom_end[1] - self._calib_odom_start[1]
-        odom_disp    = math.hypot(o_dx, o_dy)
-        odom_heading = math.atan2(o_dy, o_dx)
-
-        # ── Individual GPS segment vectors ──────────────────────────────────
-        h12_de = self._calib_gps_mid[0] - self._calib_gps_start[0]  # P1 → P2
-        h12_dn = self._calib_gps_mid[1] - self._calib_gps_start[1]
-        h23_de = gps_end[0] - self._calib_gps_mid[0]                 # P2 → P3
-        h23_dn = gps_end[1] - self._calib_gps_mid[1]
-        h13_de = gps_end[0] - self._calib_gps_start[0]               # P1 → P3
-        h13_dn = gps_end[1] - self._calib_gps_start[1]
-
-        gps_disp = math.hypot(h13_de, h13_dn)
-        if gps_disp < self._min_gps_disp:
-            self.get_logger().error(
-                f'Calibration aborted: GPS P1→P3 moved only {gps_disp:.2f} m '
-                f'(< {self._min_gps_disp:.2f} m). Robot blocked or GPS too '
-                'noisy. Retrying from scratch.')
-            self._calib_gps_mid  = None
-            self._calib_odom_mid = None
-            self._state = self._S_WAIT
-            return
-        if odom_disp < 0.5 * self._calib_distance * 2:
-            self.get_logger().warn(
-                f'Odom moved only {odom_disp:.2f} m vs commanded '
-                f'{self._calib_distance * 2:.2f} m — collision monitor may '
-                'have stopped the robot. Heading estimate may be unreliable.')
-
-        # ── Primary heading: P1→P3 (longest baseline, most noise-resistant) ─
-        h12 = math.atan2(h12_dn, h12_de)
-        h23 = math.atan2(h23_dn, h23_de)
-        h13 = math.atan2(h13_dn, h13_de)
-
-        # ── 180° flip check ─────────────────────────────────────────────────
-        # atan2 on a short/noisy GPS baseline can point 180° backwards.
-        # The odom displacement direction is unambiguous (robot drove forward),
-        # so if h13 differs from odom_heading by > 90°, flip it.
-        true_heading = h13
-        flip_deg = abs(math.degrees(_wrap(h13 - odom_heading)))
-        if flip_deg > 90.0:
-            true_heading = _wrap(h13 + math.pi)
-            self.get_logger().warn(
-                f'GPS heading P1→P3 ({math.degrees(h13):.1f}°) differs from '
-                f'odom heading ({math.degrees(odom_heading):.1f}°) by '
-                f'{flip_deg:.0f}° — flipping 180° to '
-                f'{math.degrees(true_heading):.1f}°.')
-        else:
-            self.get_logger().info(
-                f'3-point triangulation: '
-                f'P1→P2={math.degrees(h12):.1f}°, '
-                f'P2→P3={math.degrees(h23):.1f}°, '
-                f'P1→P3={math.degrees(h13):.1f}° (used), '
-                f'odom={math.degrees(odom_heading):.1f}°.')
-
-        yaw = _wrap(true_heading - odom_heading)
 
         # map_p = R(yaw) * odom_p + t, pinned so robot's map pose == GPS-ENU pose.
+        ox, oy = self._latest_odom
         cos_y, sin_y = math.cos(yaw), math.sin(yaw)
-        tx = gps_end[0] - (cos_y * odom_end[0] - sin_y * odom_end[1])
-        ty = gps_end[1] - (sin_y * odom_end[0] + cos_y * odom_end[1])
+        tx = gps_e - (cos_y * ox - sin_y * oy)
+        ty = gps_n - (sin_y * ox + cos_y * oy)
 
         self._map_to_odom_yaw = yaw
-        self._map_to_odom_t   = (tx, ty)
+        self._map_to_odom_t = (tx, ty)
         self._publish_map_to_odom()
+        imu_yaw = _yaw_from_quat(self._latest_imu_quat)
         self.get_logger().info(
-            f'Heading set: true={math.degrees(true_heading):.1f}°, '
-            f'map->odom yaw={math.degrees(yaw):.1f}°, '
-            f't=({tx:.2f}, {ty:.2f}). Navigating to target.')
-        self._calib_gps_mid  = None
-        self._calib_odom_mid = None
+            f'Heading set from magnetometer: mag-north odom bearing='
+            f'{math.degrees(alpha):.1f} deg, imu yaw={math.degrees(imu_yaw):.1f} deg, '
+            f'map->odom yaw={math.degrees(yaw):.1f} deg, t=({tx:.2f}, {ty:.2f}). '
+            'Navigating to target.')
         self._enter_navigate()
 
     def _enter_navigate(self) -> None:
         """Reset goal/progress state and switch to the navigation phase."""
-        self._drive_cmd = Twist()
         self._goal_handle = None
         self._goal_pending = False
         self._last_send_sec = None
@@ -631,20 +562,20 @@ class GpsWaypointTestNode(Node):
         self._send_goal(tgt_e, tgt_n, cur_e, cur_n, dist)
 
     def _trigger_recovery(self, dist: float) -> None:
-        """Cancel the active goal and re-run heading calibration."""
+        """Cancel the active goal and re-estimate heading from the magnetometer."""
         if self._recoveries >= self._max_recoveries:
             self.get_logger().error(
                 f'Distance still increasing ({dist:.1f} m) after '
                 f'{self._recoveries} recovery attempts; giving up. Check GPS '
-                'fix quality and that odom is moving.')
-            self._drive_cmd = Twist()
+                'fix quality and magnetometer calibration.')
             self._state = self._S_DONE
             return
         self._recoveries += 1
         self.get_logger().warn(
             f'Moving AWAY from target: dist={dist:.1f} m vs best '
             f'{self._min_dist_seen:.1f} m. Heading estimate likely wrong — '
-            f're-calibrating (attempt {self._recoveries}/{self._max_recoveries}).')
+            f're-running magnetometer heading init '
+            f'(attempt {self._recoveries}/{self._max_recoveries}).')
         # Stop Nav2 driving the wrong way.
         if self._goal_handle is not None:
             try:
@@ -654,17 +585,13 @@ class GpsWaypointTestNode(Node):
         self._goal_handle = None
         self._goal_pending = False
         self._last_send_sec = None
-        if self._use_gps:
-            # Fresh 3-point drive to re-estimate heading.
-            self._calib_gps_start = None
-            self._calib_odom_start = None
-            self._calib_gps_mid   = None
-            self._calib_odom_mid  = None
+        if self._use_gps and self._heading_init:
+            # Re-sample the magnetometer (stationary) to re-estimate heading.
             self._begin_settle()
-            self._state = self._S_CALIB_START
+            self._state = self._S_CALIB
         else:
-            # In odom-relative mode there is no heading to re-estimate;
-            # re-enter navigation so the goal is re-sent.
+            # No heading to re-estimate; re-enter navigation so the goal is
+            # re-sent.
             self._enter_navigate()
 
     # ── Goal handling ──────────────────────────────────────────────────────
