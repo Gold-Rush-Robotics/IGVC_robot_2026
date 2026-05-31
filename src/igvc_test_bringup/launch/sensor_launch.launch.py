@@ -463,8 +463,8 @@ def generate_launch_description():
 
             # OpaqueFunction(function=launch_setup),
             # lidar_node,
-            # gps_node,
-            l3gd20_node,
-            zed_2i_mag,
+            gps_node,
+            # l3gd20_node,
+            # zed_2i_mag,
         ]
     )

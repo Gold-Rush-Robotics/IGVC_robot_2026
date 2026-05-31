@@ -172,6 +172,10 @@ class GpsWaypointTestNode(Node):
         # shifted at least this far (metres) from where the last goal was sent.
         # Keeps the goal current as the robot moves through GPS space.
         self.declare_parameter('goal_update_distance_m', 0.5)
+        # When false, do not send a fresh NavigateThroughPoses goal while an
+        # existing goal is active.  Sending another active goal preempts Nav2
+        # and can keep the planner from executing the current route.
+        self.declare_parameter('allow_active_goal_refresh', False)
         # Robot-relative mode: skip GPS entirely and navigate to a fixed pose
         # expressed in the map/odom frame (identity transform).  target_x and
         # target_y are metres forward/lateral from the robot start position.
@@ -211,6 +215,8 @@ class GpsWaypointTestNode(Node):
         self._gps_min_samples = int(self.get_parameter('gps_min_samples').value)
         self._goal_update_dist = float(
             self.get_parameter('goal_update_distance_m').value)
+        self._allow_active_goal_refresh = bool(
+            self.get_parameter('allow_active_goal_refresh').value)
         self._use_gps = bool(self.get_parameter('use_gps').value)
         self._target_x = float(self.get_parameter('target_x').value)
         self._target_y = float(self.get_parameter('target_y').value)
@@ -542,9 +548,16 @@ class GpsWaypointTestNode(Node):
             return
 
         # ── Closed-loop goal refresh ────────────────────────────────────────
-        # Resend whenever the robot has moved goal_update_distance_m from
-        # where the last goal was issued (position-triggered), OR the
-        # resend_period timer expires (time-triggered fallback).
+        # Only refresh an active goal when explicitly requested.  Otherwise,
+        # let Nav2 finish or abort the current NavigateThroughPoses request;
+        # replacing it here shows up as a preempted goal and can starve the
+        # planner/controller before the robot gets between course elements.
+        if self._goal_handle is not None and not self._allow_active_goal_refresh:
+            return
+
+        # Resend when no goal is active, or when active refresh is enabled and
+        # the robot has moved goal_update_distance_m from where the last goal
+        # was issued, or the resend_period timer expires.
         now_sec = self._now()
         pos_moved = (
             self._last_send_pos is None

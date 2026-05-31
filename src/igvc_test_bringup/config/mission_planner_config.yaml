@@ -15,6 +15,12 @@ mission_planner_node:
     origin_lat: .nan
     origin_lon: .nan
     arrival_tolerance_m: 1.0
+    # Bad receiver startup fixes can be wildly wrong.  Do not anchor the
+    # GPS->odom mission frame, stamp virtual obstacles, or start Nav2 until
+    # the current fix is in the same coarse area as the configured start goal.
+    gps_start_match_enabled: true
+    gps_start_match_digits: 3
+    gps_start_match_required_fixes: 1
     # Four-waypoint AutoNav mission.  Replace these with the real survey
     # values before each run; the second and third waypoints are the
     # virtual obstacles to avoid.

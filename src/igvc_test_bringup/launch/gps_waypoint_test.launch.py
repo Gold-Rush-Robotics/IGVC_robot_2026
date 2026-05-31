@@ -149,8 +149,11 @@ def generate_launch_description() -> LaunchDescription:
             'gps_regression_window_sec': 5.0,
             'gps_min_samples': 3,
             # Resend the Nav2 goal whenever the regressed GPS position moves
-            # this far from where the last goal was sent.
+            # this far from where the last goal was sent.  Keep active-goal
+            # refresh disabled so Nav2 can finish the current route instead of
+            # repeatedly accepting preemptive NavigateThroughPoses requests.
             'goal_update_distance_m': 0.5,
+            'allow_active_goal_refresh': False,
         }],
     )
     odom_tf_bridge_node = Node(

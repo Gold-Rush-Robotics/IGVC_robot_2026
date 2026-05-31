@@ -145,6 +145,12 @@ class MissionPlannerNode(Node):
         self._origin_lat_param   = float(p('origin_lat',    float('nan')).value)
         self._origin_lon_param   = float(p('origin_lon',    float('nan')).value)
         self._arrival_tolerance  = float(p('arrival_tolerance_m', 1.0).value)
+        self._gps_start_match_enabled = bool(
+            p('gps_start_match_enabled', True).value)
+        self._gps_start_match_digits = max(
+            1, int(p('gps_start_match_digits', 3).value))
+        self._gps_start_match_required_fixes = max(
+            1, int(p('gps_start_match_required_fixes', 1).value))
 
         # ── Ramp handling ──────────────────────────────────────────
         self._ramp_enabled       = bool(p('ramp_enabled', True).value)
@@ -197,6 +203,8 @@ class MissionPlannerNode(Node):
         self._state = STATE_IDLE
         self._origin_lat: Optional[float] = None
         self._origin_lon: Optional[float] = None
+        self._gps_start_match_count = 0
+        self._gps_start_area_confirmed = not self._gps_start_match_enabled
         if (math.isfinite(self._origin_lat_param)
                 and math.isfinite(self._origin_lon_param)):
             self._origin_lat = self._origin_lat_param
@@ -288,11 +296,67 @@ class MissionPlannerNode(Node):
                         for i, w in enumerate(self._waypoints)))
         self._publish_virtual_obstacles()
 
+    @staticmethod
+    def _coord_prefix(value: float, digits: int) -> str:
+        sign = '-' if value < 0.0 else '+'
+        numeric = ''.join(ch for ch in f'{abs(value):.8f}' if ch.isdigit())
+        return sign + numeric[:max(1, digits)]
+
+    def _start_reference_waypoint(self) -> Optional[_Waypoint]:
+        for wp in self._waypoints:
+            if wp.kind == 'start':
+                return wp
+        return self._waypoints[0] if self._waypoints else None
+
+    def _gps_start_area_matches(self, lat: float, lon: float) -> bool:
+        if not self._gps_start_match_enabled:
+            return True
+        ref = self._start_reference_waypoint()
+        if ref is None or not (math.isfinite(ref.lat) and math.isfinite(ref.lon)):
+            self._gps_start_match_count = 0
+            self.get_logger().warn(
+                'mission_planner: cannot validate GPS start area; no finite start waypoint configured',
+                throttle_duration_sec=5.0)
+            return False
+
+        digits = self._gps_start_match_digits
+        current_lat_prefix = self._coord_prefix(lat, digits)
+        current_lon_prefix = self._coord_prefix(lon, digits)
+        goal_lat_prefix = self._coord_prefix(ref.lat, digits)
+        goal_lon_prefix = self._coord_prefix(ref.lon, digits)
+        if (current_lat_prefix != goal_lat_prefix
+                or current_lon_prefix != goal_lon_prefix):
+            self._gps_start_match_count = 0
+            self.get_logger().warn(
+                'mission_planner: ignoring GPS fix until current lat/lon '
+                f'prefixes ({current_lat_prefix}, {current_lon_prefix}) match '
+                f'start waypoint prefixes ({goal_lat_prefix}, {goal_lon_prefix})',
+                throttle_duration_sec=5.0)
+            return False
+
+        self._gps_start_match_count += 1
+        if self._gps_start_match_count < self._gps_start_match_required_fixes:
+            self.get_logger().info(
+                'mission_planner: GPS start-area prefix matched '
+                f'{self._gps_start_match_count}/'
+                f'{self._gps_start_match_required_fixes} required fixes',
+                throttle_duration_sec=2.0)
+            return False
+        return True
+
     # ── Callbacks ─────────────────────────────────────────────────────────
 
     def _on_gps(self, msg: NavSatFix) -> None:
-        if msg.status.status < 0:
+        if (msg.status.status < 0
+                or not math.isfinite(msg.latitude)
+                or not math.isfinite(msg.longitude)):
             return
+
+        if not self._gps_start_area_confirmed:
+            if not self._gps_start_area_matches(msg.latitude, msg.longitude):
+                return
+            self._gps_start_area_confirmed = True
+
         if self._origin_lat is None:
             self._origin_lat = msg.latitude
             self._origin_lon = msg.longitude
@@ -353,6 +417,12 @@ class MissionPlannerNode(Node):
         return self._waypoints[-1] if self._waypoints else None
 
     def _begin(self) -> None:
+        if (self._gps_start_match_enabled
+                and not self._gps_start_area_confirmed):
+            self.get_logger().warn(
+                'mission_planner: start requested but current GPS has not matched the start waypoint area yet',
+                throttle_duration_sec=2.0)
+            return
         if not self._waypoints_anchored():
             self.get_logger().warn(
                 'mission_planner: start requested but waypoints not yet '

@@ -7,6 +7,11 @@ igvc_navigator:
     goal_checker_id: "goal_checker"
     progress_checker_id: "progress_checker"
 
+    # GPS waypoints are owned by mission_planner_node.  Keep this false so
+    # live /gps/fix samples are not converted into preemptive NavigateToPose
+    # goals before the mission starts.
+    gps_fix_waypoint_follow_enabled: false
+
     # Local lane path extraction and update discipline.
     # Camera segmentation can publish /lane_costmap at ~0.4-1.0 Hz under load;
     # keep the latest valid grid long enough for the navigator to use it, but

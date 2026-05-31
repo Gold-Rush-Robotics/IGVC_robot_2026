@@ -23,8 +23,10 @@ boundaries, so Nav2's RegulatedPurePursuit controller + inflation layer
 handle obstacle / boundary avoidance without any additional logic here.
 
 Parameters
-    gps_enabled           bool    true
+    gps_enabled           bool    true     GPS/localization available
     gps_topic             str     /gps/fix
+    gps_fix_waypoint_follow_enabled bool false
+                                      legacy: treat /gps/fix samples as goals
     origin_lat            float   0.0     explicit origin; 0 = use first fix
     origin_lon            float   0.0
     map_frame             str     map
@@ -165,6 +167,8 @@ class IGVCNavigatorNode(Node):
         self._declare_params()
         self._gps_enabled     = self._p('gps_enabled',        True)
         self._gps_topic       = self._p('gps_topic',          '/gps/fix')
+        self._gps_fix_waypoint_follow_enabled = bool(
+            self._p('gps_fix_waypoint_follow_enabled', False))
         self._odom_topic      = self._p('odom_topic',         '/front_zed_camera_x/zed_node/odom')
         self._origin_lat      = self._p('origin_lat',          0.0)
         self._origin_lon      = self._p('origin_lon',          0.0)
@@ -289,14 +293,15 @@ class IGVCNavigatorNode(Node):
         self._centerline_unavailable_warned: bool = False
         self._centerline_reacquire_warned: bool = False
 
-        # Resolve the active strategy now (param may have been explicitly
-        # set, otherwise infer from gps_enabled).
+        # Resolve the active strategy now.  gps_enabled means the GPS stack is
+        # available; mission_planner_node owns actual GPS waypoint goals.  The
+        # old behavior of treating every /gps/fix sample as a NavigateToPose
+        # target is opt-in because it can preempt mission goals and churn Nav2.
         if not self._nav_strategy:
-            self._nav_strategy = 'gps' if self._gps_enabled else 'local_lane'
-        elif self._gps_enabled and self._nav_strategy != 'gps':
-            self.get_logger().warn(
-                f"nav_strategy='{self._nav_strategy}' overridden to 'gps' because gps_enabled=true")
-            self._nav_strategy = 'gps'
+            self._nav_strategy = (
+                'gps' if self._gps_fix_waypoint_follow_enabled else 'local_lane')
+        elif self._nav_strategy == 'gps':
+            self._gps_fix_waypoint_follow_enabled = True
 
         # ── TF ────────────────────────────────────────────────────────────
         self._tf_buf      = Buffer()
@@ -340,11 +345,15 @@ class IGVCNavigatorNode(Node):
         self.create_subscription(
             String, '/mission/state', self._on_mission_state, mission_qos)
 
-        if self._gps_enabled:
+        if self._active_strategy() == 'gps':
             self.create_subscription(NavSatFix, self._gps_topic,
                                      self._on_gps, sensor_qos)
             self.get_logger().info(
-                f'Navigator: GPS mode — listening on {self._gps_topic}')
+                f'Navigator: legacy GPS-fix waypoint mode — listening on {self._gps_topic}')
+        elif self._gps_enabled:
+            self.get_logger().info(
+                f'Navigator: GPS available; mission planner owns GPS waypoints, '
+                f'navigator strategy={self._active_strategy()}.')
         else:
             self.get_logger().info(
                 'Navigator: sim mode — autonomous lane waypoint generation.')
@@ -380,6 +389,7 @@ class IGVCNavigatorNode(Node):
         for name, default in [
             ('gps_enabled',       True),
             ('gps_topic',         '/gps/fix'),
+            ('gps_fix_waypoint_follow_enabled', False),
             ('odom_topic',        '/front_zed_camera_x/zed_node/odom'),
             ('origin_lat',         0.0),
             ('origin_lon',         0.0),
@@ -536,6 +546,8 @@ class IGVCNavigatorNode(Node):
                    else 'no response')))
 
     def _on_gps(self, msg: NavSatFix) -> None:
+        if self._active_strategy() != 'gps':
+            return
         if msg.status.status < 0:
             return
 
@@ -650,7 +662,7 @@ class IGVCNavigatorNode(Node):
             return
 
         # Sim mode: re-issue goal when the lane carrot has moved enough
-        if not self._gps_enabled:
+        if self._active_strategy() != 'gps':
             new_wp = self._rolling_carrot()
             if new_wp is not None and self._active_wp.dist_to(new_wp) > self._replan_dist:
                 if self._last_goal_send_time is None or (
@@ -776,7 +788,9 @@ class IGVCNavigatorNode(Node):
         s = getattr(self, '_nav_strategy', '') or ''
         if s:
             return s
-        return 'gps' if getattr(self, '_gps_enabled', False) else 'local_lane'
+        if getattr(self, '_gps_fix_waypoint_follow_enabled', False):
+            return 'gps'
+        return 'local_lane'
 
     def _lane_carrot(self) -> Optional[_Waypoint]:
         """
@@ -815,9 +829,9 @@ class IGVCNavigatorNode(Node):
 
     def _uses_follow_path(self) -> bool:
         """Return whether sim mode should drive Nav2 with FollowPath."""
-        if self._active_strategy() == 'centerline_waypoints':
+        if self._active_strategy() in ('centerline_waypoints', 'gps'):
             return False
-        return (not self._gps_enabled) and self._follow_path_enabled
+        return self._follow_path_enabled
 
     def _rolling_carrot(self) -> Optional[_Waypoint]:
         """Strategy-aware re-issue carrot used by _update to track motion."""
@@ -1969,7 +1983,7 @@ class IGVCNavigatorNode(Node):
                                          timeout=Duration(seconds=0.05))
             return _Waypoint(out.pose.position.x, out.pose.position.y)
         except Exception as exc:
-            if (not self._gps_enabled
+            if (self._active_strategy() != 'gps'
                     and self._robot_xy is not None
                     and self._robot_yaw is not None):
                 robot_x, robot_y = self._robot_xy
@@ -1993,7 +2007,7 @@ class IGVCNavigatorNode(Node):
                                          timeout=Duration(seconds=0.05))
             return out.pose.position.x, out.pose.position.y
         except Exception:
-            if not self._gps_enabled and self._robot_xy is not None:
+            if self._active_strategy() != 'gps' and self._robot_xy is not None:
                 return self._robot_xy
             return None
 
