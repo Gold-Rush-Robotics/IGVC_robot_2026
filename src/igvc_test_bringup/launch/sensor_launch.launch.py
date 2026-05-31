@@ -6,9 +6,11 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction, TimerAction
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, TextSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -248,6 +250,48 @@ def generate_launch_description():
             gps_config,
         ],
     )
+    l3gd20_node = Node(
+        package='igvc_imu_interface',
+        executable='l3gd20_heading_node',
+        name='l3gd20_heading_node',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('enable_l3gd20')),
+        parameters=[
+            {
+                'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool),
+                'i2c_bus': ParameterValue(LaunchConfiguration('l3gd20_i2c_bus'), value_type=int),
+                'i2c_address': LaunchConfiguration('l3gd20_i2c_address'),
+                'full_scale_dps': ParameterValue(
+                    LaunchConfiguration('l3gd20_full_scale_dps'),
+                    value_type=int,
+                ),
+                'sample_rate_hz': ParameterValue(
+                    LaunchConfiguration('l3gd20_sample_rate_hz'),
+                    value_type=float,
+                ),
+                'frame_id': LaunchConfiguration('l3gd20_frame_id'),
+                'world_frame_id': LaunchConfiguration('l3gd20_world_frame_id'),
+                'heading_topic': LaunchConfiguration('l3gd20_heading_topic'),
+                'heading_degrees_topic': LaunchConfiguration('l3gd20_heading_degrees_topic'),
+                'heading_quaternion_topic': LaunchConfiguration('l3gd20_heading_quaternion_topic'),
+                'imu_topic': LaunchConfiguration('l3gd20_imu_topic'),
+                'yaw_axis': LaunchConfiguration('l3gd20_yaw_axis'),
+                'yaw_sign': ParameterValue(LaunchConfiguration('l3gd20_yaw_sign'), value_type=float),
+                'initial_heading_rad': ParameterValue(
+                    LaunchConfiguration('l3gd20_initial_heading_rad'),
+                    value_type=float,
+                ),
+                'calibration_samples': ParameterValue(
+                    LaunchConfiguration('l3gd20_calibration_samples'),
+                    value_type=int,
+                ),
+                'deadband_dps': ParameterValue(
+                    LaunchConfiguration('l3gd20_deadband_dps'),
+                    value_type=float,
+                ),
+            }
+        ],
+    )
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -317,8 +361,89 @@ def generate_launch_description():
                 default_value='/tmp/zed_area_memory',
                 description='Directory for per-camera ZED area-memory files when area memory is enabled.',
             ),
-            OpaqueFunction(function=launch_setup),
-            lidar_node,
+            DeclareLaunchArgument(
+                'enable_l3gd20',
+                default_value='true',
+                description='Start the L3GD20 I2C heading node.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_i2c_bus',
+                default_value='0',
+                description='Linux I2C bus for Jetson header pins 27 SDA / 28 SCL.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_i2c_address',
+                default_value='0x6b',
+                description='L3GD20 I2C address. Use 0x6a when SA0 is low.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_full_scale_dps',
+                default_value='250',
+                description='L3GD20 gyro range in degrees per second: 250, 500, or 2000.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_sample_rate_hz',
+                default_value='95.0',
+                description='Polling rate for the L3GD20 heading node.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_frame_id',
+                default_value='l3gd20_link',
+                description='Frame ID for the L3GD20 IMU message.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_world_frame_id',
+                default_value='odom',
+                description='World frame used by the heading quaternion topic.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_heading_topic',
+                default_value='/navheading',
+                description='Float64 heading topic in radians, wrapped to [-pi, pi].',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_heading_degrees_topic',
+                default_value='/navheading_deg',
+                description='Float64 heading topic in degrees, wrapped to [0, 360).',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_heading_quaternion_topic',
+                default_value='/l3gd20/heading',
+                description='QuaternionStamped heading topic in the configured world frame.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_imu_topic',
+                default_value='/l3gd20/imu',
+                description='Bias-corrected sensor_msgs/Imu output topic.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_yaw_axis',
+                default_value='z',
+                description='Gyro axis mounted as robot yaw: x, y, or z.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_yaw_sign',
+                default_value='1.0',
+                description='Sign correction for positive yaw direction.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_initial_heading_rad',
+                default_value='0.0',
+                description='Initial world-relative heading in radians.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_calibration_samples',
+                default_value='250',
+                description='Stationary samples used to calibrate gyro bias at startup.',
+            ),
+            DeclareLaunchArgument(
+                'l3gd20_deadband_dps',
+                default_value='0.03',
+                description='Yaw-rate deadband in degrees per second after bias correction.',
+            ),
+            # OpaqueFunction(function=launch_setup),
+            # lidar_node,
             gps_node,
+            l3gd20_node,
         ]
     )
