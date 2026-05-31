@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'imu_interface_node = igvc_imu_interface.imu_interface_node:main',
+            'imu_interface_node = igvc_imu_interface.l3gd20_heading_node:main',
         ],
     },
 )
