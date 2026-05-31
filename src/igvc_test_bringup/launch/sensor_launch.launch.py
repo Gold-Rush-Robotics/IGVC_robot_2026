@@ -260,7 +260,10 @@ def generate_launch_description():
             {
                 'use_sim_time': ParameterValue(LaunchConfiguration('use_sim_time'), value_type=bool),
                 'i2c_bus': ParameterValue(LaunchConfiguration('l3gd20_i2c_bus'), value_type=int),
-                'i2c_address': LaunchConfiguration('l3gd20_i2c_address'),
+                'i2c_address': ParameterValue(
+                    LaunchConfiguration('l3gd20_i2c_address'),
+                    value_type=int,
+                ),
                 'full_scale_dps': ParameterValue(
                     LaunchConfiguration('l3gd20_full_scale_dps'),
                     value_type=int,

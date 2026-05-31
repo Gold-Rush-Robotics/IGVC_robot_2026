@@ -143,7 +143,7 @@ class L3GD20HeadingNode(Node):
         super().__init__('l3gd20_heading_node')
 
         self.declare_parameter('i2c_bus', 0)
-        self.declare_parameter('i2c_address', '0x6b')
+        self.declare_parameter('i2c_address', 0x6B)
         self.declare_parameter('full_scale_dps', 250)
         self.declare_parameter('sample_rate_hz', 95.0)
         self.declare_parameter('frame_id', 'l3gd20_link')
