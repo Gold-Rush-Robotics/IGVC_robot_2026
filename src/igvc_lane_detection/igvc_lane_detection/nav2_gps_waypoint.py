@@ -36,10 +36,12 @@ import time
 
 import rclpy
 import yaml
+from geographic_msgs.msg import GeoPoint
 from geographic_msgs.msg import GeoPose
 from geometry_msgs.msg import Quaternion
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from rclpy.node import Node
+from robot_localization.srv import FromLL
 from sensor_msgs.msg import NavSatFix
 
 
@@ -61,6 +63,17 @@ def lat_lon_yaw_to_geopose(latitude: float, longitude: float,
     return geopose
 
 
+def gps_distance_m(lat_a: float, lon_a: float, lat_b: float,
+                   lon_b: float) -> float:
+    """Approximate distance between nearby GPS coordinates in meters."""
+    earth_radius_m = 6_378_137.0
+    mean_lat = math.radians((lat_a + lat_b) * 0.5)
+    north = math.radians(lat_b - lat_a) * earth_radius_m
+    east = (math.radians(lon_b - lon_a) * earth_radius_m *
+            math.cos(mean_lat))
+    return math.hypot(east, north)
+
+
 class Nav2GpsWaypoint(Node):
     """Send GPS waypoint(s) to Nav2's GPS waypoint follower."""
 
@@ -72,6 +85,7 @@ class Nav2GpsWaypoint(Node):
         self.declare_parameter('goal_yaw_deg', 0.0)
         self.declare_parameter('waypoints_file', '')
         self.declare_parameter('localizer', 'robot_localization')
+        self.declare_parameter('gps_topic', '/fix')
 
         self._goal_lat = float(self.get_parameter('goal_lat').value)
         self._goal_lon = float(self.get_parameter('goal_lon').value)
@@ -79,8 +93,11 @@ class Nav2GpsWaypoint(Node):
             float(self.get_parameter('goal_yaw_deg').value))
         self._waypoints_file = str(self.get_parameter('waypoints_file').value)
         self._localizer = str(self.get_parameter('localizer').value)
+        self._gps_topic = str(self.get_parameter('gps_topic').value)
+        self._start_fix: Optional[NavSatFix] = None
 
         self._navigator = BasicNavigator('nav2_gps_waypoint_navigator')
+        self._from_ll = self.create_client(FromLL, '/fromLL')
 
     def _load_waypoints(self) -> Optional[List[GeoPose]]:
         if self._waypoints_file:
@@ -109,18 +126,18 @@ class Nav2GpsWaypoint(Node):
             self._goal_lat, self._goal_lon, self._goal_yaw)]
 
     def _check_gps_start_location(self, goal_lat: float, goal_lon: float) -> bool:
-        """Block until a /fix arrives, then verify the first 3 decimal
-        places of lat/lon match the goal area (~55 m radius).  Returns False
-        (and logs an error) if the fix is missing or in the wrong place."""
+        """Block until a NavSatFix arrives on gps_topic, then verify the first
+        3 decimal places of lat/lon match the goal area (~55 m radius).  Returns
+        False (and logs an error) if the fix is missing or in the wrong place."""
         self.get_logger().info(
-            'GPS check: waiting for a fix on /fix (timeout 10 s)...')
+            f'GPS check: waiting for a fix on {self._gps_topic} (timeout 10 s)...')
         fix: Optional[NavSatFix] = None
 
         def _cb(msg: NavSatFix) -> None:
             nonlocal fix
             fix = msg
 
-        sub = self.create_subscription(NavSatFix, '/fix', _cb, 1)
+        sub = self.create_subscription(NavSatFix, self._gps_topic, _cb, 1)
         deadline = time.time() + 10.0
         while fix is None and time.time() < deadline:
             rclpy.spin_once(self, timeout_sec=0.1)
@@ -128,7 +145,8 @@ class Nav2GpsWaypoint(Node):
 
         if fix is None:
             self.get_logger().error(
-                'GPS check FAILED: no fix received on /fix within 10 s. Aborting.')
+                f'GPS check FAILED: no fix received on {self._gps_topic} '
+                f'within 10 s. Aborting.')
             return False
 
         cur_lat, cur_lon = fix.latitude, fix.longitude
@@ -143,7 +161,59 @@ class Nav2GpsWaypoint(Node):
         self.get_logger().info(
             f'GPS check OK: start ({cur_lat:.6f},{cur_lon:.6f}) '
             f'matches goal to 3 decimal places.')
+        self._start_fix = fix
         return True
+
+    def _from_ll_point(self, latitude: float, longitude: float):
+        req = FromLL.Request()
+        req.ll_point = GeoPoint(latitude=latitude, longitude=longitude,
+                                altitude=0.0)
+        future = self._from_ll.call_async(req)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=1.0)
+        if not future.done() or future.result() is None:
+            return None
+        return future.result().map_point
+
+    def _wait_for_valid_from_ll(self, goal_lat: float, goal_lon: float) -> bool:
+        if self._start_fix is None:
+            return True
+
+        gps_delta = gps_distance_m(
+            self._start_fix.latitude, self._start_fix.longitude,
+            goal_lat, goal_lon)
+        if gps_delta < 1.0:
+            return True
+
+        self.get_logger().info(
+            'Waiting for navsat_transform /fromLL to produce a valid map goal...')
+        deadline = time.time() + 15.0
+        while time.time() < deadline:
+            if not self._from_ll.wait_for_service(timeout_sec=0.25):
+                continue
+
+            start_map = self._from_ll_point(
+                self._start_fix.latitude, self._start_fix.longitude)
+            goal_map = self._from_ll_point(goal_lat, goal_lon)
+            if start_map is None or goal_map is None:
+                continue
+
+            map_delta = math.hypot(goal_map.x - start_map.x,
+                                   goal_map.y - start_map.y)
+            self.get_logger().info(
+                f'fromLL check: GPS delta={gps_delta:.2f} m, '
+                f'map delta={map_delta:.2f} m, '
+                f'goal=({goal_map.x:.2f}, {goal_map.y:.2f}).',
+                throttle_duration_sec=2.0)
+            if map_delta > max(1.0, gps_delta * 0.5):
+                return True
+
+            rclpy.spin_once(self, timeout_sec=0.1)
+
+        self.get_logger().error(
+            'fromLL check FAILED: target GPS waypoint still converts too close '
+            'to the current map position. Aborting instead of reporting a false '
+            'success at (0,0).')
+        return False
 
     def run(self) -> bool:
         """Block until the waypoint(s) are followed; return success."""
@@ -161,6 +231,10 @@ class Nav2GpsWaypoint(Node):
             f"{self._localizer}')...")
         self._navigator.waitUntilNav2Active(localizer=self._localizer)
         self.get_logger().info('Nav2 active; following GPS waypoint(s).')
+
+        if not self._wait_for_valid_from_ll(first_goal.latitude,
+                                            first_goal.longitude):
+            return False
 
         self._navigator.followGpsWaypoints(waypoints)
         while not self._navigator.isTaskComplete():

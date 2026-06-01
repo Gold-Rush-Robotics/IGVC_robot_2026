@@ -79,7 +79,11 @@ def generate_launch_description() -> LaunchDescription:
             ('gps/fix', gps_topic),
             ('gps/filtered', 'gps/filtered'),
             ('odometry/gps', 'odometry/gps'),
-            ('odometry/filtered', 'odometry/global'),
+            # navsat_transform reads the LOCAL EKF output (no GPS dependency) for
+            # yaw when use_odometry_yaw=true.  Using odometry/global here creates a
+            # deadlock: global EKF waits for odometry/gps; navsat_transform waits for
+            # odometry/global.
+            ('odometry/filtered', 'odometry/local'),
         ],
     )
 

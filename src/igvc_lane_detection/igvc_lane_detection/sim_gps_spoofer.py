@@ -36,9 +36,17 @@ class SimGpsSpoofer(Node):
         self.origin_lat = float(self.get_parameter('origin_lat').value)
         self.origin_lon = float(self.get_parameter('origin_lon').value)
 
+        self.declare_parameter('initial_heading_deg', 0.0)
+        self.declare_parameter('randomize_heading', False)
+        if bool(self.get_parameter('randomize_heading').value):
+            initial_heading = random.uniform(0.0, 2.0 * math.pi)
+        else:
+            initial_heading = math.radians(
+                float(self.get_parameter('initial_heading_deg').value))
+
         self.start_xy: tuple[float, float] | None = None
         self.yaw_offset: float | None = None
-        self.random_heading = random.uniform(0.0, 2*math.pi)
+        self.initial_heading = wrap(initial_heading)
 
         self.gps_pub = self.create_publisher(NavSatFix, GPS_TOPIC, 10)
         self.heading_pub = self.create_publisher(Imu, HEADING_TOPIC, 10)
@@ -46,7 +54,7 @@ class SimGpsSpoofer(Node):
 
         self.get_logger().info(
             f'origin=({self.origin_lat:.8f}, {self.origin_lon:.8f}), '
-            f'random_heading={math.degrees(self.random_heading):.1f} deg')
+            f'initial_heading={math.degrees(self.initial_heading):.1f} deg')
 
     def on_odom(self, msg: Odometry) -> None:
         x = msg.pose.pose.position.x
@@ -55,7 +63,7 @@ class SimGpsSpoofer(Node):
 
         if self.start_xy is None:
             self.start_xy = (x, y)
-            self.yaw_offset = wrap(self.random_heading - odom_yaw)
+            self.yaw_offset = wrap(self.initial_heading - odom_yaw)
 
         assert self.start_xy is not None and self.yaw_offset is not None
         dx = x - self.start_xy[0]
@@ -70,7 +78,7 @@ class SimGpsSpoofer(Node):
 
         fix = NavSatFix()
         fix.header.stamp = stamp
-        fix.header.frame_id = 'gps'
+        fix.header.frame_id = 'gps_gps_antenna_link'
         fix.status.status = NavSatStatus.STATUS_FIX
         fix.status.service = NavSatStatus.SERVICE_GPS
         fix.latitude = self.origin_lat + math.degrees(north / EARTH_RADIUS_M)

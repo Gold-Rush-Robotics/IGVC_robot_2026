@@ -66,6 +66,15 @@ def generate_launch_description() -> LaunchDescription:
     use_sim_gps_arg = DeclareLaunchArgument(
         'use_sim_gps', default_value='false',
         description='Start sim_gps_spoofer to fake /fix and heading.')
+    sim_gps_initial_heading_deg_arg = DeclareLaunchArgument(
+        'sim_gps_initial_heading_deg', default_value='0.0',
+        description='Initial simulated GPS compass heading in degrees.')
+    sim_gps_randomize_heading_arg = DeclareLaunchArgument(
+        'sim_gps_randomize_heading', default_value='false',
+        description='Randomize simulated GPS compass heading each launch.')
+    gps_topic_arg = DeclareLaunchArgument(
+        'gps_topic', default_value='/fix',
+        description='NavSatFix topic from the GPS driver (e.g. /fix for ublox).')
     nav2_params_file_arg = DeclareLaunchArgument(
         'nav2_params_file',
         default_value=PathJoinSubstitution(
@@ -93,6 +102,9 @@ def generate_launch_description() -> LaunchDescription:
     hardware_interface = LaunchConfiguration('hardware_interface')
     launch_motors = LaunchConfiguration('launch_motors')
     use_sim_gps = LaunchConfiguration('use_sim_gps')
+    sim_gps_initial_heading_deg = LaunchConfiguration('sim_gps_initial_heading_deg')
+    sim_gps_randomize_heading = LaunchConfiguration('sim_gps_randomize_heading')
+    gps_topic = LaunchConfiguration('gps_topic')
     nav2_params_file = LaunchConfiguration('nav2_params_file')
     rl_params_file = LaunchConfiguration('rl_params_file')
     goal_lat = LaunchConfiguration('goal_lat')
@@ -118,7 +130,11 @@ def generate_launch_description() -> LaunchDescription:
         executable='sim_gps_spoofer_node',
         name='sim_gps_spoofer',
         output='screen',
-        parameters=[{'use_sim_time': use_sim_time}],
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'initial_heading_deg': sim_gps_initial_heading_deg,
+            'randomize_heading': sim_gps_randomize_heading,
+        }],
         condition=IfCondition(use_sim_gps),
     )
 
@@ -130,6 +146,7 @@ def generate_launch_description() -> LaunchDescription:
         launch_arguments={
             'use_sim_time': use_sim_time,
             'params_file': rl_params_file,
+            'gps_topic': gps_topic,
         }.items(),
     )
 
@@ -171,6 +188,7 @@ def generate_launch_description() -> LaunchDescription:
             'goal_yaw_deg': goal_yaw_deg,
             'waypoints_file': waypoints_file,
             'localizer': 'robot_localization',
+            'gps_topic': gps_topic,
         }],
     )
 
@@ -179,6 +197,9 @@ def generate_launch_description() -> LaunchDescription:
         hardware_interface_arg,
         launch_motors_arg,
         use_sim_gps_arg,
+        sim_gps_initial_heading_deg_arg,
+        sim_gps_randomize_heading_arg,
+        gps_topic_arg,
         nav2_params_file_arg,
         rl_params_file_arg,
         goal_lat_arg,
