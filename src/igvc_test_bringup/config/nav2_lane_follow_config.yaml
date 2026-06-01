@@ -86,20 +86,19 @@ controller_server:
       # tolerant of sparse / noisy lane updates while still benefiting
       # from the 5 Hz global replanning above.
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      # Cruise raised to 1.5 m/s.  Maneuverability is preserved by keeping the
-      # angular cap high (1.5 rad/s) and by using velocity-scaled lookahead so
-      # the lookahead grows with speed (long, gentle tracking at 1.5 m/s) but
-      # collapses to min_lookahead_dist in tight turns for sharp cornering.
+      # Cruise stays at 1.5 m/s.  Use speed-scaled lookahead for two distinct
+      # behaviors: long, gentle tracking at cruise to reduce snaking, and a
+      # short carrot once slowdown/curve regulation drops speed so the robot
+      # can still turn into tight features.
       desired_linear_vel: 1.5
       desired_angular_vel: 1.5
-      lookahead_dist: 1.2
-      min_lookahead_dist: 0.6
-      max_lookahead_dist: 2.6
-      # Longer lookahead time damps straight-line snaking (at the 1.5 m/s
-      # cruise the carrot sits ~2.0 m ahead, smoothing small lane-path wobble),
-      # while velocity-scaled lookahead still collapses to min_lookahead_dist
-      # (0.6 m) when the robot slows for tight corners — keeping turn agility.
-      lookahead_time: 1.35
+      lookahead_dist: 1.5
+      min_lookahead_dist: 0.45
+      max_lookahead_dist: 3.0
+      # At 1.5 m/s the carrot sits about 2.55 m ahead, damping straight-line
+      # oscillation.  In slowdown zones it collapses to 0.45 m so angular
+      # authority increases when the robot is already moving slowly.
+      lookahead_time: 1.7
       rotate_to_heading_angular_vel: 1.5
       transform_tolerance: 1.0
       # Velocity-scaled lookahead keeps high-speed tracking smooth while still
@@ -118,8 +117,10 @@ controller_server:
       use_collision_detection: false
       max_allowed_time_to_collision_up_to_carrot: 0.5
       use_regulated_linear_velocity_scaling: true
-      use_fixed_curvature_lookahead: true
-      curvature_lookahead_dist: 1.0
+      # Let curvature use the same speed-scaled carrot: straighter at normal
+      # speed, tighter once slowdown zones or curve regulation reduce speed.
+      use_fixed_curvature_lookahead: false
+      curvature_lookahead_dist: 0.45
       # Keep disabled: this code path calls costAtPose() each cycle, which can
       # hard-abort FollowPath if the rolling local costmap momentarily lags.
       use_cost_regulated_linear_velocity_scaling: false
