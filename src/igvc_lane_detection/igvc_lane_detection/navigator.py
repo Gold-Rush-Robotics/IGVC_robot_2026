@@ -52,6 +52,7 @@ Parameters
     path_change_tolerance_m float 0.25    FollowPath resend hysteresis
     path_change_tolerance_rad float 0.25
     max_path_lateral_jump_m float 0.5
+    max_path_heading_rad float 0.75       reject/limit sideways local paths
 
 Subscriptions
     /fix              NavSatFix       (GPS mode only)
@@ -197,6 +198,7 @@ class IGVCNavigatorNode(Node):
         self._path_change_tolerance_m = self._p('path_change_tolerance_m', 0.25)
         self._path_change_tolerance_rad = self._p('path_change_tolerance_rad', 0.25)
         self._max_path_lateral_jump_m = self._p('max_path_lateral_jump_m', 0.35)
+        self._max_path_heading_rad = float(self._p('max_path_heading_rad', 0.75))
         self._centerline_gap_tolerance_m = self._p('centerline_gap_tolerance_m', 0.25)
         # Hysteresis: discount Dijkstra edge cost for cells lying near the
         # previously chosen centerline so the planner commits to a side of
@@ -417,6 +419,7 @@ class IGVCNavigatorNode(Node):
             ('path_change_tolerance_m', 0.10),   # tightened from 0.25 — reduces stale-path tracking on turns
             ('path_change_tolerance_rad', 0.10),  # tightened from 0.25
             ('max_path_lateral_jump_m', 0.35),
+            ('max_path_heading_rad', 0.75),
             ('centerline_gap_tolerance_m', 0.25),
             ('prev_path_bias_weight',   0.4),
             ('prev_path_bias_radius_m', 0.30),
@@ -1626,7 +1629,33 @@ class IGVCNavigatorNode(Node):
         # value to pull the first lane samples toward straight ahead.
         anchored = [(0.0, 0.0)] + list(pts)
         return self._resample_path_points(
-            self._smooth_path_points(anchored), self._path_sample_spacing_m)
+            self._smooth_path_points(self._limit_path_heading(anchored)),
+            self._path_sample_spacing_m)
+
+    def _limit_path_heading(
+        self,
+        pts: list[tuple[float, float]],
+    ) -> list[tuple[float, float]]:
+        """Bound lateral slew so wide corridors cannot create U-turn paths."""
+        if len(pts) < 2:
+            return pts
+
+        max_heading = max(
+            0.05,
+            min(float(getattr(self, '_max_path_heading_rad', 0.75)), math.pi / 2.0 - 1.0e-3),
+        )
+        max_slope = math.tan(max_heading)
+        limited = [pts[0]]
+        for fwd, lat in pts[1:]:
+            prev_fwd, prev_lat = limited[-1]
+            df = max(0.0, float(fwd) - float(prev_fwd))
+            if df <= max(float(getattr(self, '_grid_res', 0.05)), 1.0e-3) * 0.5:
+                lat = prev_lat
+            else:
+                max_delta = max_slope * df
+                lat = max(prev_lat - max_delta, min(prev_lat + max_delta, float(lat)))
+            limited.append((float(fwd), float(lat)))
+        return limited
 
     def _smooth_path_points(
         self,
@@ -1737,6 +1766,25 @@ class IGVCNavigatorNode(Node):
                     f'pose {index} lateral jump {abs(y - prev_y):.2f}m > '
                     f'{self._max_path_lateral_jump_m:.2f}m')
             prev_x, prev_y = x, y
+
+        max_heading = max(
+            0.05,
+            min(float(getattr(self, '_max_path_heading_rad', 0.75)), math.pi / 2.0 - 1.0e-3),
+        )
+        prev_pose = path.poses[0].pose.position
+        for index, pose in enumerate(path.poses[1:], start=1):
+            cur_pose = pose.pose.position
+            dx = cur_pose.x - prev_pose.x
+            dy = cur_pose.y - prev_pose.y
+            if math.hypot(dx, dy) <= 1.0e-6:
+                prev_pose = cur_pose
+                continue
+            heading = abs(math.atan2(dy, dx))
+            if heading > max_heading:
+                return (
+                    f'pose {index} path heading {heading:.2f}rad > '
+                    f'{max_heading:.2f}rad')
+            prev_pose = cur_pose
         return None
 
     def _path_is_valid(self, path: Path) -> bool:

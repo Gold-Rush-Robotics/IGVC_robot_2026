@@ -52,6 +52,10 @@ igvc_navigator:
     path_change_tolerance_m: 0.8
     path_change_tolerance_rad: 0.4
     lane_hold_sec: 1.0
+    # Wide corridors can make the extracted centerline cut sharply across the
+    # lane.  Cap local path heading so straight sections stay forward-biased
+    # instead of asking Nav2 for a U-turn-like sweep.
+    max_path_heading_rad: 0.75
 
     # Centerline hysteresis: soft Dijkstra cost discount for cells near the
     # previously chosen centerline.  Keeps the planner committed to a chosen

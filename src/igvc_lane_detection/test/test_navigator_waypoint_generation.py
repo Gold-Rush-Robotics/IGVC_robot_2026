@@ -86,6 +86,7 @@ def make_navigator(grid, *, lookahead=4.0, horizon=1.8):
     node._path_change_tolerance_m = 0.25
     node._path_change_tolerance_rad = 0.25
     node._max_path_lateral_jump_m = 0.5
+    node._max_path_heading_rad = 0.75
     node._goal_pending = False
     node._goal_handle = None
     node._next_goal_seq = 0
@@ -254,6 +255,32 @@ def test_path_validation_rejects_lateral_jump():
     node = make_navigator(grid)
     path = node._lane_path_from_costmap()
     path.poses[5].pose.position.y += 1.0
+
+    assert not node._path_is_valid(path)
+
+
+def test_conditioned_path_limits_sideways_slew_for_wide_lanes():
+    """Wide straight lanes should not produce sideways/U-turn-like path starts."""
+    grid = make_corridor_costmap(centerline=0.0, lane_width_m=4.5)
+    node = make_navigator(grid)
+    raw = [(0.05, 0.0), (0.10, 2.0), (1.0, 2.0), (2.0, 2.0)]
+
+    points = node._condition_path_points(raw)
+    headings = [
+        abs(math.atan2(b[1] - a[1], b[0] - a[0]))
+        for a, b in zip(points[:-1], points[1:])
+        if math.hypot(b[0] - a[0], b[1] - a[1]) > 1.0e-6
+    ]
+
+    assert headings
+    assert max(headings) <= node._max_path_heading_rad + 0.05
+
+
+def test_path_validation_rejects_sideways_heading():
+    """A path that starts by sweeping sideways should be blocked."""
+    grid = make_corridor_costmap(centerline=0.0, lane_width_m=2.4)
+    node = make_navigator(grid)
+    path = node._build_path([(0.0, 0.0), (0.10, 1.0), (1.0, 1.0)])
 
     assert not node._path_is_valid(path)
 
