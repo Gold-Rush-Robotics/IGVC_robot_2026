@@ -26,7 +26,7 @@ into the ``odom`` frame.
 
 Topics
 ------
-* ``/gps/fix``                       ``sensor_msgs/NavSatFix``        (in)
+* ``/fix``                       ``sensor_msgs/NavSatFix``        (in)
 * ``/front_zed_camera_x/zed_node/odom`` ``nav_msgs/Odometry``        (in)
 * ``/mission/state``                 ``std_msgs/String``  (latched, out)
 * ``/mission/virtual_obstacles``     ``geometry_msgs/PoseArray`` (latched, out)
@@ -131,7 +131,7 @@ class MissionPlannerNode(Node):
 
         p = self.declare_parameter
         self._frame              = p('frame_id',           'odom').value
-        self._gps_topic          = p('gps_topic',          '/gps/fix').value
+        self._gps_topic          = p('gps_topic',          '/fix').value
         self._odom_topic         = p('odom_topic',
             '/front_zed_camera_x/zed_node/odom').value
         self._state_topic        = p('state_topic',        '/mission/state').value

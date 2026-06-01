@@ -30,7 +30,7 @@ class RealGPSWaypoint(Node):
 
         self.declare_parameter('goal_lat', 0.0)
         self.declare_parameter('goal_lon', 0.0)
-        self.declare_parameter('gps_topic', '/gps/fix')
+        self.declare_parameter('gps_topic', '/fix')
         self.declare_parameter('heading_topic',
                                '/front_zed_camera_2i/imu/heading')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')

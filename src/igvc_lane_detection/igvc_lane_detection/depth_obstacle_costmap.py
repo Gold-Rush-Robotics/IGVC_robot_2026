@@ -17,7 +17,7 @@ frame_id              (str,   'odom')                   Fixed frame for output g
 depth_topic           (str,   '/front_zed_camera_x/zed_node/depth/depth_registered')
 info_topic            (str,   '/front_zed_camera_x/zed_node/depth/camera_info')
 output_topic          (str,   '/depth_obstacle_map')
-resolution            (float, 0.10)  Cell size in metres.
+resolution            (float, 0.10)  Cell size in meters.
 width_m               (float, 60.0)
 height_m              (float, 60.0)
 origin_x              (float, -30.0)

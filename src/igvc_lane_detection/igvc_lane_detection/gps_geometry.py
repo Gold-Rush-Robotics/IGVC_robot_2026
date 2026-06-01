@@ -13,7 +13,7 @@ _WGS84_EP2 = _WGS84_E2 / (1.0 - _WGS84_E2)
 
 def _ecef(lat_deg: float, lon_deg: float,
           altitude_m: float = 0.0) -> tuple[float, float, float]:
-    """Geodetic latitude/longitude/altitude to ECEF metres."""
+    """Geodetic latitude/longitude/altitude to ECEF meters."""
     lat = math.radians(lat_deg)
     lon = math.radians(lon_deg)
     sin_lat = math.sin(lat)
@@ -27,7 +27,7 @@ def _ecef(lat_deg: float, lon_deg: float,
 
 def _ecef_to_gps(x_coord: float, y_coord: float,
                  z_coord: float) -> tuple[float, float, float]:
-    """ECEF metres to geodetic latitude/longitude/altitude (Bowring)."""
+    """ECEF meters to geodetic latitude/longitude/altitude (Bowring)."""
     lon = math.atan2(y_coord, x_coord)
     p = math.hypot(x_coord, y_coord)
     theta = math.atan2(z_coord * _WGS84_A, p * _WGS84_B)
@@ -47,7 +47,7 @@ def _ecef_to_gps(x_coord: float, y_coord: float,
 
 def gps_to_enu(lat: float, lon: float, origin_lat: float,
                origin_lon: float) -> tuple[float, float]:
-    """Convert WGS-84 latitude/longitude to local east/north metres."""
+    """Convert WGS-84 latitude/longitude to local east/north meters."""
     x, y, z = _ecef(lat, lon)
     x0, y0, z0 = _ecef(origin_lat, origin_lon)
     dx = x - x0
@@ -69,7 +69,7 @@ def gps_to_enu(lat: float, lon: float, origin_lat: float,
 def enu_to_gps(east_m: float, north_m: float, origin_lat: float,
                origin_lon: float, up_m: float = 0.0,
                origin_altitude_m: float = 0.0) -> tuple[float, float, float]:
-    """Convert local east/north/up metres to WGS-84 lat/lon/altitude."""
+    """Convert local east/north/up meters to WGS-84 lat/lon/altitude."""
     x0, y0, z0 = _ecef(origin_lat, origin_lon, origin_altitude_m)
     lat0 = math.radians(origin_lat)
     lon0 = math.radians(origin_lon)

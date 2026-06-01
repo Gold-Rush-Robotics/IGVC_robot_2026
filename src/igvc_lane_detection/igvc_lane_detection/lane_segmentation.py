@@ -2356,7 +2356,7 @@ class LaneSegmentationNode(Node):
         ):
             return self._plane_by_cam.get(cam_idx)
 
-        # Least-squares refit on inliers (SVD of centred points).
+        # Least-squares refit on inliers (SVD of centerd points).
         dist = np.abs(pts @ best_n + best_d)
         inliers = pts[dist < thresh]
         if inliers.shape[0] >= 3:
@@ -2939,10 +2939,10 @@ class LaneSegmentationNode(Node):
         # ── Corridor fill from lane boundaries ──────────────────────────────
         # Use reliably-detected lane lines to infer the drivable corridor.
         # For each forward column that has lane cells, find the innermost
-        # lane-boundary row on each side of the robot centreline and fill
+        # lane-boundary row on each side of the robot centerline and fill
         # unknown (-1) cells between them with free (0).  Compensates for
         # sparse depth-projection of the drivable-area YOLO head.
-        center_row = ny // 2  # row index for lateral=0 (robot centreline)
+        center_row = ny // 2  # row index for lateral=0 (robot centerline)
         half_fill  = max(4, int(round(1.2 / res)))  # 1.2 m half-width in cells
         lane_cols  = np.where(np.any(data == 100, axis=0))[0]
         for col in lane_cols:
@@ -3055,7 +3055,7 @@ class LaneSegmentationNode(Node):
                 tx = tf.transform.translation.x
                 ty = tf.transform.translation.y
                 # Origin = world position of cell (0,0). Lateral extent is
-                # centred on the robot, so the (0,0) corner is offset by
+                # centerd on the robot, so the (0,0) corner is offset by
                 # -grid_width_m/2 along the rotated +y axis from the robot.
                 g.info.origin.position.x = tx + np.sin(yaw) * (self.grid_width_m / 2.0)
                 g.info.origin.position.y = ty - np.cos(yaw) * (self.grid_width_m / 2.0)

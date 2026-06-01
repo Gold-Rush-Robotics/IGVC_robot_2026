@@ -32,12 +32,15 @@ from __future__ import annotations
 import math
 from typing import List, Optional
 
+import time
+
 import rclpy
 import yaml
 from geographic_msgs.msg import GeoPose
 from geometry_msgs.msg import Quaternion
 from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from rclpy.node import Node
+from sensor_msgs.msg import NavSatFix
 
 
 def quaternion_from_yaw(yaw: float) -> Quaternion:
@@ -105,10 +108,52 @@ class Nav2GpsWaypoint(Node):
         return [lat_lon_yaw_to_geopose(
             self._goal_lat, self._goal_lon, self._goal_yaw)]
 
+    def _check_gps_start_location(self, goal_lat: float, goal_lon: float) -> bool:
+        """Block until a /fix arrives, then verify the first 3 decimal
+        places of lat/lon match the goal area (~55 m radius).  Returns False
+        (and logs an error) if the fix is missing or in the wrong place."""
+        self.get_logger().info(
+            'GPS check: waiting for a fix on /fix (timeout 10 s)...')
+        fix: Optional[NavSatFix] = None
+
+        def _cb(msg: NavSatFix) -> None:
+            nonlocal fix
+            fix = msg
+
+        sub = self.create_subscription(NavSatFix, '/fix', _cb, 1)
+        deadline = time.time() + 10.0
+        while fix is None and time.time() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.1)
+        self.destroy_subscription(sub)
+
+        if fix is None:
+            self.get_logger().error(
+                'GPS check FAILED: no fix received on /fix within 10 s. Aborting.')
+            return False
+
+        cur_lat, cur_lon = fix.latitude, fix.longitude
+        if round(cur_lat, 3) != round(goal_lat, 3) or \
+                round(cur_lon, 3) != round(goal_lon, 3):
+            self.get_logger().error(
+                f'GPS check FAILED: start ({cur_lat:.6f},{cur_lon:.6f}) does not '
+                f'match goal area to 3 decimal places '
+                f'(goal: {goal_lat:.3f}x,{goal_lon:.3f}x). Aborting.')
+            return False
+
+        self.get_logger().info(
+            f'GPS check OK: start ({cur_lat:.6f},{cur_lon:.6f}) '
+            f'matches goal to 3 decimal places.')
+        return True
+
     def run(self) -> bool:
         """Block until the waypoint(s) are followed; return success."""
         waypoints = self._load_waypoints()
         if not waypoints:
+            return False
+
+        first_goal = waypoints[0].position
+        if not self._check_gps_start_location(
+                first_goal.latitude, first_goal.longitude):
             return False
 
         self.get_logger().info(

@@ -38,14 +38,14 @@ def make_empty_costmap(
 
 
 def lateral_to_col(grid: OccupancyGrid, lateral_m: float) -> int:
-    """Convert base_link lateral metres to a costmap column."""
+    """Convert base_link lateral meters to a costmap column."""
     resolution = grid.info.resolution
     origin_y = grid.info.origin.position.y
     return int(round((lateral_m - origin_y) / resolution))
 
 
 def row_to_forward(grid: OccupancyGrid, row: int) -> float:
-    """Convert a costmap row to forward metres in base_link."""
+    """Convert a costmap row to forward meters in base_link."""
     return row * grid.info.resolution
 
 

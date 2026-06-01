@@ -45,7 +45,7 @@ anchor3dlane_node:
 
     # ── Local rolling costmap ──────────────────────────────────────────────
     grid_resolution: 0.05   # m/cell
-    grid_width:     10.0    # lateral extent (m), centred on robot
+    grid_width:     10.0    # lateral extent (m), centerd on robot
     grid_height:    10.0    # forward extent (m)
 
     # ── Detection range filter (applied in base_link after TF) ────────────

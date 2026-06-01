@@ -19,9 +19,9 @@ Parameters
 frame_id              (str,   'odom')         — Fixed frame for the output grid.
 scan_topic            (str,   '/scan')         — Input LaserScan topic.
 output_topic          (str,   '/lidar_obstacle_map') — Output OccupancyGrid topic.
-resolution            (float, 0.10)            — Cell size in metres.
-width_m               (float, 60.0)            — Grid width in metres.
-height_m              (float, 60.0)            — Grid height in metres.
+resolution            (float, 0.10)            — Cell size in meters.
+width_m               (float, 60.0)            — Grid width in meters.
+height_m              (float, 60.0)            — Grid height in meters.
 origin_x              (float, -30.0)           — Grid origin X (bottom-left).
 origin_y              (float, -30.0)           — Grid origin Y (bottom-left).
 min_range_m           (float, 0.15)            — Ignore ranges shorter than this.

@@ -15,7 +15,7 @@ set -euo pipefail
 
 INSTALL_DIR="${1:-$HOME/anchor3dlane}"
 
-# ── Colours ───────────────────────────────────────────────────────────────
+# ── Colors ───────────────────────────────────────────────────────────────
 BOLD='\033[1m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 info()    { echo -e "${CYAN}[anchor3dlane]${NC} $*"; }
 success() { echo -e "${GREEN}[anchor3dlane]${NC} $*"; }

@@ -122,7 +122,7 @@ class GpsWaypointTestNode(Node):
         self.declare_parameter('goal_tolerance_m', 1.0)
         # Re-send the goal at most this often while we wait for arrival.
         self.declare_parameter('resend_period_sec', 5.0)
-        # Intermediate waypoints are inserted every this many metres along the
+        # Intermediate waypoints are inserted every this many meters along the
         # straight-line path to the target so RPP always has a nearby carrot.
         self.declare_parameter('waypoint_spacing_m', 3.0)
 
@@ -169,7 +169,7 @@ class GpsWaypointTestNode(Node):
         # falls back to the raw latest fix while the buffer is filling.
         self.declare_parameter('gps_min_samples', 3)
         # Resend Nav2 goal whenever the robot's regressed GPS position has
-        # shifted at least this far (metres) from where the last goal was sent.
+        # shifted at least this far (meters) from where the last goal was sent.
         # Keeps the goal current as the robot moves through GPS space.
         self.declare_parameter('goal_update_distance_m', 0.5)
         # When false, do not send a fresh NavigateThroughPoses goal while an
@@ -178,7 +178,7 @@ class GpsWaypointTestNode(Node):
         self.declare_parameter('allow_active_goal_refresh', False)
         # Robot-relative mode: skip GPS entirely and navigate to a fixed pose
         # expressed in the map/odom frame (identity transform).  target_x and
-        # target_y are metres forward/lateral from the robot start position.
+        # target_y are meters forward/lateral from the robot start position.
         self.declare_parameter('use_gps', True)
         self.declare_parameter('target_x', 0.0)
         self.declare_parameter('target_y', 0.0)
@@ -617,7 +617,7 @@ class GpsWaypointTestNode(Node):
                 throttle_duration_sec=3.0)
             return
 
-        # Build intermediate waypoints spaced every waypoint_spacing_m metres
+        # Build intermediate waypoints spaced every waypoint_spacing_m meters
         # along the straight line to the target.  Each waypoint faces the final
         # target so the robot doesn't spin between sub-goals.
         yaw = math.atan2(tgt_n - cur_n, tgt_e - cur_e)

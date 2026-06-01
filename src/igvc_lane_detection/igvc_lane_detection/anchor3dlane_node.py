@@ -392,7 +392,7 @@ class Anchor3DLaneNode(Node):
 
         Returns
         -------
-        np.ndarray  shape (N, 2)  columns [fwd, lat] in base_link metres.
+        np.ndarray  shape (N, 2)  columns [fwd, lat] in base_link meters.
         """
         if not lanes:
             return np.empty((0, 2), dtype=np.float32)

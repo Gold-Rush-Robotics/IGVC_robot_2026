@@ -1,7 +1,7 @@
 mission_planner_node:
   ros__parameters:
     frame_id: "odom"
-    gps_topic: "/gps/fix"
+    gps_topic: "/fix"
     odom_topic: "/front_zed_camera_x/zed_node/odom"
     state_topic: "/mission/state"
     virtual_obstacles_topic: "/mission/virtual_obstacles"

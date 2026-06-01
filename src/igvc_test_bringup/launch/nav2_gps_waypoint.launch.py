@@ -6,7 +6,7 @@ nav2_gps_waypoint_follower_demo architecture.
 
 Starts:
   1. (optional) motor controllers      — ros2_control + diff_drive  (hardware)
-  2. (optional) sim_gps_spoofer         — fake /gps/fix + heading from ZED odom
+  2. (optional) sim_gps_spoofer         — fake /fix + heading from ZED odom
   3. robot_localization                 — dual_ekf_navsat.launch.py (map->odom->base_link)
   4. Nav2 stack                         — navigation_no_docking.launch.py
   5. twist_stamper                      — cmd_vel_unstamped -> /diff_drive_controller/cmd_vel
@@ -65,7 +65,7 @@ def generate_launch_description() -> LaunchDescription:
         description='Start the ros2_control motor controllers (hardware).')
     use_sim_gps_arg = DeclareLaunchArgument(
         'use_sim_gps', default_value='false',
-        description='Start sim_gps_spoofer to fake /gps/fix and heading.')
+        description='Start sim_gps_spoofer to fake /fix and heading.')
     nav2_params_file_arg = DeclareLaunchArgument(
         'nav2_params_file',
         default_value=PathJoinSubstitution(

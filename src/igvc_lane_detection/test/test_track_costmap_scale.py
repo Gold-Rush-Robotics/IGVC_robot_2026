@@ -35,9 +35,9 @@ def test_costmap_fixture_matches_lane_detection_origin_convention():
     assert grid.info.origin.position.y == -5.0
 
 
-def test_track_pixels_convert_to_expected_metres():
+def test_track_pixels_convert_to_expected_meters():
     """Track widths in pixels should convert to expected metric widths."""
-    metres_per_pixel = 0.3048 / PIXELS_PER_FOOT
+    meters_per_pixel = 0.3048 / PIXELS_PER_FOOT
 
-    assert abs(160 * metres_per_pixel - 3.048) < 1e-9
-    assert abs(320 * metres_per_pixel - 6.096) < 1e-9
+    assert abs(160 * meters_per_pixel - 3.048) < 1e-9
+    assert abs(320 * meters_per_pixel - 6.096) < 1e-9

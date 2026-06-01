@@ -207,7 +207,7 @@ def write_png(path: Path, arr: np.ndarray, kind: str) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     if kind == 'depth':
         if arr.dtype == np.float32:
-            # metres → millimetres, clip to uint16 range.
+            # meters → millimeters, clip to uint16 range.
             mm = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0) * 1000.0
             mm = np.clip(mm, 0, 65535).astype(np.uint16)
         else:

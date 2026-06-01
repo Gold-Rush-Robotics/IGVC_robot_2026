@@ -6,12 +6,12 @@
 #    * base frame          : base_link
 #    * local odometry      : /front_zed_camera_x/zed_node/odom  (ZED fused VIO)
 #    * absolute heading IMU : /front_zed_camera_2i/imu/heading   (ENU yaw)
-#    * GPS fix             : /gps/fix
+#    * GPS fix             : /fix
 #
 #  TF chain produced here (replaces the custom map->odom publisher):
 #    ekf_filter_node_odom : odom -> base_link
 #    ekf_filter_node_map  : map  -> odom
-#    navsat_transform     : /gps/fix (+ heading) -> /odometry/gps (map frame)
+#    navsat_transform     : /fix (+ heading) -> /odometry/gps (map frame)
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ── Local EKF: odom -> base_link (continuous, no GPS) ─────────────────────────

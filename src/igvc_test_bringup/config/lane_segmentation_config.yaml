@@ -239,7 +239,7 @@ lane_segmentation_node:
     # kernels amplify single bad lane pixels into map-visible false lanes.
     ll_dilation_px: 9
 
-    # Local /lane_costmap lane (100) inflation radius in metres.
+    # Local /lane_costmap lane (100) inflation radius in meters.
     # Inflates cleaned lane cells only enough to keep the corridor readable.
     local_lane_inflation_m: 0.30
 
@@ -313,7 +313,7 @@ lane_segmentation_node:
     ground_plane_inlier_thresh_m: 0.05
     ground_plane_roi_fwd_min_m:   1.0
     # fwd_max/z_abs widened from 12.0/0.30 so the same RANSAC fit also serves
-    # ramp detection: at 15° the surface rises ~0.27 m per metre forward, so a
+    # ramp detection: at 15° the surface rises ~0.27 m per meter forward, so a
     # 0.30 m z band would clip the ramp face out of the ROI.  6 m forward x
     # 1.5 m z captures the approach + ramp without pulling in tall obstacles
     # (the z-normal gate + 0.05 m inlier band still lock onto the ground).

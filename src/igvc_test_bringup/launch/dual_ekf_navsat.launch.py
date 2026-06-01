@@ -8,7 +8,7 @@ adapted to the IGVC robot's sensor topics.
 Starts:
   1. ekf_filter_node_odom  — local EKF, publishes  odom -> base_link TF
   2. ekf_filter_node_map   — global EKF, publishes map  -> odom TF (fuses GPS)
-  3. navsat_transform      — /gps/fix (+ heading) -> /odometry/gps (map frame)
+  3. navsat_transform      — /fix (+ heading) -> /odometry/gps (map frame)
 
 Params: igvc_test_bringup/config/dual_ekf_navsat_params.yaml
 
@@ -16,7 +16,7 @@ Arguments
 ---------
     use_sim_time    true | false                              (default: false)
     params_file     robot_localization YAML params            (default: dual_ekf_navsat_params.yaml)
-    gps_topic       NavSatFix input topic                     (default: /gps/fix)
+    gps_topic       NavSatFix input topic                     (default: /fix)
     imu_topic       absolute-heading Imu input topic          (default: /front_zed_camera_2i/imu/heading)
 """
 
@@ -39,7 +39,7 @@ def generate_launch_description() -> LaunchDescription:
             [bringup, 'config', 'dual_ekf_navsat_params.yaml']),
         description='robot_localization params YAML.')
     gps_topic_arg = DeclareLaunchArgument(
-        'gps_topic', default_value='/gps/fix',
+        'gps_topic', default_value='/fix',
         description='NavSatFix topic fed to navsat_transform.')
     imu_topic_arg = DeclareLaunchArgument(
         'imu_topic', default_value='/front_zed_camera_2i/imu/heading',

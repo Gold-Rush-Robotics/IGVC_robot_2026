@@ -152,7 +152,7 @@ def _track_points_from_image(image_path: str, pixels_per_meter: float) -> List[T
         # X is negated to match USD floor placement (pygame_to_usd_xy negates X).
         wx = float(-(x - cx) / ppm)
         # JSON uses y-down (Pygame/image convention, matching USD floor placement).
-        # Do NOT flip y here so the centreline matches track_points.json exactly.
+        # Do NOT flip y here so the centerline matches track_points.json exactly.
         wy = float((y - cy) / ppm)
         points_m.append((wx, wy))
     return points_m
@@ -370,7 +370,7 @@ class TrackGroundTruthNode(Node):
                     # Corridor cells are FREE (0). Lane-line / outside cells
                     # remain unknown (-1). Nav2 lethal_cost_threshold >= 90
                     # on /lane_map stays out of the corridor; navigator
-                    # _extract_centreline looks for data == 0 (free cells).
+                    # _extract_centerline looks for data == 0 (free cells).
                     img[cys[in_bounds], cxs[in_bounds]] = 0
 
                 msg = OccupancyGrid()

@@ -12,7 +12,7 @@ from sensor_msgs.msg import Imu, NavSatFix, NavSatStatus
 
 
 ODOM_TOPIC = '/front_zed_camera_x/zed_node/odom'
-GPS_TOPIC = '/gps/fix'
+GPS_TOPIC = '/fix'
 HEADING_TOPIC = '/front_zed_camera_2i/imu/heading'
 EARTH_RADIUS_M = 6_378_137.0
 
