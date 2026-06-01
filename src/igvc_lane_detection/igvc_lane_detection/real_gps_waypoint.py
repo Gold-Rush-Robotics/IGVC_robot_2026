@@ -7,12 +7,11 @@ from typing import Optional
 
 import rclpy
 from geometry_msgs.msg import TwistStamped
-from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
                        ReliabilityPolicy)
 from rclpy.time import Time
-from sensor_msgs.msg import NavSatFix, NavSatStatus
+from sensor_msgs.msg import Imu, NavSatFix, NavSatStatus
 
 from igvc_lane_detection.gps_geometry import (gps_to_enu, wrap_angle,
                                               yaw_from_quaternion_xyzw)
@@ -32,7 +31,8 @@ class RealGPSWaypoint(Node):
         self.declare_parameter('goal_lat', 0.0)
         self.declare_parameter('goal_lon', 0.0)
         self.declare_parameter('gps_topic', '/gps/fix')
-        self.declare_parameter('odom_topic', '/front_zed_camera_x/zed_node/odom')
+        self.declare_parameter('heading_topic',
+                               '/front_zed_camera_2i/imu/heading')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('publish_hz', 10.0)
         self.declare_parameter('linear_speed_mps', 0.4)
@@ -44,14 +44,14 @@ class RealGPSWaypoint(Node):
         self.declare_parameter('angular_gain', 1.5)
         self.declare_parameter('max_angular_speed', 0.8)
         self.declare_parameter('max_gps_age_sec', 2.0)
-        self.declare_parameter('max_odom_age_sec', 1.0)
+        self.declare_parameter('max_heading_age_sec', 1.0)
         self.declare_parameter('require_valid_fix', True)
-        self.declare_parameter('odom_yaw_offset_deg', 0.0)
+        self.declare_parameter('heading_yaw_offset_deg', 0.0)
 
         self._goal_lat = float(self.get_parameter('goal_lat').value)
         self._goal_lon = float(self.get_parameter('goal_lon').value)
         self._gps_topic = str(self.get_parameter('gps_topic').value)
-        self._odom_topic = str(self.get_parameter('odom_topic').value)
+        self._heading_topic = str(self.get_parameter('heading_topic').value)
         self._publish_hz = float(self.get_parameter('publish_hz').value)
         self._linear_speed = float(self.get_parameter('linear_speed_mps').value)
         self._approach_speed = float(
@@ -67,16 +67,17 @@ class RealGPSWaypoint(Node):
         self._max_angular_speed = float(
             self.get_parameter('max_angular_speed').value)
         self._max_gps_age = float(self.get_parameter('max_gps_age_sec').value)
-        self._max_odom_age = float(self.get_parameter('max_odom_age_sec').value)
+        self._max_heading_age = float(
+            self.get_parameter('max_heading_age_sec').value)
         self._require_valid_fix = bool(
             self.get_parameter('require_valid_fix').value)
-        self._odom_yaw_offset = math.radians(
-            float(self.get_parameter('odom_yaw_offset_deg').value))
+        self._heading_yaw_offset = math.radians(
+            float(self.get_parameter('heading_yaw_offset_deg').value))
 
         self._latest_fix: Optional[NavSatFix] = None
         self._latest_fix_time: Optional[Time] = None
-        self._latest_odom: Optional[Odometry] = None
-        self._latest_odom_time: Optional[Time] = None
+        self._latest_heading: Optional[Imu] = None
+        self._latest_heading_time: Optional[Time] = None
         self._state = self._WAITING
 
         sensor_qos = QoSProfile(
@@ -88,7 +89,7 @@ class RealGPSWaypoint(Node):
         self.create_subscription(
             NavSatFix, self._gps_topic, self._on_gps, sensor_qos)
         self.create_subscription(
-            Odometry, self._odom_topic, self._on_odom, sensor_qos)
+            Imu, self._heading_topic, self._on_heading, sensor_qos)
         self._cmd_pub = self.create_publisher(TwistStamped, "/diff_drive_controller/cmd_vel", 10)
 
         timer_period = 1.0 / max(1.0, self._publish_hz)
@@ -97,7 +98,8 @@ class RealGPSWaypoint(Node):
         self.get_logger().info(
             f'real_gps_waypoint: goal=({self._goal_lat:.8f}, '
             f'{self._goal_lon:.8f}), gps={self._gps_topic}, '
-            f'odom={self._odom_topic}, cmd_vel={"/diff_drive_controller/cmd_vel"}')
+            f'heading={self._heading_topic}, '
+            f'cmd_vel={"/diff_drive_controller/cmd_vel"}')
 
     def _on_gps(self, msg: NavSatFix) -> None:
         if self._require_valid_fix and msg.status.status < NavSatStatus.STATUS_FIX:
@@ -105,9 +107,9 @@ class RealGPSWaypoint(Node):
         self._latest_fix = msg
         self._latest_fix_time = self.get_clock().now()
 
-    def _on_odom(self, msg: Odometry) -> None:
-        self._latest_odom = msg
-        self._latest_odom_time = self.get_clock().now()
+    def _on_heading(self, msg: Imu) -> None:
+        self._latest_heading = msg
+        self._latest_heading_time = self.get_clock().now()
 
     def _age_sec(self, timestamp: Time) -> float:
         age_sec = (self.get_clock().now() - timestamp).nanoseconds / 1e9
@@ -123,18 +125,18 @@ class RealGPSWaypoint(Node):
                 'Waiting for GPS fix before waypoint drive.',
                 throttle_duration_sec=2.0)
             return False
-        if self._latest_odom is None or self._latest_odom_time is None:
+        if self._latest_heading is None or self._latest_heading_time is None:
             self.get_logger().info(
-                'Waiting for odom before waypoint drive.',
+                'Waiting for heading before waypoint drive.',
                 throttle_duration_sec=2.0)
             return False
         if self._age_sec(self._latest_fix_time) > self._max_gps_age:
             self.get_logger().warn(
                 'GPS fix is stale; stopping.', throttle_duration_sec=2.0)
             return False
-        if self._age_sec(self._latest_odom_time) > self._max_odom_age:
+        if self._age_sec(self._latest_heading_time) > self._max_heading_age:
             self.get_logger().warn(
-                'Odom is stale; stopping.', throttle_duration_sec=2.0)
+                'Heading is stale; stopping.', throttle_duration_sec=2.0)
             return False
         return True
 
@@ -148,12 +150,12 @@ class RealGPSWaypoint(Node):
         return distance_m, bearing_rad
 
     def _current_yaw(self) -> float:
-        odom = self._latest_odom
-        assert odom is not None
-        orientation = odom.pose.pose.orientation
+        heading = self._latest_heading
+        assert heading is not None
+        orientation = heading.orientation
         yaw_rad = yaw_from_quaternion_xyzw(
             orientation.x, orientation.y, orientation.z, orientation.w)
-        return wrap_angle(yaw_rad + self._odom_yaw_offset)
+        return wrap_angle(yaw_rad + self._heading_yaw_offset)
 
     def _publish_stop(self) -> None:
         cmd = TwistStamped()
@@ -182,12 +184,21 @@ class RealGPSWaypoint(Node):
         speed_mps = self._linear_speed * scale
         return min(self._linear_speed, max(self._approach_speed, speed_mps))
 
-    def _publish_drive(self, distance_m: float) -> None:
+    def _publish_drive(self, distance_m: float, heading_error: float) -> None:
         cmd = TwistStamped()
         cmd.header.stamp = self.get_clock().now().to_msg()
         cmd.header.frame_id = "base_link"
-        cmd.twist.linear.x = self._drive_speed_for_distance(distance_m)
-        cmd.twist.angular.z = 0.0
+        # Continuously steer toward the live GPS bearing instead of driving
+        # open-loop straight; scale forward speed down as heading error grows
+        # so the robot curves into the waypoint rather than overshooting it.
+        angular_speed = self._angular_gain * heading_error
+        cmd.twist.angular.z = max(
+            -self._max_angular_speed,
+            min(self._max_angular_speed, angular_speed),
+        )
+        speed = self._drive_speed_for_distance(distance_m)
+        speed *= max(0.0, math.cos(heading_error))
+        cmd.twist.linear.x = speed
         self._cmd_pub.publish(cmd)
 
     def _tick(self) -> None:
@@ -230,10 +241,10 @@ class RealGPSWaypoint(Node):
             self.get_logger().info(
                 f'Heading aligned within '
                 f'{math.degrees(self._turn_tolerance):.1f} deg; '
-                'driving straight.')
+                'driving with continuous correction.')
             self._state = self._DRIVING
 
-        self._publish_drive(distance_m)
+        self._publish_drive(distance_m, heading_error)
 
 
 def main(args=None) -> None:

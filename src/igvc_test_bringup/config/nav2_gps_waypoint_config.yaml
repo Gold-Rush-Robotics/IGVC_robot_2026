@@ -82,27 +82,31 @@ controller_server:
 
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.5
-      desired_angular_vel: 0.2
-      lookahead_dist: 4.0
-      min_lookahead_dist: 0.6
-      max_lookahead_dist: 4.0
+      desired_linear_vel: 0.3
+      desired_angular_vel: 1.5
+      # Lookahead sized to the robot (was 4.0 m, which made the carrot sit far
+      # past the goal and the robot overshoot before approach-scaling kicked in).
+      lookahead_dist: 0.9
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 1.5
       lookahead_time: 1.35
       rotate_to_heading_angular_vel: 1.5
       transform_tolerance: 1.0
       use_velocity_scaled_lookahead_dist: true
-      min_approach_linear_velocity: 0.2
-      approach_velocity_scaling_dist: 1.0
+      # Start decelerating earlier and allow a slower final creep so the robot
+      # settles inside xy_goal_tolerance instead of sailing through it.
+      min_approach_linear_velocity: 0.05
+      approach_velocity_scaling_dist: 2.0
       use_collision_detection: false
       max_allowed_time_to_collision_up_to_carrot: 0.5
       use_regulated_linear_velocity_scaling: true
       use_fixed_curvature_lookahead: true
-      curvature_lookahead_dist: 1.0
+      curvature_lookahead_dist: 0.6
       use_cost_regulated_linear_velocity_scaling: false
       cost_scaling_dist: 0.50
       cost_scaling_gain: 2.0
       regulated_linear_scaling_min_radius: 1.4
-      regulated_linear_scaling_min_speed: 0.40
+      regulated_linear_scaling_min_speed: 0.2
       use_rotate_to_heading: false
       allow_reversing: false
       rotate_to_heading_min_angle: 1.57
@@ -152,7 +156,7 @@ collision_monitor:
       max_height: 2.0
       min_points: 3
       visualize: false
-      enabled: true
+      enabled: false
 
     front_pointcloud:
       type: "pointcloud"
@@ -173,7 +177,7 @@ velocity_smoother:
     max_velocity: [ 2.24, 0.0,  1.5]
     min_velocity: [-0.6,  0.0, -1.5]
     max_accel:    [ 1.5,  0.0,  1.5]
-    max_decel:    [-2.0,  0.0, -1.5]
+    max_decel:    [-2.5,  0.0, -1.5]
     odom_topic: "odom"
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
