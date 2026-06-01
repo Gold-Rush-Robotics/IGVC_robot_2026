@@ -461,8 +461,8 @@ def generate_launch_description():
                 description='Yaw-rate deadband in degrees per second after bias correction.',
             ),
 
-            # OpaqueFunction(function=launch_setup),
-            # lidar_node,
+            OpaqueFunction(function=launch_setup),
+            lidar_node,
             gps_node,
             # l3gd20_node,
             # zed_2i_mag,
