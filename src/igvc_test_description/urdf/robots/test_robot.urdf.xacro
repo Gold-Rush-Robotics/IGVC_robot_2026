@@ -27,7 +27,7 @@
     </xacro:zed_camera_2i>
 
     <xacro:rplidar_c1 parent="chassis_link" prefix="top">
-        <origin xyz="0.225 0 0.46" rpy="0 0 0"/>
+        <origin xyz="0.345 0 0.52" rpy="0 0 0"/>
     </xacro:rplidar_c1>
 
     <xacro:gps_antenna parent="chassis_link" prefix="front">

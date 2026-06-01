@@ -39,6 +39,11 @@ publish_hz            (float, 5.0)             — OccupancyGrid publish frequen
 tf_timeout_sec        (float, 0.10)            — TF lookup timeout.
 scan_step             (int,   1)               — Use every Nth beam (1 = all beams).
 free_ray_step_m       (float, 0.20)            — Distance between free-ray samples.
+use_odom_pose         (bool,  True)            — Project scans using odometry topic.
+odom_topic            (str,   '/front_zed_camera_x/zed_node/odom')
+max_odom_age_sec      (float, 2.0)             — Drop scans when odom is stale.
+lidar_x/y_m           (float)                  — LiDAR origin in base_link.
+lidar_yaw_rad         (float)                  — LiDAR yaw relative to base_link.
 """
 
 from __future__ import annotations
@@ -62,12 +67,18 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
 class LidarObstacleCostmapNode(Node):
+
+    @staticmethod
+    def _yaw_from_quat(qx: float, qy: float, qz: float, qw: float) -> float:
+        return math.atan2(
+            2.0 * (qw * qz + qx * qy),
+            1.0 - 2.0 * (qy * qy + qz * qz))
 
     def __init__(self) -> None:
         super().__init__('lidar_obstacle_costmap_node')
@@ -99,6 +110,12 @@ class LidarObstacleCostmapNode(Node):
         self._tf_timeout    = float(p('tf_timeout_sec',  0.10))
         self._scan_step     = max(1, int(p('scan_step',  1)))
         self._free_step_m   = max(self._res, float(p('free_ray_step_m', 0.20)))
+        self._use_odom_pose = bool(p('use_odom_pose', True))
+        self._odom_topic    = p('odom_topic', '/front_zed_camera_x/zed_node/odom')
+        self._max_odom_age_sec = float(p('max_odom_age_sec', 2.0))
+        self._lidar_x       = float(p('lidar_x_m', 0.225))
+        self._lidar_y       = float(p('lidar_y_m', 0.0))
+        self._lidar_yaw     = float(p('lidar_yaw_rad', 0.0))
 
         # ── Grid state ────────────────────────────────────────────────
         self._nx = int(round(self._width_m  / self._res))
@@ -111,10 +128,21 @@ class LidarObstacleCostmapNode(Node):
         self._free = np.zeros((self._ny, self._nx), dtype=np.float32)
 
         self._scan_count = 0
+        self._latest_odom: Optional[Odometry] = None
+        self._logged_pose_source = False
 
-        # ── TF ────────────────────────────────────────────────────────
-        self._tf_buffer   = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, self)
+        # ── Pose source ───────────────────────────────────────────────
+        if self._use_odom_pose:
+            odom_qos = QoSProfile(
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                history=HistoryPolicy.KEEP_LAST,
+                depth=1,
+            )
+            self.create_subscription(
+                Odometry, self._odom_topic, self._on_odom, odom_qos)
+        else:
+            self._tf_buffer = Buffer()
+            self._tf_listener = TransformListener(self._tf_buffer, self)
 
         # ── Inflation kernel ──────────────────────────────────────────
         r_cells = max(0, int(math.ceil(self._inflate_r / self._res)))
@@ -148,34 +176,79 @@ class LidarObstacleCostmapNode(Node):
             f'{self._res:.2f} m, frame={self._frame}, '
             f'in={self._scan_topic}, out={self._output_topic}')
 
+    def _on_odom(self, msg: Odometry) -> None:
+        self._latest_odom = msg
+
     # ── Scan callback ─────────────────────────────────────────────────────
 
     def _on_scan(self, msg: LaserScan) -> None:
         src = msg.header.frame_id or 'base_link'
         stamp = msg.header.stamp
 
-        # Look up sensor→odom transform at the scan stamp; fall back to latest.
-        try:
-            tf = self._tf_buffer.lookup_transform(
-                self._frame, src, stamp,
-                timeout=Duration(seconds=self._tf_timeout))
-        except TransformException:
-            try:
-                tf = self._tf_buffer.lookup_transform(
-                    self._frame, src, rclpy.time.Time(),
-                    timeout=Duration(seconds=self._tf_timeout))
-            except TransformException as ex:
+        if self._use_odom_pose:
+            odom = self._latest_odom
+            if odom is None:
                 self.get_logger().warn(
-                    f'TF {src}->{self._frame} failed: {ex}',
+                    f'Waiting for odometry on {self._odom_topic} before updating lidar obstacle map.',
+                    throttle_duration_sec=2.0)
+                return
+            odom_frame = odom.header.frame_id or self._frame
+            if odom_frame != self._frame:
+                self.get_logger().warn(
+                    f'Odometry frame "{odom_frame}" does not match lidar map frame "{self._frame}". '
+                    'Set frame_id to the odom message frame or disable use_odom_pose.',
+                    throttle_duration_sec=2.0)
+                return
+            now = self.get_clock().now()
+            odom_age = (now - rclpy.time.Time.from_msg(odom.header.stamp)).nanoseconds / 1e9
+            if self._max_odom_age_sec > 0.0 and odom_age > self._max_odom_age_sec:
+                self.get_logger().warn(
+                    f'Dropping lidar scan: latest odom age={odom_age:.2f}s > '
+                    f'{self._max_odom_age_sec:.2f}s',
                     throttle_duration_sec=2.0)
                 return
 
-        tx  = tf.transform.translation.x
-        ty  = tf.transform.translation.y
-        q   = tf.transform.rotation
-        yaw = math.atan2(
-            2.0 * (q.w * q.z + q.x * q.y),
-            1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            pose = odom.pose.pose
+            base_yaw = self._yaw_from_quat(
+                pose.orientation.x,
+                pose.orientation.y,
+                pose.orientation.z,
+                pose.orientation.w)
+            cos_yaw = math.cos(base_yaw)
+            sin_yaw = math.sin(base_yaw)
+            tx = (pose.position.x +
+                  cos_yaw * self._lidar_x - sin_yaw * self._lidar_y)
+            ty = (pose.position.y +
+                  sin_yaw * self._lidar_x + cos_yaw * self._lidar_y)
+            yaw = base_yaw + self._lidar_yaw
+            if not self._logged_pose_source:
+                self.get_logger().info(
+                    f'lidar_obstacle_costmap: projecting scans with odom topic '
+                    f'{self._odom_topic}; lidar_xy=({self._lidar_x:.3f}, '
+                    f'{self._lidar_y:.3f}), lidar_yaw={self._lidar_yaw:.3f} rad')
+                self._logged_pose_source = True
+        else:
+            # Legacy fallback: look up sensor→odom transform at the scan stamp;
+            # fall back to latest.
+            try:
+                tf = self._tf_buffer.lookup_transform(
+                    self._frame, src, stamp,
+                    timeout=Duration(seconds=self._tf_timeout))
+            except TransformException as ex:
+                try:
+                    tf = self._tf_buffer.lookup_transform(
+                        self._frame, src, rclpy.time.Time(),
+                        timeout=Duration(seconds=self._tf_timeout))
+                except TransformException:
+                    self.get_logger().warn(
+                        f'TF {src}->{self._frame} failed: {ex}',
+                        throttle_duration_sec=2.0)
+                    return
+
+            tx = tf.transform.translation.x
+            ty = tf.transform.translation.y
+            q = tf.transform.rotation
+            yaw = self._yaw_from_quat(q.x, q.y, q.z, q.w)
 
         # ── Periodic decay ────────────────────────────────────────────
         self._scan_count += 1

@@ -42,7 +42,7 @@ Arguments
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -139,7 +139,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     # ── 3. robot_localization (map -> odom -> base_link) ───────────────────
-    localization = IncludeLaunchDescription(
+    localization_nodes = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
                 [bringup, 'launch', 'dual_ekf_navsat.launch.py'])),
@@ -149,9 +149,10 @@ def generate_launch_description() -> LaunchDescription:
             'gps_topic': gps_topic,
         }.items(),
     )
+    localization = TimerAction(period=5.0, actions=[localization_nodes])
 
     # ── 4. Nav2 stack ──────────────────────────────────────────────────────
-    nav2 = IncludeLaunchDescription(
+    nav2_nodes = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution(
                 [bringup, 'launch', 'navigation_no_docking.launch.py'])),
@@ -174,6 +175,7 @@ def generate_launch_description() -> LaunchDescription:
             ('cmd_vel_out', '/diff_drive_controller/cmd_vel'),
         ],
     )
+    nav2 = TimerAction(period=18.0, actions=[nav2_nodes, twist_stamper])
 
     # ── 6. GPS waypoint follower client ────────────────────────────────────
     gps_waypoint_node = Node(
@@ -191,6 +193,7 @@ def generate_launch_description() -> LaunchDescription:
             'gps_topic': gps_topic,
         }],
     )
+    waypoint_client = TimerAction(period=23.0, actions=[gps_waypoint_node])
 
     return LaunchDescription([
         use_sim_time_arg,
@@ -210,6 +213,5 @@ def generate_launch_description() -> LaunchDescription:
         sim_gps_spoofer,
         localization,
         nav2,
-        twist_stamper,
-        gps_waypoint_node,
+        waypoint_client,
     ])

@@ -21,7 +21,7 @@ Arguments
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, TimerAction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -44,7 +44,6 @@ def generate_launch_description() -> LaunchDescription:
     imu_topic_arg = DeclareLaunchArgument(
         'imu_topic', default_value='/front_zed_camera_2i/imu/heading',
         description='Absolute-heading Imu topic fed to navsat_transform.')
-
     use_sim_time = LaunchConfiguration('use_sim_time')
     params_file = LaunchConfiguration('params_file')
     gps_topic = LaunchConfiguration('gps_topic')
@@ -79,12 +78,18 @@ def generate_launch_description() -> LaunchDescription:
             ('gps/fix', gps_topic),
             ('gps/filtered', 'gps/filtered'),
             ('odometry/gps', 'odometry/gps'),
-            # navsat_transform reads the LOCAL EKF output (no GPS dependency) for
-            # yaw when use_odometry_yaw=true.  Using odometry/global here creates a
-            # deadlock: global EKF waits for odometry/gps; navsat_transform waits for
-            # odometry/global.
-            ('odometry/filtered', 'odometry/local'),
+            ('odometry/filtered', 'odometry/global'),
         ],
+    )
+
+    delayed_ekf_map = TimerAction(
+        period=2.0,
+        actions=[ekf_map],
+    )
+
+    delayed_navsat_transform = TimerAction(
+        period=5.0,
+        actions=[navsat_transform],
     )
 
     return LaunchDescription([
@@ -93,6 +98,6 @@ def generate_launch_description() -> LaunchDescription:
         gps_topic_arg,
         imu_topic_arg,
         ekf_odom,
-        ekf_map,
-        navsat_transform,
+        delayed_ekf_map,
+        delayed_navsat_transform,
     ])

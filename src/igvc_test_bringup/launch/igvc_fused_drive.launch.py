@@ -1,3 +1,7 @@
+import os
+import xml.etree.ElementTree as ET
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
@@ -7,12 +11,46 @@ from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
 
 
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit('}', 1)[-1]
+
+
+def _parse_triplet(value: str, field_name: str) -> tuple[float, float, float]:
+    parts = value.split()
+    if len(parts) != 3:
+        raise RuntimeError(f'Expected 3 values for LiDAR {field_name}, got: {value!r}')
+    return float(parts[0]), float(parts[1]), float(parts[2])
+
+
+def _top_lidar_mount_from_urdf() -> tuple[float, float, float]:
+    description_pkg = get_package_share_directory('igvc_test_description')
+    robot_xacro = os.path.join(
+        description_pkg, 'urdf', 'robots', 'test_robot.urdf.xacro')
+
+    root = ET.parse(robot_xacro).getroot()
+    for element in root.iter():
+        if _xml_local_name(element.tag) != 'rplidar_c1':
+            continue
+        if element.attrib.get('prefix') != 'top':
+            continue
+        for child in element:
+            if _xml_local_name(child.tag) != 'origin':
+                continue
+            xyz = _parse_triplet(child.attrib.get('xyz', '0 0 0'), 'xyz')
+            rpy = _parse_triplet(child.attrib.get('rpy', '0 0 0'), 'rpy')
+            return xyz[0], xyz[1], rpy[2]
+
+    raise RuntimeError(
+        f'Could not find top rplidar_c1 origin in {robot_xacro}')
+
+
 
 def generate_launch_description() -> LaunchDescription:
     bringup = FindPackageShare('igvc_test_bringup')
     yolo_ros_pkg = FindPackageShare('yolo_bringup')
     ublox_gps_pkg = FindPackageShare('ublox_gps')
     lidar_pkg = FindPackageShare('sllidar_ros2')
+    lidar_x_m, lidar_y_m, lidar_yaw_rad = _top_lidar_mount_from_urdf()
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     gps_enabled = LaunchConfiguration('gps_enabled')
@@ -215,6 +253,12 @@ def generate_launch_description() -> LaunchDescription:
             {'frame_id': 'odom'},
             {'scan_topic': '/scan'},
             {'output_topic': '/lidar_obstacle_map'},
+            {'use_odom_pose': True},
+            {'odom_topic': '/front_zed_camera_x/zed_node/odom'},
+            {'max_odom_age_sec': 2.0},
+            {'lidar_x_m': lidar_x_m},
+            {'lidar_y_m': lidar_y_m},
+            {'lidar_yaw_rad': lidar_yaw_rad},
             {'width_m': 100.0},
             {'height_m': 100.0},
             {'origin_x': -50.0},

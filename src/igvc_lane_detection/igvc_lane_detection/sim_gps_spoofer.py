@@ -33,8 +33,10 @@ class SimGpsSpoofer(Node):
 
         self.declare_parameter('origin_lat', 42.400510946)
         self.declare_parameter('origin_lon', -83.130640432)
+        self.declare_parameter('frame_id', 'base_link')
         self.origin_lat = float(self.get_parameter('origin_lat').value)
         self.origin_lon = float(self.get_parameter('origin_lon').value)
+        self.frame_id = str(self.get_parameter('frame_id').value)
 
         self.declare_parameter('initial_heading_deg', 0.0)
         self.declare_parameter('randomize_heading', False)
@@ -78,7 +80,7 @@ class SimGpsSpoofer(Node):
 
         fix = NavSatFix()
         fix.header.stamp = stamp
-        fix.header.frame_id = 'gps_gps_antenna_link'
+        fix.header.frame_id = self.frame_id
         fix.status.status = NavSatStatus.STATUS_FIX
         fix.status.service = NavSatStatus.SERVICE_GPS
         fix.latitude = self.origin_lat + math.degrees(north / EARTH_RADIUS_M)

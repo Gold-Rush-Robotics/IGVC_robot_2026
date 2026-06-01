@@ -182,11 +182,13 @@ class Nav2GpsWaypoint(Node):
             self._start_fix.latitude, self._start_fix.longitude,
             goal_lat, goal_lon)
         if gps_delta < 1.0:
+            self.get_logger().info(
+                f'GPS goal is already within {gps_delta:.2f} m of the start.')
             return True
 
         self.get_logger().info(
-            'Waiting for navsat_transform /fromLL to produce a valid map goal...')
-        deadline = time.time() + 15.0
+            'Waiting for navsat_transform /fromLL to produce a non-zero map goal...')
+        deadline = time.time() + 20.0
         while time.time() < deadline:
             if not self._from_ll.wait_for_service(timeout_sec=0.25):
                 continue
@@ -200,7 +202,7 @@ class Nav2GpsWaypoint(Node):
             map_delta = math.hypot(goal_map.x - start_map.x,
                                    goal_map.y - start_map.y)
             self.get_logger().info(
-                f'fromLL check: GPS delta={gps_delta:.2f} m, '
+                f'fromLL ready check: GPS delta={gps_delta:.2f} m, '
                 f'map delta={map_delta:.2f} m, '
                 f'goal=({goal_map.x:.2f}, {goal_map.y:.2f}).',
                 throttle_duration_sec=2.0)
@@ -210,9 +212,9 @@ class Nav2GpsWaypoint(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
 
         self.get_logger().error(
-            'fromLL check FAILED: target GPS waypoint still converts too close '
-            'to the current map position. Aborting instead of reporting a false '
-            'success at (0,0).')
+            'fromLL ready check FAILED: the target GPS waypoint still converts '
+            'too close to the current map position. Aborting instead of '
+            'reporting a false success.')
         return False
 
     def run(self) -> bool:
