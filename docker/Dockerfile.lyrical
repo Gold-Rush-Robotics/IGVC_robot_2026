@@ -1,0 +1,34 @@
+FROM ros:lyrical-ros-base AS base
+
+# Installing base packages
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    python3-argcomplete \
+    python3-pip \
+    python3-yaml \
+    cmake \
+    libboost-system-dev \
+    git \
+    nano \
+    xterm \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /root/.bashrc
+
+WORKDIR /root
+
+CMD ["bash"]
+
+FROM base AS manifests
+COPY src /tmp/src
+RUN mkdir /tmp/manifests && cd /tmp/src \
+    && find . -name package.xml -exec cp --parents {} /tmp/manifests \;
+
+FROM base
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+COPY --from=manifests /tmp/manifests /tmp/rosdep_src
+RUN apt-get update \
+    && rosdep install --from-paths /tmp/rosdep_src --ignore-src -y \
+    && rm -rf /var/lib/apt/lists/* /tmp/rosdep_src

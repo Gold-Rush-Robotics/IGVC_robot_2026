@@ -1,0 +1,21 @@
+services:
+  demo_image:
+    image: ghcr.io/pgovm/igvc-base:latest
+    platform: linux/arm64
+    pull_policy: always
+    container_name: please_work
+    stdin_open: true
+    tty: true
+    privileged: true
+    network_mode: host
+    runtime: nvidia
+
+    volumes:
+      - ${HOME}/IGVC_robot_2026:/root/IGVC_robot_2026
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /dev:/dev
+
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
