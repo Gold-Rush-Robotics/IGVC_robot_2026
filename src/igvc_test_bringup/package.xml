@@ -7,7 +7,7 @@
   <maintainer email="nchan18@outlook.com">ubuntu</maintainer>
   <license>TODO: License declaration</license>
 
-  <buildtool_depend>ament_python</buildtool_depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
 
   <!-- <exec_depend>controller_manager</exec_depend>
   <exec_depend>grr_hardware</exec_depend>
@@ -20,6 +20,8 @@
   <exec_depend>simulation_interfaces</exec_depend>
   <exec_depend>twist_stamper</exec_depend>
   <exec_depend>xacro</exec_depend> -->
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
@@ -27,7 +29,6 @@
   <test_depend>python3-pytest</test_depend>
 
   <export>
-    <build_type>ament_python</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>
-

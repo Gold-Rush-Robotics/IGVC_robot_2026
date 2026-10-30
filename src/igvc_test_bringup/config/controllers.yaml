@@ -14,11 +14,11 @@ diff_drive_controller:
     left_wheel_names: ["left_wheel_joint"]
     right_wheel_names: ["right_wheel_joint"]
 
-    wheel_separation: 0.5027
+    wheel_separation: 0.5763
     wheel_radius: 0.2032
 
     wheel_separation_multiplier: 1.0
-    left_wheel_radius_multiplier: -1.0
+    left_wheel_radius_multiplier: 1.0
     right_wheel_radius_multiplier: 1.0
 
     odom_frame_id: odom
@@ -28,11 +28,10 @@ diff_drive_controller:
 
     position_feedback: false
     open_loop: true
-    enable_odom_tf: false
-    publish_odom: false
+    enable_odom_tf: true
+    publish_odom: true
 
-    cmd_vel_timeout: 0.3 # seconds — tightened from 0.5 to reduce emergency-stop lag
-    use_stamped_vel: true
+    cmd_vel_timeout: 10.0 # seconds — tightened from 0.5 to reduce emergency-stop lag
     publish_limited_velocity: true
     velocity_rolling_window_size: 10
 
